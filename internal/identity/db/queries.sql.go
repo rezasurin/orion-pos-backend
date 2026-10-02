@@ -12,6 +12,33 @@ import (
 	"github.com/google/uuid"
 )
 
+const deleteStaffOutletRoles = `-- name: DeleteStaffOutletRoles :exec
+DELETE FROM staff_outlet_role
+WHERE tenant_id = $1 AND staff_id = $2
+  AND (outlet_id, role_id) IN (
+      SELECT o.id, r.id
+      FROM unnest($3::uuid[]) WITH ORDINALITY AS o(id, n)
+      JOIN unnest($4::uuid[]) WITH ORDINALITY AS r(id, n) ON r.n = o.n
+  )
+`
+
+type DeleteStaffOutletRolesParams struct {
+	TenantID  uuid.UUID
+	StaffID   uuid.UUID
+	OutletIds []uuid.UUID
+	RoleIds   []uuid.UUID
+}
+
+func (q *Queries) DeleteStaffOutletRoles(ctx context.Context, arg DeleteStaffOutletRolesParams) error {
+	_, err := q.db.Exec(ctx, deleteStaffOutletRoles,
+		arg.TenantID,
+		arg.StaffID,
+		arg.OutletIds,
+		arg.RoleIds,
+	)
+	return err
+}
+
 const getMember = `-- name: GetMember :one
 SELECT is_owner FROM tenant_member WHERE tenant_id = $1 AND user_id = $2
 `
@@ -26,6 +53,48 @@ func (q *Queries) GetMember(ctx context.Context, arg GetMemberParams) (bool, err
 	var is_owner bool
 	err := row.Scan(&is_owner)
 	return is_owner, err
+}
+
+const getMemberAccess = `-- name: GetMemberAccess :many
+SELECT m.is_owner, sor.outlet_id, rp.permission
+FROM tenant_member m
+LEFT JOIN staff s ON s.tenant_id = m.tenant_id AND s.user_id = m.user_id AND s.active
+LEFT JOIN staff_outlet_role sor ON sor.tenant_id = s.tenant_id AND sor.staff_id = s.id
+LEFT JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE m.tenant_id = $1 AND m.user_id = $2
+`
+
+type GetMemberAccessParams struct {
+	TenantID uuid.UUID
+	UserID   uuid.UUID
+}
+
+type GetMemberAccessRow struct {
+	IsOwner    bool
+	OutletID   *uuid.UUID
+	Permission *string
+}
+
+// One member's role permissions per outlet, in one query. Zero rows means the user is not a
+// member. Inactive staff hold no roles.
+func (q *Queries) GetMemberAccess(ctx context.Context, arg GetMemberAccessParams) ([]GetMemberAccessRow, error) {
+	rows, err := q.db.Query(ctx, getMemberAccess, arg.TenantID, arg.UserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetMemberAccessRow
+	for rows.Next() {
+		var i GetMemberAccessRow
+		if err := rows.Scan(&i.IsOwner, &i.OutletID, &i.Permission); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getRefreshTokenForUpdate = `-- name: GetRefreshTokenForUpdate :one
@@ -50,6 +119,87 @@ func (q *Queries) GetRefreshTokenForUpdate(ctx context.Context, arg GetRefreshTo
 		&i.ExpiresAt,
 		&i.UsedAt,
 		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const getStaff = `-- name: GetStaff :one
+SELECT s.id, s.user_id, s.display_name, s.pin_hash, s.pin_rotated_at, s.active, s.created_at,
+       coalesce(m.is_owner, false)::boolean AS is_owner
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = $1 AND s.id = $2
+`
+
+type GetStaffParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+type GetStaffRow struct {
+	ID           uuid.UUID
+	UserID       *uuid.UUID
+	DisplayName  string
+	PinHash      *string
+	PinRotatedAt *time.Time
+	Active       bool
+	CreatedAt    time.Time
+	IsOwner      bool
+}
+
+func (q *Queries) GetStaff(ctx context.Context, arg GetStaffParams) (GetStaffRow, error) {
+	row := q.db.QueryRow(ctx, getStaff, arg.TenantID, arg.ID)
+	var i GetStaffRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.DisplayName,
+		&i.PinHash,
+		&i.PinRotatedAt,
+		&i.Active,
+		&i.CreatedAt,
+		&i.IsOwner,
+	)
+	return i, err
+}
+
+const getStaffForUpdate = `-- name: GetStaffForUpdate :one
+SELECT s.id, s.user_id, s.display_name, s.pin_hash, s.pin_rotated_at, s.active, s.created_at,
+       coalesce(m.is_owner, false)::boolean AS is_owner
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = $1 AND s.id = $2
+FOR UPDATE OF s
+`
+
+type GetStaffForUpdateParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+type GetStaffForUpdateRow struct {
+	ID           uuid.UUID
+	UserID       *uuid.UUID
+	DisplayName  string
+	PinHash      *string
+	PinRotatedAt *time.Time
+	Active       bool
+	CreatedAt    time.Time
+	IsOwner      bool
+}
+
+func (q *Queries) GetStaffForUpdate(ctx context.Context, arg GetStaffForUpdateParams) (GetStaffForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getStaffForUpdate, arg.TenantID, arg.ID)
+	var i GetStaffForUpdateRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.DisplayName,
+		&i.PinHash,
+		&i.PinRotatedAt,
+		&i.Active,
+		&i.CreatedAt,
+		&i.IsOwner,
 	)
 	return i, err
 }
@@ -194,6 +344,95 @@ func (q *Queries) InsertRefreshToken(ctx context.Context, arg InsertRefreshToken
 	return err
 }
 
+const insertRole = `-- name: InsertRole :exec
+INSERT INTO role (id, tenant_id, name, is_system) VALUES ($1, $2, $3, $4)
+`
+
+type InsertRoleParams struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+	Name     string
+	IsSystem bool
+}
+
+func (q *Queries) InsertRole(ctx context.Context, arg InsertRoleParams) error {
+	_, err := q.db.Exec(ctx, insertRole,
+		arg.ID,
+		arg.TenantID,
+		arg.Name,
+		arg.IsSystem,
+	)
+	return err
+}
+
+const insertRolePermissions = `-- name: InsertRolePermissions :exec
+INSERT INTO role_permission (tenant_id, role_id, permission)
+SELECT $1::uuid, $2::uuid, unnest($3::text[])
+`
+
+type InsertRolePermissionsParams struct {
+	TenantID    uuid.UUID
+	RoleID      uuid.UUID
+	Permissions []string
+}
+
+// COPY is not allowed into tables with row-level security, so bulk inserts unnest an array.
+func (q *Queries) InsertRolePermissions(ctx context.Context, arg InsertRolePermissionsParams) error {
+	_, err := q.db.Exec(ctx, insertRolePermissions, arg.TenantID, arg.RoleID, arg.Permissions)
+	return err
+}
+
+const insertStaff = `-- name: InsertStaff :exec
+INSERT INTO staff (id, tenant_id, user_id, display_name, pin_hash, pin_rotated_at)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertStaffParams struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	UserID       *uuid.UUID
+	DisplayName  string
+	PinHash      *string
+	PinRotatedAt *time.Time
+}
+
+func (q *Queries) InsertStaff(ctx context.Context, arg InsertStaffParams) error {
+	_, err := q.db.Exec(ctx, insertStaff,
+		arg.ID,
+		arg.TenantID,
+		arg.UserID,
+		arg.DisplayName,
+		arg.PinHash,
+		arg.PinRotatedAt,
+	)
+	return err
+}
+
+const insertStaffOutletRoles = `-- name: InsertStaffOutletRoles :exec
+INSERT INTO staff_outlet_role (tenant_id, staff_id, outlet_id, role_id)
+SELECT $1::uuid, $2::uuid, o.id, r.id
+FROM unnest($3::uuid[]) WITH ORDINALITY AS o(id, n)
+JOIN unnest($4::uuid[]) WITH ORDINALITY AS r(id, n) ON r.n = o.n
+ON CONFLICT DO NOTHING
+`
+
+type InsertStaffOutletRolesParams struct {
+	TenantID  uuid.UUID
+	StaffID   uuid.UUID
+	OutletIds []uuid.UUID
+	RoleIds   []uuid.UUID
+}
+
+func (q *Queries) InsertStaffOutletRoles(ctx context.Context, arg InsertStaffOutletRolesParams) error {
+	_, err := q.db.Exec(ctx, insertStaffOutletRoles,
+		arg.TenantID,
+		arg.StaffID,
+		arg.OutletIds,
+		arg.RoleIds,
+	)
+	return err
+}
+
 const insertUser = `-- name: InsertUser :exec
 INSERT INTO user_account (id, email, password_hash, email_verified_at, locale)
 VALUES ($1, $2, $3, $4, $5)
@@ -218,6 +457,204 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) error {
 		arg.Locale,
 	)
 	return err
+}
+
+const listRolePermissions = `-- name: ListRolePermissions :many
+SELECT role_id, permission FROM role_permission
+WHERE tenant_id = $1 AND role_id = ANY($2::uuid[])
+ORDER BY role_id, permission
+`
+
+type ListRolePermissionsParams struct {
+	TenantID uuid.UUID
+	RoleIds  []uuid.UUID
+}
+
+type ListRolePermissionsRow struct {
+	RoleID     uuid.UUID
+	Permission string
+}
+
+// Permissions for many roles at once, assembled in Go: two queries however many roles there are.
+func (q *Queries) ListRolePermissions(ctx context.Context, arg ListRolePermissionsParams) ([]ListRolePermissionsRow, error) {
+	rows, err := q.db.Query(ctx, listRolePermissions, arg.TenantID, arg.RoleIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRolePermissionsRow
+	for rows.Next() {
+		var i ListRolePermissionsRow
+		if err := rows.Scan(&i.RoleID, &i.Permission); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRoles = `-- name: ListRoles :many
+SELECT id, tenant_id, name, is_system, created_at, updated_at FROM role WHERE tenant_id = $1 ORDER BY is_system DESC, name
+`
+
+func (q *Queries) ListRoles(ctx context.Context, tenantID uuid.UUID) ([]Role, error) {
+	rows, err := q.db.Query(ctx, listRoles, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Role
+	for rows.Next() {
+		var i Role
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.IsSystem,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRolesByIDs = `-- name: ListRolesByIDs :many
+SELECT id, tenant_id, name, is_system, created_at, updated_at FROM role WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+`
+
+type ListRolesByIDsParams struct {
+	TenantID uuid.UUID
+	RoleIds  []uuid.UUID
+}
+
+func (q *Queries) ListRolesByIDs(ctx context.Context, arg ListRolesByIDsParams) ([]Role, error) {
+	rows, err := q.db.Query(ctx, listRolesByIDs, arg.TenantID, arg.RoleIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Role
+	for rows.Next() {
+		var i Role
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.IsSystem,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaff = `-- name: ListStaff :many
+SELECT s.id, s.user_id, s.display_name, s.pin_hash, s.pin_rotated_at, s.active, s.created_at,
+       coalesce(m.is_owner, false)::boolean AS is_owner
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = $1 AND s.id > $2
+ORDER BY s.id
+LIMIT $3
+`
+
+type ListStaffParams struct {
+	TenantID uuid.UUID
+	After    uuid.UUID
+	PageSize int32
+}
+
+type ListStaffRow struct {
+	ID           uuid.UUID
+	UserID       *uuid.UUID
+	DisplayName  string
+	PinHash      *string
+	PinRotatedAt *time.Time
+	Active       bool
+	CreatedAt    time.Time
+	IsOwner      bool
+}
+
+func (q *Queries) ListStaff(ctx context.Context, arg ListStaffParams) ([]ListStaffRow, error) {
+	rows, err := q.db.Query(ctx, listStaff, arg.TenantID, arg.After, arg.PageSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaffRow
+	for rows.Next() {
+		var i ListStaffRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.DisplayName,
+			&i.PinHash,
+			&i.PinRotatedAt,
+			&i.Active,
+			&i.CreatedAt,
+			&i.IsOwner,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStaffOutletRoles = `-- name: ListStaffOutletRoles :many
+SELECT staff_id, outlet_id, role_id FROM staff_outlet_role
+WHERE tenant_id = $1 AND staff_id = ANY($2::uuid[])
+ORDER BY staff_id, outlet_id, role_id
+`
+
+type ListStaffOutletRolesParams struct {
+	TenantID uuid.UUID
+	StaffIds []uuid.UUID
+}
+
+type ListStaffOutletRolesRow struct {
+	StaffID  uuid.UUID
+	OutletID uuid.UUID
+	RoleID   uuid.UUID
+}
+
+// The outlet roles of a page of staff, in one query.
+func (q *Queries) ListStaffOutletRoles(ctx context.Context, arg ListStaffOutletRolesParams) ([]ListStaffOutletRolesRow, error) {
+	rows, err := q.db.Query(ctx, listStaffOutletRoles, arg.TenantID, arg.StaffIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListStaffOutletRolesRow
+	for rows.Next() {
+		var i ListStaffOutletRolesRow
+		if err := rows.Scan(&i.StaffID, &i.OutletID, &i.RoleID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markEmailVerified = `-- name: MarkEmailVerified :exec
@@ -305,5 +742,49 @@ type RevokeRefreshFamilyParams struct {
 // Rows are locked in id order so two concurrent revocations of one family cannot deadlock.
 func (q *Queries) RevokeRefreshFamily(ctx context.Context, arg RevokeRefreshFamilyParams) error {
 	_, err := q.db.Exec(ctx, revokeRefreshFamily, arg.Now, arg.TenantID, arg.FamilyID)
+	return err
+}
+
+const setStaffPIN = `-- name: SetStaffPIN :exec
+UPDATE staff SET pin_hash = $1, pin_rotated_at = $2
+WHERE tenant_id = $3 AND id = $4
+`
+
+type SetStaffPINParams struct {
+	PinHash  *string
+	Now      *time.Time
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) SetStaffPIN(ctx context.Context, arg SetStaffPINParams) error {
+	_, err := q.db.Exec(ctx, setStaffPIN,
+		arg.PinHash,
+		arg.Now,
+		arg.TenantID,
+		arg.ID,
+	)
+	return err
+}
+
+const updateStaff = `-- name: UpdateStaff :exec
+UPDATE staff SET display_name = $1, active = $2
+WHERE tenant_id = $3 AND id = $4
+`
+
+type UpdateStaffParams struct {
+	DisplayName string
+	Active      bool
+	TenantID    uuid.UUID
+	ID          uuid.UUID
+}
+
+func (q *Queries) UpdateStaff(ctx context.Context, arg UpdateStaffParams) error {
+	_, err := q.db.Exec(ctx, updateStaff,
+		arg.DisplayName,
+		arg.Active,
+		arg.TenantID,
+		arg.ID,
+	)
 	return err
 }

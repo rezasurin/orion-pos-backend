@@ -362,22 +362,25 @@ func (s *Service) Authenticate(aud Audience, bearer string) (Principal, error) {
 	return p, nil
 }
 
-// Access is what a user may do in the current tenant.
-type Access struct {
-	IsOwner bool
-}
-
 // LoadAccess checks that the user is still a member of the tenant and returns what they may do.
 // It runs on every request to a user route, so a removed member loses access at once instead of
-// when their access token expires.
+// when their access token expires. One query, however many outlets and roles the user has.
 func (s *Service) LoadAccess(ctx context.Context, p Principal) (Access, error) {
 	var a Access
 	err := kernel.TenantTx(ctx, s.Pool, p.TenantID, func(tx pgx.Tx) error {
-		isOwner, err := db.New(tx).GetMember(ctx, db.GetMemberParams{TenantID: p.TenantID, UserID: p.UserID})
+		rows, err := db.New(tx).GetMemberAccess(ctx, db.GetMemberAccessParams{TenantID: p.TenantID, UserID: p.UserID})
 		if err != nil {
-			return mapNoRows(err, ErrInvalidToken)
+			return err
 		}
-		a = Access{IsOwner: isOwner}
+		if len(rows) == 0 {
+			return ErrInvalidToken // not a member (any more)
+		}
+		a = Access{IsOwner: rows[0].IsOwner}
+		for _, r := range rows {
+			if r.OutletID != nil && r.Permission != nil {
+				a.grant(*r.OutletID, Permission(*r.Permission))
+			}
+		}
 		return nil
 	})
 	return a, err
@@ -424,10 +427,14 @@ type NewMember struct {
 	IsOwner     bool
 	// EmailVerified skips the verification email, for accounts an operator or a seed creates.
 	EmailVerified bool
+	// OutletRoles are the roles a non-owner member holds. Owners need none: they may do anything.
+	// The caller is trusted here (a command or signup); API handlers use CreateStaff's checks.
+	OutletRoles []OutletRole
 }
 
-// CreateMember creates a user and adds them to a tenant. Unless the email is marked verified, a
-// verification email is queued in the same transaction.
+// CreateMember creates a user, adds them to a tenant and gives them a staff record (so they appear
+// in the roster once they have a PIN). Unless the email is marked verified, a verification email
+// is queued in the same transaction.
 func (s *Service) CreateMember(ctx context.Context, in NewMember) (User, error) {
 	in.Email = normalizeEmail(in.Email)
 	if in.Locale == "" {
@@ -448,8 +455,12 @@ func (s *Service) CreateMember(ctx context.Context, in NewMember) (User, error) 
 	if in.EmailVerified {
 		verifiedAt = &now
 	}
+	staffID := kernel.NewID()
 	err = kernel.TenantTx(ctx, s.Pool, in.TenantID, func(tx pgx.Tx) error {
 		q := db.New(tx)
+		if err := kernel.LockTenant(ctx, tx); err != nil {
+			return err
+		}
 		if err := q.InsertUser(ctx, db.InsertUserParams{
 			ID: userID, Email: in.Email, PasswordHash: hash, EmailVerifiedAt: verifiedAt, Locale: in.Locale,
 		}); err != nil {
@@ -457,6 +468,23 @@ func (s *Service) CreateMember(ctx context.Context, in NewMember) (User, error) 
 		}
 		if err := q.InsertMember(ctx, db.InsertMemberParams{TenantID: in.TenantID, UserID: userID, IsOwner: in.IsOwner}); err != nil {
 			return mapErr(err)
+		}
+		if err := q.InsertStaff(ctx, db.InsertStaffParams{
+			ID: staffID, TenantID: in.TenantID, UserID: &userID, DisplayName: strings.TrimSpace(in.DisplayName),
+		}); err != nil {
+			return mapErr(err)
+		}
+		if err := insertAssignments(ctx, q, in.TenantID, staffID, in.OutletRoles); err != nil {
+			return err
+		}
+		if _, err := kernel.RecordChange(ctx, tx, "staff", staffID, "upsert", nil); err != nil {
+			return err
+		}
+		if err := kernel.RecordAudit(ctx, tx, kernel.AuditEntry{
+			Action: "member.created", TargetType: "user", TargetID: userID,
+			Detail: map[string]any{"is_owner": in.IsOwner, "staff_id": staffID},
+		}); err != nil {
+			return err
 		}
 		if in.EmailVerified {
 			return nil

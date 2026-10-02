@@ -232,6 +232,36 @@ ADR 0002 requires roles from the start.
   **re-checks on push**: a void by someone without `sale.void` at event time is accepted (the money
   already moved) but flagged for review, not silently dropped.
 
+#### 4.4.1 Roles, staff and PINs as built (B0.7)
+
+- Fourteen permissions live in `internal/identity/permissions.go`; the HTTP layer reads each
+  operation's `x-permission` from the OpenAPI document and refuses to start if one is not in that
+  list. System roles are seeded with the tenant: Owner (all), Manager (all but `settings.manage`),
+  Cashier (`sale.create`, `shift.open`, `shift.close`), Kitchen (`kitchen.view`).
+- **Owners are members with `is_owner`, not a role.** They may do anything, so an owner never
+  depends on role rows. Everyone else gets permissions from their staff record's role assignments
+  per outlet (`staff_outlet_role`); an inactive staff record holds none.
+- **No privilege escalation.** To assign a role the caller needs `staff.manage` at that outlet and
+  must hold every permission of the role there; a manager cannot make an Owner. Only an owner
+  can change an owner's record or PIN.
+- **A staff record is for anyone who acts**, signed in by email or not. Members created with
+  `CreateMember` get one automatically; cashiers are created with `POST /v1/staff` and have no
+  email. Removing a membership keeps the staff row (sales will point at it) and clears `user_id`.
+- **PINs.** 4 to 6 digits, no repeats or runs. Stored as argon2id (m=19 MiB, t=2, p=1), cheap on
+  purpose because tablets check them offline, often in WebAssembly. The cashier picks their name
+  and then types the PIN, so PINs need not be unique and the server never has to compare them. As
+  section 4.3 says, a PIN is a convenience switch, not a security boundary: anyone who holds a
+  device's storage can brute-force 10^4 to 10^6 values whatever the cost. What bounds the damage
+  is that hashes go only to paired, non-revoked devices, that permissions are enforced by role on
+  push, and that a manager can rotate a PIN. This is the text for the ADR the plan asks for.
+- Staff changes go to `change_log` with `outlet_id` null (every outlet); the pull will filter by
+  assignment. PIN changes, staff creation and updates, and new members are written to
+  `tenant_audit_log` in the same transaction, with the acting user and address and never the PIN.
+- Bulk inserts use `INSERT ... SELECT unnest(...)`, not `COPY`: Postgres refuses `COPY FROM` into
+  tables with row-level security.
+- Staff lists page by id and load their outlet roles with one extra query, whatever the page
+  size; a test counts queries for 1 and for 50 rows and requires them to be equal.
+
 ### 4.5 Entitlements and feature flags
 
 One module, one function, used by handlers, jobs and the POS payload (ADR 0007, ADR 0008).
@@ -378,11 +408,13 @@ partial indexes such as `payment_intent (status) WHERE status = 'pending'` for j
   for one-to-one data (outlets with their settings), and one batched query per child collection
   (`WHERE sale_id = ANY($1::uuid[])`) assembled in Go for one-to-many data (sales with lines).
 - Loops that write many rows (sale lines, ledger rows, imported catalog rows) use
-  `pgx.Batch` or `COPY` (`CopyFrom`), not one round trip per row.
+  `pgx.Batch` or a single `INSERT ... SELECT unnest($1::uuid[], ...)`, not one round trip per
+  row. `COPY` is not an option on tenant tables: Postgres refuses `COPY FROM` into tables with
+  row-level security.
 - The pull endpoint loads each entity type for all changed ids in one query.
-- The check: API tests for list endpoints assert the query count stays the same with 1 row and
-  50 rows (a small counting `pgx` tracer in `testdb`), added with the first list endpoint that
-  has children (catalog, Phase 1).
+- The check: tests for list endpoints assert the query count stays the same with 1 row and
+  50 rows, using the counting `pgx` tracer in `testdb` (`DB.Queries`). It arrived with the first
+  list that has children, the staff list.
 
 **Deadlocks.**
 
@@ -759,7 +791,7 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 | B0.4 | ✅ First migrations: roles `orion_app` / `orion_platform`, `tenant` with plan fields, `outlet`, `outlet_settings`, `plan` seeded with `early_access`, RLS policies, `change_log` | 2d |
 | B0.5 | ✅ `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `TenantTx` helper that sets `app.tenant_id`, lock timeout and deadlock retry, tenant context | 1d |
 | B0.6 | ✅ Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid`; `river` and `orion worker` with the verification email and the token purge (see 4.3.1) | 3d |
-| B0.7 | Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id) | 2d |
+| B0.7 | ✅ Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id), and the tenant audit log it needs (see 4.4.1) | 2d |
 | B0.8 | Device pairing, device token exchange, revocation, `device_code` allocation | 2d |
 | B0.9 | Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests) | 2d |
 | B0.10 | Platform: `operator`, TOTP enrolment and login, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set flag, override entitlement, suspend tenant), each writing to the audit log | 3d |

@@ -75,6 +75,9 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		p.TenantIDs = tenantRequired.TenantIDs
 	case errors.As(err, &forbidden):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "forbidden", "you do not have permission: "+forbidden.Permission
+		if forbidden.Reason != "" {
+			p.Detail = forbidden.Reason
+		}
 	case errors.Is(err, identity.ErrForbidden):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "forbidden", "you do not have permission"
 	case errors.Is(err, kernel.ErrNotFound):

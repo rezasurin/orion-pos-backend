@@ -4,6 +4,7 @@ import (
 	"context"
 
 	openapi "github.com/rezasurin/orion-pos-backend/gen/openapi"
+	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
@@ -17,8 +18,15 @@ func (s *Server) GetMe(ctx context.Context, _ openapi.GetMeRequestObject) (opena
 	if err != nil {
 		return nil, err
 	}
+	access, _ := identity.AccessFrom(ctx)
+	perms := access.Permissions()
+	permissions := make([]string, len(perms))
+	for i, p := range perms {
+		permissions[i] = string(p)
+	}
 	return openapi.GetMe200JSONResponse{
-		IsOwner: me.IsOwner,
+		IsOwner:     me.IsOwner,
+		Permissions: permissions,
 		User: openapi.User{
 			Id: me.User.ID, Email: me.User.Email, EmailVerified: me.User.EmailVerified,
 			Locale: openapi.UserLocale(me.User.Locale),

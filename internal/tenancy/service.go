@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy/db"
 )
@@ -88,8 +89,8 @@ func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool}
 }
 
-// CreateTenant creates a tenant on the early_access plan with its first outlet, in one
-// transaction.
+// CreateTenant creates a tenant on the early_access plan with its system roles and its first
+// outlet, in one transaction.
 func (s *Service) CreateTenant(ctx context.Context, in NewTenant) (Tenant, Outlet, error) {
 	in.Name = strings.TrimSpace(in.Name)
 	if err := validateTenant(in); err != nil {
@@ -109,6 +110,9 @@ func (s *Service) CreateTenant(ctx context.Context, in NewTenant) (Tenant, Outle
 		tenant, err = q.InsertTenant(ctx, db.InsertTenantParams{ID: tenantID, Name: in.Name, Slug: in.Slug})
 		if err != nil {
 			return mapErr(err)
+		}
+		if err = identity.SeedRoles(ctx, tx, tenantID); err != nil {
+			return err
 		}
 		outlet, err = insertOutlet(ctx, q, tenantID, in.Outlet)
 		return err

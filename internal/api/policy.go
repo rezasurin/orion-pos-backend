@@ -59,6 +59,9 @@ func policiesFromSpec(doc *openapi3.T) (map[string]policy, error) {
 				if p.public {
 					return nil, fmt.Errorf("%s: x-permission on a public operation", id)
 				}
+				if !identity.IsPermission(perm) {
+					return nil, fmt.Errorf("%s: x-permission %q is not a known permission", id, perm)
+				}
 				p.permission = perm
 			}
 			if _, dup := out[id]; dup {

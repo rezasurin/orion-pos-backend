@@ -69,6 +69,30 @@ type DB struct {
 	Platform *pgxpool.Pool
 	// AppURL is the connection URL behind App.
 	AppURL string
+	// Queries counts the statements sent over App, so a test can assert that a request makes the
+	// same number of queries for 1 row as for 50 (no N+1).
+	Queries *QueryCounter
+}
+
+// QueryCounter counts the statements a pool sends. It implements pgx.QueryTracer.
+type QueryCounter struct{ n atomic.Int64 }
+
+func (c *QueryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.n.Add(1)
+	return ctx
+}
+
+func (c *QueryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// Count is the number of statements counted so far. BEGIN, COMMIT and the statement that sets the
+// tenant count like any other, which is fine: tests compare counts, they do not pin them.
+func (c *QueryCounter) Count() int64 { return c.n.Load() }
+
+// During runs fn and returns how many statements it sent.
+func (c *QueryCounter) During(fn func()) int64 {
+	before := c.Count()
+	fn()
+	return c.Count() - before
 }
 
 // New returns a fresh database with every migration applied. It is dropped when the test ends.
@@ -87,9 +111,16 @@ func New(t testing.TB) *DB {
 		t.Fatalf("testdb: create database: %v", err)
 	}
 
-	d := &DB{Name: name, AppURL: withUserAndDB(adminURL, appUser, testPassword, name)}
+	d := &DB{Name: name, AppURL: withUserAndDB(adminURL, appUser, testPassword, name), Queries: &QueryCounter{}}
 	d.Owner = mustConnect(t, withDB(adminURL, name))
-	d.App = mustConnect(t, d.AppURL)
+	cfg, err := pgxpool.ParseConfig(d.AppURL)
+	if err != nil {
+		t.Fatalf("testdb: %v", err)
+	}
+	cfg.ConnConfig.Tracer = d.Queries
+	if d.App, err = pgxpool.NewWithConfig(ctx, cfg); err != nil {
+		t.Fatalf("testdb: connect: %v", err)
+	}
 	d.Platform = mustConnect(t, withUserAndDB(adminURL, platformUser, testPassword, name))
 
 	t.Cleanup(func() {

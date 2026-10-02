@@ -3,6 +3,7 @@ package tenancy_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/rezasurin/orion-pos-backend/internal/database"
+	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 	"github.com/rezasurin/orion-pos-backend/internal/testdb"
@@ -54,8 +56,26 @@ func TestCreateTenant(t *testing.T) {
 		t.Errorf("plan = %q, want early_access", plan)
 	}
 
+	// The four system roles are seeded with the tenant, Owner holding every permission.
+	var roles []string
+	rows, err := d.Owner.Query(ctx, `SELECT name FROM role WHERE tenant_id = $1 AND is_system ORDER BY name`, tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roles, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"Cashier", "Kitchen", "Manager", "Owner"}; !slices.Equal(roles, want) {
+		t.Errorf("roles = %v, want %v", roles, want)
+	}
+	var ownerPerms int
+	if err := d.Owner.QueryRow(ctx, `SELECT count(*) FROM role_permission rp JOIN role r ON r.id = rp.role_id
+		WHERE r.tenant_id = $1 AND r.name = 'Owner'`, tenant.ID).Scan(&ownerPerms); err != nil || ownerPerms != len(identity.AllPermissions()) {
+		t.Errorf("Owner has %d permissions (%v), want %d", ownerPerms, err, len(identity.AllPermissions()))
+	}
+
 	// The outlet and its settings are in the change log, numbered 1 and 2.
-	rows, err := d.Owner.Query(ctx,
+	rows, err = d.Owner.Query(ctx,
 		`SELECT seq, entity_type FROM change_log WHERE tenant_id = $1 ORDER BY seq`, tenant.ID)
 	if err != nil {
 		t.Fatal(err)

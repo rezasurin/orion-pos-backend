@@ -33,8 +33,18 @@ func (e *TenantRequiredError) Error() string {
 	return fmt.Sprintf("identity: account belongs to %d businesses; tenant_id is required", len(e.TenantIDs))
 }
 
-// ForbiddenError names the permission that was missing.
-type ForbiddenError struct{ Permission string }
+// ForbiddenError says what the caller may not do: the permission they lack, or a reason (for
+// example that they tried to grant a role stronger than their own).
+type ForbiddenError struct {
+	Permission string
+	Reason     string
+}
 
-func (e *ForbiddenError) Error() string { return "identity: missing permission " + e.Permission }
+func (e *ForbiddenError) Error() string {
+	if e.Reason != "" {
+		return "identity: forbidden: " + e.Reason
+	}
+	return "identity: missing permission " + e.Permission
+}
+
 func (e *ForbiddenError) Unwrap() error { return ErrForbidden }

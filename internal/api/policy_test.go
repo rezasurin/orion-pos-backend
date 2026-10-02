@@ -49,6 +49,7 @@ func TestPoliciesFromSpec(t *testing.T) {
 		"device":               {op: "      security: [{deviceAuth: []}]", want: policy{audience: identity.AudienceDevice}},
 		"permission":           {op: "      x-permission: staff.manage", want: policy{audience: identity.AudienceTenant, permission: "staff.manage"}},
 		"permission on public": {op: "      security: []\n      x-permission: staff.manage", wantErr: "public"},
+		"unknown permission":   {op: "      x-permission: staff.manag", wantErr: "not a known"},
 		"empty permission":     {op: "      x-permission: ''", wantErr: "non-empty"},
 		"numeric permission":   {op: "      x-permission: 5", wantErr: "non-empty"},
 		"two schemes at once":  {op: "      security: [{userAuth: [], deviceAuth: []}]", wantErr: "exactly one"},

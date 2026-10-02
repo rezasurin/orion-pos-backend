@@ -91,6 +91,12 @@ func (e *env) newTenant(t *testing.T, slug string) uuid.UUID {
 	id := kernel.NewID()
 	e.d.Exec(t, `INSERT INTO tenant (id, name, slug, plan_id)
 		SELECT $1, $2, $2, id FROM plan WHERE code = 'early_access'`, id, slug)
+	err := kernel.TenantTx(context.Background(), e.d.App, id, func(tx pgx.Tx) error {
+		return identity.SeedRoles(context.Background(), tx, id)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	return id
 }
 

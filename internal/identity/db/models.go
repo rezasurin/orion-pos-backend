@@ -7,6 +7,7 @@ package db
 import (
 	"database/sql/driver"
 	"fmt"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
@@ -262,6 +263,41 @@ type RiverQueue struct {
 	UpdatedAt time.Time
 }
 
+type Role struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	Name      string
+	IsSystem  bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type RolePermission struct {
+	TenantID   uuid.UUID
+	RoleID     uuid.UUID
+	Permission string
+}
+
+type Staff struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	UserID       *uuid.UUID
+	DisplayName  string
+	PinHash      *string
+	PinRotatedAt *time.Time
+	Active       bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+type StaffOutletRole struct {
+	TenantID  uuid.UUID
+	StaffID   uuid.UUID
+	OutletID  uuid.UUID
+	RoleID    uuid.UUID
+	CreatedAt time.Time
+}
+
 type Tenant struct {
 	ID                 uuid.UUID
 	Name               string
@@ -275,6 +311,19 @@ type Tenant struct {
 	ChangeSeq          int64
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+}
+
+type TenantAuditLog struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	ActorType  string
+	ActorID    *uuid.UUID
+	Action     string
+	TargetType string
+	TargetID   *uuid.UUID
+	Detail     []byte
+	Ip         *netip.Addr
+	CreatedAt  time.Time
 }
 
 type TenantMember struct {

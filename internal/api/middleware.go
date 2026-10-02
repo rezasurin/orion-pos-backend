@@ -36,6 +36,7 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 		}
 		// From here on every database call runs as this tenant.
 		ctx = identity.WithPrincipal(kernel.WithTenant(ctx, p.TenantID), p)
+		ctx = kernel.WithActor(ctx, kernel.Actor{Type: string(p.Type), ID: p.ID(), IP: httpserver.ClientIP(ctx)})
 		httpserver.AddLogAttrs(ctx,
 			slog.String("tenant_id", p.TenantID.String()),
 			slog.String("principal_type", string(p.Type)),
@@ -51,7 +52,7 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 			if err != nil {
 				return nil, err
 			}
-			if pol.permission != "" && !access.IsOwner {
+			if pol.permission != "" && !access.Has(identity.Permission(pol.permission)) {
 				return nil, &identity.ForbiddenError{Permission: pol.permission}
 			}
 			ctx = identity.WithAccess(ctx, access)
