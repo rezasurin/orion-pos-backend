@@ -2,6 +2,7 @@
 // commands.
 //
 //	orion serve                         run the HTTP API
+//	orion worker                        run background jobs (email, token cleanup)
 //	orion migrate up|down|status        manage the database schema
 //	orion version                       print the build version
 package main
@@ -17,9 +18,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+
+	"github.com/rezasurin/orion-pos-backend/internal/api"
 	"github.com/rezasurin/orion-pos-backend/internal/config"
 	"github.com/rezasurin/orion-pos-backend/internal/database"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
+	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/notify"
+	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -29,6 +38,7 @@ const usage = `usage: orion <command>
 
 commands:
   serve                    run the HTTP API
+  worker                   run background jobs
   migrate up|down|status   manage the database schema
   version                  print the build version
 `
@@ -62,6 +72,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "serve":
 		return serve(ctx, cfg, logger)
+	case "worker":
+		return worker(ctx, cfg, logger)
 	case "migrate":
 		return migrate(ctx, cfg, logger, args[1:])
 	default:
@@ -126,9 +138,34 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		defer flush()
 	}
 
+	tenants := tenancy.NewService(pool)
+	// The API only inserts jobs, in the same transaction as the write that needs them; the
+	// worker process runs them. A client without queues is insert-only.
+	jobs, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		return fmt.Errorf("river: %w", err)
+	}
+	tenantKeys, deviceKeys, err := keyrings(cfg, logger)
+	if err != nil {
+		return err
+	}
+	ids, err := identity.NewService(identity.Deps{
+		Pool: pool, Clock: kernel.SystemClock{}, TenantKeys: tenantKeys, DeviceKeys: deviceKeys,
+		Jobs: jobs, Gate: tenants.CheckActive,
+	})
+	if err != nil {
+		return err
+	}
+	apiServer, err := api.New(api.Deps{Identity: ids, Tenancy: tenants, Logger: logger})
+	if err != nil {
+		return err
+	}
+
 	router := httpserver.NewRouter(httpserver.Options{
-		Logger:    logger,
-		UseSentry: useSentry,
+		Logger:     logger,
+		UseSentry:  useSentry,
+		TrustProxy: cfg.TrustProxy,
+		Routes:     apiServer.Routes,
 		Ready: map[string]httpserver.ReadinessCheck{
 			"database": func(ctx context.Context) error { return pool.Ping(ctx) },
 			// The schema may be newer than this binary (expand-then-contract migrations allow a
@@ -172,6 +209,84 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
+	}
+	return nil
+}
+
+// keyrings reads the JWT signing keys. Outside local development they are required; locally,
+// missing keys are replaced by random ones, so tokens stop working at every restart.
+func keyrings(cfg config.Config, logger *slog.Logger) (tenant, device *identity.Keyring, err error) {
+	load := func(name, spec string) (*identity.Keyring, error) {
+		if spec != "" {
+			k, err := identity.ParseKeyring(spec)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", name, err)
+			}
+			return k, nil
+		}
+		if cfg.Env != "local" {
+			return nil, fmt.Errorf("%s is required when ORION_ENV is %s", name, cfg.Env)
+		}
+		logger.Warn("using a random signing key; tokens will not survive a restart", "setting", name)
+		return identity.NewEphemeralKeyring(), nil
+	}
+	if tenant, err = load("ORION_JWT_TENANT_KEYS", cfg.TenantJWTKeys); err != nil {
+		return nil, nil, err
+	}
+	if device, err = load("ORION_JWT_DEVICE_KEYS", cfg.DeviceJWTKeys); err != nil {
+		return nil, nil, err
+	}
+	return tenant, device, nil
+}
+
+// worker runs river's job workers. Jobs span tenants, so it connects as orion_platform.
+func worker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	if cfg.PlatformDatabaseURL == "" {
+		return errors.New("ORION_PLATFORM_DATABASE_URL is required")
+	}
+	if cfg.EmailProvider == "log" && cfg.Env == "production" {
+		return errors.New("ORION_EMAIL_PROVIDER=log would write verification links to the log; choose a real provider for production")
+	}
+	pool, err := database.Connect(ctx, cfg.PlatformDatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := database.CheckPlatformRole(ctx, pool); err != nil {
+		return err
+	}
+
+	workers := river.NewWorkers()
+	idJobs := identity.NewJobs(identity.JobsDeps{
+		Platform:  pool,
+		Sender:    notify.LogSender{Logger: logger},
+		Clock:     kernel.SystemClock{},
+		Logger:    logger,
+		PublicURL: cfg.PublicURL,
+	})
+	idJobs.AddWorkers(workers)
+
+	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
+		Logger:       logger,
+		Queues:       map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
+		Workers:      workers,
+		PeriodicJobs: idJobs.PeriodicJobs(),
+	})
+	if err != nil {
+		return fmt.Errorf("river: %w", err)
+	}
+	if err := client.Start(ctx); err != nil {
+		return fmt.Errorf("river: %w", err)
+	}
+	logger.Info("worker started")
+
+	<-ctx.Done()
+	logger.Info("worker stopping")
+	// Stop lets running jobs finish; a second signal is not needed because the timeout bounds it.
+	stopCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	if err := client.Stop(stopCtx); err != nil {
+		return fmt.Errorf("river stop: %w", err)
 	}
 	return nil
 }

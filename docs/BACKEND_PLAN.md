@@ -181,6 +181,43 @@ Notes:
   see section 4.13 for when they move to Redis):
   login, pairing, PIN-rotation, signup, promo-code redemption.
 
+#### 4.3.1 Sessions as built (B0.6)
+
+- **Tokens carry their tenant.** Refresh tokens, verification links and device secrets are
+  `<prefix>.<tenant id>[.<id>].<256-bit secret>`, and only the SHA-256 of the secret is stored.
+  A lookup therefore runs inside that tenant's row-level security like any other query, with no
+  cross-tenant read to find the row first.
+- **The one pre-tenant lookup is login.** Finding an account by email happens before a tenant is
+  known, so it goes through `auth_find_user(email)`, a `SECURITY DEFINER` function that returns one
+  row. Everything else stays under row-level security: `user_account` is visible to `orion_app`
+  only while the user is a member of the current tenant, and `orion_app` has no `SELECT` on
+  `password_hash` at all. Unknown email and wrong password cost the same (a dummy hash is checked)
+  and give the same error.
+- **Accounts may belong to several tenants.** Login takes an optional `tenant_id`; with several
+  memberships and none given, it answers `409 tenant_required` listing the ids. Names are not
+  listed yet because that would mean reading tenants before one is chosen.
+- **Email must be verified to sign in.** Accounts made by an operator, a seed or a signup that
+  already confirmed the address are created verified.
+- **Rotation and reuse.** A refresh token works once. Presenting a used one revokes its whole
+  family (`token_reused`) and commits that before reporting it. There is no grace window for a
+  lost response, so a client that retries a refresh after a network failure must be prepared to
+  sign in again; add a short grace period if the pilot shows this hurting.
+- **Every request to a user route reloads membership** (one indexed query) and checks the tenant
+  is not suspended (one primary-key read), so removing a member or suspending a business takes
+  effect at once instead of when the access token expires. Both are cache candidates (section
+  4.13) when measured, not before.
+- **Jobs carry ids, never secrets.** The verification job holds `tenant_id` and `user_id`; the
+  worker mints the token, stores its hash and sends the email. `river_job` is readable by
+  `orion_app` (an insert returns the row), so nothing in it may be a credential.
+- **The worker runs as `orion_platform`**, because jobs such as the token purge span tenants.
+- Rate limits, per process: login 20 per address (refill 1 per 3 s) and 5 per account (refill 1
+  per minute); token exchange 30 per address (1 per s); verification email 5 per address and 3
+  per account.
+- Differences from the table in 6.1: emails are stored lowercase with a `CHECK` instead of
+  `citext`; `refresh_token` is tenant-scoped (operators get their own table in B0.10); the OpenAPI
+  document is 3.0.3 because the code generator supports it fully; `POST
+  /v1/auth/resend-verification` was added so an unverified owner is never stuck.
+
 ### 4.4 Roles and permissions
 
 ADR 0002 requires roles from the start.
@@ -717,11 +754,11 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 | Id | Task | Size |
 |---|---|---|
 | B0.1 | ✅ Repo bootstrap: `go.mod`, Makefile, `golangci-lint` (+ `internal/archtest` for module boundaries), GitHub Actions (lint, tests on a testcontainers Postgres, `make gen` + `git diff --exit-code`), Dockerfile, `docker compose` for local Postgres | 2d |
-| B0.2 | ✅ `cmd/orion` with `serve` and `migrate` subcommands (`worker` arrives with `river` in B0.6); config from env; graceful shutdown; `/healthz`, `/readyz`; slog; Sentry | 1d |
-| B0.3 | OpenAPI pipeline: `api/openapi.yaml`, `oapi-codegen` strict server, problem+json errors, CI staleness check, publish TS types (option A in section 3) | 2d |
+| B0.2 | ✅ `cmd/orion` with `serve` and `migrate` subcommands (`worker` arrived with `river` in B0.6); config from env; graceful shutdown; `/healthz`, `/readyz`; slog; Sentry | 1d |
+| B0.3 | ◐ OpenAPI pipeline: `api/openapi.yaml`, `oapi-codegen` strict server, problem+json errors, CI staleness check are done; access rules (`security`, `x-permission`) are read from the spec. **Still open:** publishing the TS types (option A in section 3), which waits on the registry decision | 2d |
 | B0.4 | ✅ First migrations: roles `orion_app` / `orion_platform`, `tenant` with plan fields, `outlet`, `outlet_settings`, `plan` seeded with `early_access`, RLS policies, `change_log` | 2d |
 | B0.5 | ✅ `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `TenantTx` helper that sets `app.tenant_id`, lock timeout and deadlock retry, tenant context | 1d |
-| B0.6 | Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid` | 3d |
+| B0.6 | ✅ Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid`; `river` and `orion worker` with the verification email and the token purge (see 4.3.1) | 3d |
 | B0.7 | Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id) | 2d |
 | B0.8 | Device pairing, device token exchange, revocation, `device_code` allocation | 2d |
 | B0.9 | Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests) | 2d |

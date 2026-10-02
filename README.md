@@ -17,9 +17,10 @@ Requirements: Go (version in `go.mod`), Docker, and `golangci-lint` for `make li
 ```sh
 make db-up   # local Postgres
 make run     # migrate and serve on :8080
+make worker  # background jobs (in a second terminal); emails are written to the log
 make test    # all tests, against a real Postgres started by testcontainers
 make lint
-make gen     # regenerate sqlc code after editing migrations or queries
+make gen     # regenerate sqlc and OpenAPI code after editing migrations, queries or api/openapi.yaml
 ```
 
 See [`deploy/README.md`](./deploy/README.md) for database roles and configuration.
@@ -28,10 +29,15 @@ See [`deploy/README.md`](./deploy/README.md) for database roles and configuratio
 
 | Path | What |
 |---|---|
-| `cmd/orion` | The single binary: `serve`, `migrate up\|down\|status`, `version` |
+| `api` | The OpenAPI contract (`openapi.yaml`), the source of truth for the HTTP API |
+| `gen/openapi` | Go types and server stubs generated from it (do not edit) |
+| `cmd/orion` | The single binary: `serve`, `worker`, `migrate up\|down\|status`, `version` |
 | `migrations` | goose SQL migrations, embedded in the binary |
 | `internal/kernel` | Shared basics: UUIDv7 ids, integer money, clock, tenant transactions |
 | `internal/tenancy` | Tenants, outlets and outlet settings (queries in `queries.sql`, generated into `db/`) |
+| `internal/identity` | Users, sessions (JWT access tokens, rotating refresh tokens), email verification and its background jobs |
+| `internal/notify` | Sending email behind an interface |
+| `internal/api` | The HTTP layer: implements the OpenAPI operations by calling the modules, and enforces each operation's access rule |
 | `internal/database` | Pools, migrations, the app-role safety check, schema tests |
 | `internal/httpserver` | Router, middleware, `/healthz` and `/readyz` |
 | `internal/testdb` | Real Postgres for tests: one container, one fresh database per test |

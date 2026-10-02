@@ -15,6 +15,10 @@ import (
 
 const modulePath = "github.com/rezasurin/orion-pos-backend"
 
+// composition is the one package under internal/ that may import every module: the HTTP layer
+// that implements the OpenAPI operations by calling them. Only cmd/ imports it.
+const composition = modulePath + "/internal/api"
+
 // Business modules from the plan. Packages under internal/ that are not listed here (kernel,
 // config, database, httpserver, testdb) are shared infrastructure.
 var businessModules = map[string]bool{
@@ -65,6 +69,9 @@ func TestModuleBoundaries(t *testing.T) {
 }
 
 func violation(importer, from, imp string) string {
+	if imp == composition && importer != composition && !strings.HasPrefix(importer, modulePath+"/cmd/") && !strings.HasPrefix(importer, composition+"/") {
+		return importer + " imports " + imp + ": only cmd/ may import the composition package"
+	}
 	to := moduleOf(imp)
 	if to == "" || to == from {
 		return ""
@@ -72,7 +79,7 @@ func violation(importer, from, imp string) string {
 	// Another module's root package is its public API.
 	if imp == modulePath+"/internal/"+to {
 		// Infrastructure must not depend on business modules; only cmd/ wires them together.
-		if from == "" && strings.HasPrefix(importer, modulePath+"/internal/") {
+		if from == "" && strings.HasPrefix(importer, modulePath+"/internal/") && importer != composition {
 			return importer + " is infrastructure and must not import module " + to
 		}
 		return ""
@@ -107,6 +114,11 @@ func TestViolation(t *testing.T) {
 		{m + "httpserver", m + "tenancy", true},
 		{modulePath + "/cmd/orion", m + "tenancy", false},
 		{modulePath + "/cmd/orion", m + "tenancy/db", true},
+		{m + "api", m + "identity", false},
+		{m + "api", m + "identity/db", true},
+		{modulePath + "/cmd/orion", m + "api", false},
+		{m + "identity", m + "api", true},
+		{m + "httpserver", m + "api", true},
 	}
 	for _, tt := range tests {
 		got := violation(tt.importer, moduleOf(tt.importer), tt.imp) != ""

@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -15,11 +16,24 @@ import (
 
 func TestMain(m *testing.M) { testdb.Main(m) }
 
-// Tables that legitimately have no tenant_id. Adding a table here needs a reason.
+// Tables that legitimately have no tenant_id but are still isolated by row-level security.
+// Adding a table here needs a reason.
 var globalTables = []string{
-	"goose_db_version", // migration bookkeeping
-	"plan",             // plans are global (ADR 0007)
-	"tenant",           // isolated on its own id instead
+	"tenant",       // isolated on its own id instead
+	"user_account", // a person exists before any tenant; visible only to the tenants they belong to
+}
+
+// Tables outside row-level security altogether. Adding a table here needs a reason.
+func isUnscoped(name string) bool {
+	switch {
+	case name == "goose_db_version": // migration bookkeeping
+		return true
+	case name == "plan": // plans are global (ADR 0007)
+		return true
+	case strings.HasPrefix(name, "river_"): // the job queue; its arguments carry ids only
+		return true
+	}
+	return false
 }
 
 // Every table is either global (listed above) or has tenant_id with row-level security enabled
@@ -57,7 +71,7 @@ func TestEveryTenantTableHasRowLevelSecurity(t *testing.T) {
 	}
 
 	for _, tb := range tables {
-		if tb.Name == "goose_db_version" || tb.Name == "plan" {
+		if isUnscoped(tb.Name) {
 			continue
 		}
 		if !tb.HasTenantID && !slices.Contains(globalTables, tb.Name) {

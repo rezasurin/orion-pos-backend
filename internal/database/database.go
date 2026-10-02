@@ -36,20 +36,30 @@ func Connect(ctx context.Context, url string) (*pgxpool.Pool, error) {
 // superuser, a role with BYPASSRLS, or the owner of the tables. It also requires membership of
 // orion_app, which the policies are written for.
 func CheckAppRole(ctx context.Context, pool *pgxpool.Pool) error {
+	return checkRole(ctx, pool, "orion_app")
+}
+
+// CheckPlatformRole is CheckAppRole for the worker's connection: a member of orion_platform that
+// is not a superuser, does not bypass row-level security and does not own the tables.
+func CheckPlatformRole(ctx context.Context, pool *pgxpool.Pool) error {
+	return checkRole(ctx, pool, "orion_platform")
+}
+
+func checkRole(ctx context.Context, pool *pgxpool.Pool, group string) error {
 	var (
 		user                 string
-		super, bypass, isApp bool
+		super, bypass, isMem bool
 		ownsTenant           bool
 	)
 	err := pool.QueryRow(ctx, `
 		SELECT current_user,
 		       r.rolsuper,
 		       r.rolbypassrls,
-		       pg_has_role(current_user, 'orion_app', 'USAGE'),
+		       pg_has_role(current_user, $1, 'USAGE'),
 		       EXISTS (SELECT 1 FROM pg_tables
 		               WHERE schemaname = 'public' AND tablename = 'tenant' AND tableowner = current_user)
-		FROM pg_roles r WHERE r.rolname = current_user`,
-	).Scan(&user, &super, &bypass, &isApp, &ownsTenant)
+		FROM pg_roles r WHERE r.rolname = current_user`, group,
+	).Scan(&user, &super, &bypass, &isMem, &ownsTenant)
 	if err != nil {
 		return fmt.Errorf("database: check role: %w", err)
 	}
@@ -60,8 +70,8 @@ func CheckAppRole(ctx context.Context, pool *pgxpool.Pool) error {
 		return fmt.Errorf("database: role %q has BYPASSRLS", user)
 	case ownsTenant:
 		return fmt.Errorf("database: role %q owns the tables, which bypasses row-level security", user)
-	case !isApp:
-		return fmt.Errorf("database: role %q is not a member of orion_app", user)
+	case !isMem:
+		return fmt.Errorf("database: role %q is not a member of %s", user, group)
 	}
 	return nil
 }

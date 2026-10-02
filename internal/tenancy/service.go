@@ -27,6 +27,9 @@ var (
 	outletCodePattern = regexp.MustCompile(`^[A-Z0-9]{2,6}$`)
 )
 
+// ErrSuspended means an operator suspended the business. Its users and devices cannot sign in.
+var ErrSuspended = errors.New("tenancy: business is suspended")
+
 // Tenant is a business using Orion.
 type Tenant struct {
 	ID                 uuid.UUID
@@ -125,6 +128,24 @@ func (s *Service) GetTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, er
 		return mapErr(err)
 	})
 	return toTenant(t), err
+}
+
+// CheckActive returns ErrSuspended if an operator suspended the tenant, and ErrNotFound if it does
+// not exist. It is the gate sign-in and request authentication pass through.
+func (s *Service) CheckActive(ctx context.Context, tenantID uuid.UUID) error {
+	var t db.Tenant
+	err := kernel.TenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		var err error
+		t, err = db.New(tx).GetTenant(ctx, tenantID)
+		return mapErr(err)
+	})
+	if err != nil {
+		return err
+	}
+	if t.SuspendedAt != nil {
+		return ErrSuspended
+	}
+	return nil
 }
 
 // ListOutlets returns the tenant's active outlets with their settings, ordered by code.

@@ -1,0 +1,384 @@
+openapi: 3.0.3
+info:
+  title: Orion POS API
+  version: 0.1.0
+  description: |
+    The contract between the Orion backend and its clients (back office, POS, admin console).
+    It is the source of truth: Go types and server stubs are generated from it (`make gen`), and
+    CI fails if the generated code is out of date.
+
+    Conventions (docs/BACKEND_PLAN.md section 4.10):
+
+    - Errors are `application/problem+json` with a stable `code`. Clients switch on `code`, never
+      on `title` or `detail`.
+    - JSON field names are snake_case. Timestamps are RFC 3339 in UTC. Money is integer rupiah.
+    - Ids are UUIDs. List endpoints page with `cursor` and `limit`.
+
+    Extensions used by the server:
+
+    - `x-permission`: the permission a user needs (any outlet) to call the operation. Checked
+      by middleware before the handler runs. Operations that name an outlet check it again
+      for that outlet.
+
+    The spec is OpenAPI 3.0.3 rather than 3.1 because the code generator supports it fully.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+
+servers:
+  - url: /
+
+tags:
+  - name: auth
+    description: Sign in, sessions and email verification
+  - name: tenancy
+    description: The signed-in business and its outlets
+
+security:
+  - userAuth: []
+
+paths:
+  /v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Sign in with email and password
+      description: |
+        Returns an access token (15 minutes) and a refresh token (30 days, single use). An account
+        that belongs to several businesses must say which with `tenant_id`; without it the
+        response is `409 tenant_required` listing the choices.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [auth]
+      summary: Exchange a refresh token for a new session
+      description: |
+        Every refresh token works once. Presenting one a second time revokes the whole session
+        (`token_reused`) and the user must sign in again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: A new session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: End a session
+      description: Revokes the session the refresh token belongs to. Always succeeds, so it can be retried.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '204':
+          description: Signed out
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+
+  /v1/auth/verify-email:
+    post:
+      operationId: verifyEmail
+      tags: [auth]
+      summary: Confirm an email address with the token from the verification email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+      responses:
+        '204':
+          description: Verified
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/resend-verification:
+    post:
+      operationId: resendVerification
+      tags: [auth]
+      summary: Send the verification email again
+      description: |
+        Always answers 202, whether or not the address has an account, so it cannot be used to
+        find out who is registered. Repeats within five minutes are dropped.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+      responses:
+        '202':
+          description: Accepted
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/me:
+    get:
+      operationId: getMe
+      tags: [tenancy]
+      summary: The signed-in user and their business
+      responses:
+        '200':
+          description: The caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/outlets:
+    get:
+      operationId: listOutlets
+      tags: [tenancy]
+      summary: The business's outlets with their settings
+      responses:
+        '200':
+          description: Active outlets, ordered by code
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Outlet'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/outlets/{outletId}:
+    get:
+      operationId: getOutlet
+      tags: [tenancy]
+      summary: One outlet with its settings
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+      responses:
+        '200':
+          description: The outlet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Outlet'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+components:
+  securitySchemes:
+    userAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token of an owner or manager (audience `tenant`), from `POST /v1/auth/login`.
+
+  parameters:
+    OutletId:
+      name: outletId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    ValidationFailed:
+      description: The request is malformed or breaks a rule (`validation_failed`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unauthorized:
+      description: Missing, invalid or expired credentials (`invalid_credentials`, `invalid_token`, `token_reused`).
+      headers:
+        WWW-Authenticate:
+          schema: {type: string}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Forbidden:
+      description: Authenticated but not allowed (`forbidden`, `email_not_verified`, `no_tenant`, `tenant_suspended`, `device_revoked`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    NotFound:
+      description: No such resource in this business (`not_found`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Conflict:
+      description: The request conflicts with current state (`conflict`, `tenant_required`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    TooManyRequests:
+      description: Rate limit hit (`rate_limited`). Retry after the number of seconds in `Retry-After`.
+      headers:
+        Retry-After:
+          schema: {type: integer}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem details with a stable machine-readable `code`.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          description: A URI naming the problem type; `about:blank` when `code` says it all.
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+          description: Stable, language-neutral code. Clients switch on this.
+          example: validation_failed
+        detail:
+          type: string
+          description: Human-readable explanation. Not stable; do not parse it.
+        request_id:
+          type: string
+        tenant_ids:
+          type: array
+          description: With `tenant_required`, the businesses the account can sign in to.
+          items: {type: string, format: uuid}
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, maxLength: 254}
+        password: {type: string, maxLength: 256}
+        tenant_id:
+          type: string
+          format: uuid
+          description: Which business to sign in to, for accounts that belong to several.
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: {type: string, maxLength: 512}
+
+    VerifyEmailRequest:
+      type: object
+      required: [token]
+      properties:
+        token: {type: string, maxLength: 512}
+
+    ResendVerificationRequest:
+      type: object
+      required: [email]
+      properties:
+        email: {type: string, maxLength: 254}
+
+    Session:
+      type: object
+      required: [token_type, access_token, access_expires_at, refresh_token, refresh_expires_at, tenant_id, user_id]
+      properties:
+        token_type: {type: string, enum: [Bearer]}
+        access_token: {type: string}
+        access_expires_at: {type: string, format: date-time}
+        refresh_token: {type: string}
+        refresh_expires_at: {type: string, format: date-time}
+        tenant_id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+
+    User:
+      type: object
+      required: [id, email, email_verified, locale]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string}
+        email_verified: {type: boolean}
+        locale: {type: string, enum: [id-ID, en]}
+
+    TenantSummary:
+      type: object
+      required: [id, name, slug, subscription_status]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        slug: {type: string}
+        subscription_status:
+          type: string
+          enum: [early_access, trialing, active, past_due, grace, read_only, canceled]
+
+    Me:
+      type: object
+      required: [user, tenant, is_owner]
+      properties:
+        user: {$ref: '#/components/schemas/User'}
+        tenant: {$ref: '#/components/schemas/TenantSummary'}
+        is_owner: {type: boolean}
+
+    OutletSettings:
+      type: object
+      required: [timezone, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer]
+      properties:
+        timezone: {type: string, enum: [Asia/Jakarta, Asia/Makassar, Asia/Jayapura]}
+        price_includes_tax: {type: boolean}
+        tax_rate_bp: {type: integer, minimum: 0, maximum: 10000, description: Basis points; 1100 is 11%.}
+        service_charge_rate_bp: {type: integer, minimum: 0, maximum: 10000}
+        service_charge_taxable: {type: boolean}
+        cash_rounding_unit: {type: integer, minimum: 0, description: Rupiah; 0 means no rounding.}
+        cash_rounding_mode: {type: string, enum: [nearest, down, up]}
+        receipt_header: {type: string}
+        receipt_footer: {type: string}
+
+    Outlet:
+      type: object
+      required: [id, code, name, address, settings]
+      properties:
+        id: {type: string, format: uuid}
+        code:
+          type: string
+          description: Two to six uppercase letters or digits; the prefix of receipt numbers.
+        name: {type: string}
+        address: {type: string}
+        settings: {$ref: '#/components/schemas/OutletSettings'}

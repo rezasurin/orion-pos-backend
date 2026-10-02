@@ -23,23 +23,46 @@ type Options struct {
 	Logger    *slog.Logger
 	Ready     map[string]ReadinessCheck
 	UseSentry bool
+	// TrustProxy says the service runs behind one proxy that appends the caller's address to
+	// X-Forwarded-For. See ClientIP.
+	TrustProxy bool
+	// Routes mounts the API on the router, inside the shared middleware.
+	Routes func(chi.Router)
 }
 
 // NewRouter returns the service's root router. Module routes are mounted on it.
 func NewRouter(o Options) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	r.Use(clientIPMiddleware(o.TrustProxy))
 	r.Use(requestLogger(o.Logger))
 	if o.UseSentry {
 		r.Use(sentryhttp.New(sentryhttp.Options{Repanic: true}).Handle)
 	}
 	r.Use(recoverer(o.Logger))
+	r.Use(maxBody(maxBodyBytes))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	r.Get("/readyz", readyz(o.Ready))
+	if o.Routes != nil {
+		o.Routes(r)
+	}
 	return r
+}
+
+// maxBodyBytes bounds every request body. The largest legitimate bodies (a sync push of many
+// events) are far smaller; bulk uploads get their own limit when they exist.
+const maxBodyBytes = 1 << 20
+
+func maxBody(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, n)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func readyz(checks map[string]ReadinessCheck) http.HandlerFunc {
@@ -64,6 +87,8 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
+			ctx, extra := withLogAttrs(r.Context())
+			r = r.WithContext(ctx)
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 			next.ServeHTTP(ww, r)
 
@@ -71,14 +96,16 @@ func requestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			if (r.URL.Path == "/healthz" || r.URL.Path == "/readyz") && ww.Status() < 400 {
 				return
 			}
-			logger.LogAttrs(r.Context(), slog.LevelInfo, "request",
+			attrs := append([]slog.Attr{
 				slog.String("request_id", middleware.GetReqID(r.Context())),
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", ww.Status()),
 				slog.Int("bytes", ww.BytesWritten()),
 				slog.Duration("duration", time.Since(start)),
-			)
+				slog.String("client_ip", ClientIP(r.Context())),
+			}, extra.snapshot()...)
+			logger.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
 		})
 	}
 }
@@ -100,11 +127,7 @@ func recoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 					"request_id", middleware.GetReqID(r.Context()),
 					"panic", rec,
 				)
-				writeJSON(w, http.StatusInternalServerError, map[string]string{
-					"type":  "about:blank",
-					"title": "Internal Server Error",
-					"code":  "internal",
-				})
+				WriteProblem(w, r, Problem{Status: http.StatusInternalServerError, Code: "internal"})
 			}()
 			next.ServeHTTP(w, r)
 		})
