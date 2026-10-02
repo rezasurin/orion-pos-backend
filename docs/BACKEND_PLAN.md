@@ -22,7 +22,8 @@ totals.
 These come from the ADRs and are not re-argued here.
 
 1. **One Go binary, one PostgreSQL database** (ADR 0002). Modules have clear boundaries inside one
-   process. There are no microservices, no Redis and no message broker.
+   process. There are no microservices and no message broker, and no Redis until one of the
+   triggers in section 4.13 applies.
 2. **The OpenAPI document is the contract** (ADR 0003). Server stubs and the TypeScript client are
    generated from it, and CI fails when the generated code is stale.
 3. **Every business table has `tenant_id` from the first migration**, and `outlet_id` where the
@@ -56,7 +57,7 @@ The ADRs suggest these as defaults. This plan adopts them so the choices are mad
 | Logging | `log/slog`, JSON | Request id, tenant id and actor on every line |
 | Errors | Sentry SDK (or self-hosted GlitchTip, same SDK) | |
 | Tests | standard `testing` + `testcontainers-go` for Postgres | Real Postgres, no mocks of the DB |
-| Lint | `golangci-lint` | `govet`, `staticcheck`, `errcheck`, `gosec`, `depguard` (module boundaries) |
+| Lint | `golangci-lint` | `govet`, `staticcheck`, `errcheck`, `gosec`, `errorlint`, `sqlclosecheck`; module boundaries by `internal/archtest` |
 | Email | Transactional provider behind an interface (for example Postmark or Resend) | Needed in Phase 0 for owner verification |
 
 ---
@@ -99,7 +100,8 @@ orion-pos-backend/
 
 - Each module exposes a small Go interface (`internal/<module>/service.go`). Other modules import
   only that interface, never another module's `db` package or tables.
-- `depguard` rules in `golangci-lint` enforce this, since the compiler will not (ADR 0002).
+- A test in `internal/archtest` enforces this from `go list`, since the compiler will not
+  (ADR 0002). It is simpler and stricter than `depguard` rules for this shape of rule.
 - Cross-module writes that must be atomic (for example a sale consuming stock) share one
   transaction through `kernel.Tx`, passed in by the caller. The consuming module still writes only
   its own tables.
@@ -175,7 +177,8 @@ Notes:
   pull. This trade-off should be written up as an ADR.
 - Signing keys: one per audience, from environment/secret store, with a `kid` header so they can
   be rotated.
-- Rate limits (in-process token bucket keyed by IP and account, good enough for one instance):
+- Rate limits (in-process token bucket keyed by IP and account, good enough for one instance;
+  see section 4.13 for when they move to Redis):
   login, pairing, PIN-rotation, signup, promo-code redemption.
 
 ### 4.4 Roles and permissions
@@ -218,7 +221,8 @@ Rules:
 
 - Turning a module off **hides** it: endpoints return `403 module_disabled`, data stays.
 - Limits are checked at the point of creation (new outlet, pairing a device, adding staff), inside
-  the same transaction, with `SELECT ... FOR UPDATE` on the tenant row to avoid races.
+  the same transaction, after `kernel.LockTenant` (`SELECT ... FOR NO KEY UPDATE` on the tenant
+  row) to avoid races. See section 4.12 for the lock order.
 - The snapshot sent to the POS carries `expires_at` (for example 7 days). The POS applies it at the
   next sync and never mid-shift.
 - In-process cache with a 30-second TTL, invalidated on write. One instance means no distributed
@@ -317,6 +321,87 @@ trigger that raises on update or delete as a backstop.
   makes that simpler.
 - Per-device `last_seen_at`, `last_sync_at`, `app_version`, `clock_skew_ms` for support and the
   admin "stopped syncing" view.
+
+### 4.12 Database conventions: indexes, N+1 queries and deadlocks
+
+**Indexes are added when a query needs one**, not for every column or foreign key. Each index is
+justified by a real access path (a list endpoint, the sync pull, a report, a hot FK check), and
+the reason is written next to it in the migration. In Postgres, primary keys and UNIQUE
+constraints already create indexes, so most tenant-scoped lookups are covered by putting
+`tenant_id` first in those constraints. Before an endpoint that lists or aggregates ships, run
+`EXPLAIN (ANALYZE, BUFFERS)` on it against realistic data (for example the seeded demo tenant
+scaled up) and add an index only if the plan shows a scan that grows with the table. Likely
+candidates later: `sale (tenant_id, outlet_id, business_date)` for reports,
+`stock_movement (tenant_id, outlet_id, ingredient_id, occurred_at)` for movement history,
+partial indexes such as `payment_intent (status) WHERE status = 'pending'` for jobs.
+
+**No N+1 queries.**
+
+- A list endpoint makes a fixed number of queries whatever the page size: one query with JOINs
+  for one-to-one data (outlets with their settings), and one batched query per child collection
+  (`WHERE sale_id = ANY($1::uuid[])`) assembled in Go for one-to-many data (sales with lines).
+- Loops that write many rows (sale lines, ledger rows, imported catalog rows) use
+  `pgx.Batch` or `COPY` (`CopyFrom`), not one round trip per row.
+- The pull endpoint loads each entity type for all changed ids in one query.
+- The check: API tests for list endpoints assert the query count stays the same with 1 row and
+  50 rows (a small counting `pgx` tracer in `testdb`), added with the first list endpoint that
+  has children (catalog, Phase 1).
+
+**Deadlocks.**
+
+- **Lock order:** a transaction that records a change (`record_change`) or checks a per-tenant
+  limit calls `kernel.LockTenant` first, before it locks or updates any other row. Every writer
+  for a tenant then queues on the same first lock, so no two transactions can each hold a row the
+  other needs. After that, rows of one table are locked in id order (`ORDER BY id FOR UPDATE`),
+  and tables in a fixed order: tenant, outlet, then the module's own rows.
+- `FOR NO KEY UPDATE` instead of `FOR UPDATE` on the tenant row, so inserts whose foreign keys
+  reference the tenant are never blocked by it.
+- Sync push holds no tenant-wide lock: each event is its own short transaction, and sales are
+  inserts. The stock balance upsert (Phase 3) touches one row per ingredient, so the projector
+  sorts a sale's ingredients by id before writing them.
+- **Short transactions:** no network calls inside a transaction. Gateway calls, emails and
+  other side effects go through jobs inserted in the same transaction.
+- **Bounded waits:** `kernel.TenantTx` sets `lock_timeout = 5s` per transaction, so a stuck
+  lock fails fast instead of exhausting the pool.
+- **Retry:** `kernel.TenantTx` reruns the transaction up to three times on a deadlock (`40P01`) or
+  serialization failure (`40001`), which is why the function it runs must have no side effects
+  outside the database.
+- A test runs 20 concurrent writers on one tenant and checks that change numbers stay gapless
+  with no deadlock (`internal/tenancy`).
+
+### 4.13 Queueing and caching
+
+**Queueing: yes, in PostgreSQL, with `river`** (ADR 0002). Jobs are inserted in the same
+transaction as the business write, so a job exists if and only if the write committed. A
+separate broker (Redis, RabbitMQ, SQS) cannot give that without an outbox table anyway. `river`
+arrives with the first real job, the verification email in B0.6, and `orion worker` starts then.
+Section 8 lists the jobs by phase. The expected load (a few thousand jobs per day per hundred
+tenants) is far inside what a Postgres queue handles.
+
+**Caching: in-process first, Redis only when there is a concrete reason.** With one API
+instance:
+
+| What | Cache | Why it is enough |
+|---|---|---|
+| Entitlements snapshot (4.5) | In-process, 30 s TTL, invalidated on write | Read on most requests, changes rarely |
+| JWT signing keys, plan list | In memory, loaded at start | Tiny and static |
+| Rate limits (4.3) | In-process token buckets | One instance sees every request |
+| Sync pull responses | None | The `change_log` cursor already makes a pull cheap |
+| Reports | None at first; a rollup table (`end_of_day_rollup` job) if `EXPLAIN` shows they are slow | A summary table in Postgres beats a cache that can go stale |
+
+Every cache sits behind a small interface (`Get`, `Set`, `Invalidate`), so switching one to
+Redis is a local change.
+
+**Add Redis when one of these is true:**
+
+- the API runs as **more than one instance**, so rate limits and cache invalidation must be
+  shared (rate limits go first, since per-instance limits multiply);
+- the Phase 4 open-bill fan-out (SSE) spans several instances. Postgres `LISTEN/NOTIFY` should
+  be tried first;
+- profiling shows a hot read that a Postgres index or a summary table cannot fix.
+
+Until then Redis would be one more thing to deploy, secure, back up and monitor for one
+developer, with no measurable gain.
 
 ---
 
@@ -436,7 +521,7 @@ tables), `created_at`, `updated_at` where mutable.
 | Table | Key columns |
 |---|---|
 | `tenant` | `name`, `slug`, plan fields (4.6), `change_seq`, `suspended_at` |
-| `outlet` | `tenant_id`, `name`, `code` (short, for receipts, unique per tenant), `address`, `timezone` |
+| `outlet` | `tenant_id`, `name`, `code` (short, for receipts, unique per tenant), `address` (the timezone lives in `outlet_settings`) |
 | `outlet_settings` | `outlet_id`, tax/service/rounding/time (4.8), `receipt_header`, `receipt_footer` |
 | `user_account` | `email` (citext, unique), `password_hash`, `email_verified_at`, `locale` |
 | `tenant_member` | `tenant_id`, `user_id`, `is_owner` |
@@ -631,11 +716,11 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 
 | Id | Task | Size |
 |---|---|---|
-| B0.1 | Repo bootstrap: `go.mod`, Makefile, `golangci-lint` with `depguard`, GitHub Actions (lint, test with Postgres service, `make gen` + `git diff --exit-code`), Dockerfile, `docker compose` for local Postgres | 2d |
-| B0.2 | `cmd/orion` with `serve`, `migrate`, `worker` subcommands; config from env; graceful shutdown; `/healthz`, `/readyz`; slog; Sentry | 1d |
+| B0.1 | ✅ Repo bootstrap: `go.mod`, Makefile, `golangci-lint` (+ `internal/archtest` for module boundaries), GitHub Actions (lint, tests on a testcontainers Postgres, `make gen` + `git diff --exit-code`), Dockerfile, `docker compose` for local Postgres | 2d |
+| B0.2 | ✅ `cmd/orion` with `serve` and `migrate` subcommands (`worker` arrives with `river` in B0.6); config from env; graceful shutdown; `/healthz`, `/readyz`; slog; Sentry | 1d |
 | B0.3 | OpenAPI pipeline: `api/openapi.yaml`, `oapi-codegen` strict server, problem+json errors, CI staleness check, publish TS types (option A in section 3) | 2d |
-| B0.4 | First migrations: roles `orion_app` / `orion_platform`, `tenant` with plan fields, `outlet`, `outlet_settings`, `plan` seeded with `early_access`, RLS policies, `change_log` | 2d |
-| B0.5 | `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `Tx` helper that sets `app.tenant_id`, tenant context | 1d |
+| B0.4 | ✅ First migrations: roles `orion_app` / `orion_platform`, `tenant` with plan fields, `outlet`, `outlet_settings`, `plan` seeded with `early_access`, RLS policies, `change_log` | 2d |
+| B0.5 | ✅ `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `TenantTx` helper that sets `app.tenant_id`, lock timeout and deadlock retry, tenant context | 1d |
 | B0.6 | Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid` | 3d |
 | B0.7 | Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id) | 2d |
 | B0.8 | Device pairing, device token exchange, revocation, `device_code` allocation | 2d |

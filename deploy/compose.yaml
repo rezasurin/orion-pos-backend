@@ -1,0 +1,22 @@
+# Local development database. `make db-up`, then `make run`.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: orion_owner # owns the schema; used only by `orion migrate`
+      POSTGRES_PASSWORD: orion
+      POSTGRES_DB: orion
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion_owner -d orion"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  pgdata:
