@@ -56,6 +56,11 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 				return nil, &identity.ForbiddenError{Permission: pol.permission}
 			}
 			ctx = identity.WithAccess(ctx, access)
+		case identity.PrincipalDevice:
+			// A revoked device is cut off here, not when its access token expires.
+			if err := s.Identity.CheckDevice(ctx, p); err != nil {
+				return nil, err
+			}
 		default:
 			return nil, identity.ErrInvalidToken
 		}

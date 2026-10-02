@@ -37,15 +37,9 @@ func (s *Server) ListRoles(ctx context.Context, _ openapi.ListRolesRequestObject
 }
 
 func (s *Server) ListStaff(ctx context.Context, req openapi.ListStaffRequestObject) (openapi.ListStaffResponseObject, error) {
-	page := kernel.Page{}
-	if req.Params.Cursor != nil {
-		page.After = *req.Params.Cursor
-	}
-	if req.Params.Limit != nil {
-		if *req.Params.Limit < 1 || *req.Params.Limit > 200 {
-			return nil, fmt.Errorf("%w: limit must be between 1 and 200", kernel.ErrValidation)
-		}
-		page.Limit = *req.Params.Limit
+	page, err := pageFrom(req.Params.Cursor, req.Params.Limit)
+	if err != nil {
+		return nil, err
 	}
 	res, err := s.Identity.ListStaff(ctx, principalFrom(ctx).TenantID, page)
 	if err != nil {
@@ -111,6 +105,21 @@ func (s *Server) SetStaffPin(ctx context.Context, req openapi.SetStaffPinRequest
 		return nil, err
 	}
 	return openapi.SetStaffPin204Response{}, nil
+}
+
+// pageFrom reads the cursor and limit query parameters, rejecting a limit outside 1 to 200.
+func pageFrom(cursor *openapi.Cursor, limit *openapi.Limit) (kernel.Page, error) {
+	var page kernel.Page
+	if cursor != nil {
+		page.After = *cursor
+	}
+	if limit != nil {
+		if *limit < 1 || *limit > 200 {
+			return kernel.Page{}, fmt.Errorf("%w: limit must be between 1 and 200", kernel.ErrValidation)
+		}
+		page.Limit = *limit
+	}
+	return page, nil
 }
 
 func fromOutletRoles(in *[]openapi.OutletRole) []identity.OutletRole {

@@ -35,6 +35,8 @@ tags:
     description: The signed-in business and its outlets
   - name: staff
     description: People who work in the business, their roles and PINs
+  - name: devices
+    description: Pairing POS tablets and what they download
 
 security:
   - userAuth: []
@@ -332,6 +334,123 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /v1/devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: Paired devices, a page at a time
+      description: Owners see every device; others only those at outlets where they can manage devices.
+      x-permission: device.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of devices ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevicePage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/devices/pair:
+    post:
+      operationId: pairDevice
+      tags: [devices]
+      summary: Pair a tablet with an outlet
+      description: |
+        The owner or manager signs in on the tablet, picks an outlet and calls this. The response
+        carries the device secret **once**; the server keeps only a hash, so a lost secret means
+        pairing again. The device code (the middle of receipt numbers) is never reused.
+      x-permission: device.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewDevice'
+      responses:
+        '201':
+          description: Paired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairedDevice'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/devices/token:
+    post:
+      operationId: exchangeDeviceToken
+      tags: [devices]
+      summary: Trade a device secret for an access token
+      description: |
+        Device access tokens last 30 minutes. A revoked device is refused here with
+        `device_revoked`, which is how revocation reaches a tablet that comes back online.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: A device access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSession'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/devices/{deviceId}:
+    delete:
+      operationId: revokeDevice
+      tags: [devices]
+      summary: Revoke a device
+      description: |
+        Its next token exchange fails and requests with a token it already holds fail at once.
+        Revoking twice is not an error. The device code is not reused.
+      x-permission: device.manage
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '204':
+          description: Revoked
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/pos/roster:
+    get:
+      operationId: getRoster
+      tags: [devices]
+      summary: What a paired device needs to start working
+      description: |
+        The device's own record, its outlet and settings, and the active staff who work there with
+        their PIN hashes and permissions, so the tablet can check PINs and enforce permissions
+        offline. PIN hashes are argon2id PHC strings. This is a convenience switch, not a security
+        boundary (docs/BACKEND_PLAN.md section 4.3).
+      security:
+        - deviceAuth: []
+      responses:
+        '200':
+          description: The roster
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Roster'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
 components:
   securitySchemes:
     userAuth:
@@ -339,6 +458,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token of an owner or manager (audience `tenant`), from `POST /v1/auth/login`.
+    deviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token of a paired device (audience `device`), from `POST /v1/devices/token`.
 
   parameters:
     OutletId:
@@ -350,6 +474,13 @@ components:
         format: uuid
     StaffId:
       name: staffId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DeviceId:
+      name: deviceId
       in: path
       required: true
       schema:
@@ -611,3 +742,98 @@ components:
         name: {type: string}
         address: {type: string}
         settings: {$ref: '#/components/schemas/OutletSettings'}
+
+    Device:
+      type: object
+      required: [id, outlet_id, device_code, name, paired_by, paired_at]
+      properties:
+        id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        device_code:
+          type: integer
+          minimum: 1
+          description: The middle of receipt numbers, `{outlet_code}-{device_code}-{counter}`; shown with at least two digits. Unique per outlet and never reused.
+        name: {type: string}
+        paired_by: {type: string, format: uuid}
+        paired_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time, nullable: true}
+        last_seen_at: {type: string, format: date-time, nullable: true}
+        last_sync_at: {type: string, format: date-time, nullable: true}
+        app_version: {type: string, nullable: true}
+        clock_skew_ms:
+          type: integer
+          nullable: true
+          description: Server time minus device time. Positive means the device clock is behind.
+
+    DevicePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Device'}
+        next_cursor: {type: string, format: uuid}
+
+    NewDevice:
+      type: object
+      required: [outlet_id, name]
+      properties:
+        outlet_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60, example: Kasir 1}
+
+    PairedDevice:
+      type: object
+      required: [device, device_secret]
+      properties:
+        device: {$ref: '#/components/schemas/Device'}
+        device_secret:
+          type: string
+          description: Shown once. Store it on the device; the server keeps only a hash.
+
+    DeviceTokenRequest:
+      type: object
+      required: [device_secret]
+      properties:
+        device_secret: {type: string, maxLength: 512}
+        app_version: {type: string, maxLength: 40}
+        client_time:
+          type: string
+          format: date-time
+          description: The device's clock, so the server can record how far off it is.
+
+    DeviceSession:
+      type: object
+      required: [token_type, access_token, access_expires_at, device_id, outlet_id, tenant_id]
+      properties:
+        token_type: {type: string, enum: [Bearer]}
+        access_token: {type: string}
+        access_expires_at: {type: string, format: date-time}
+        device_id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        tenant_id: {type: string, format: uuid}
+
+    RosterStaff:
+      type: object
+      required: [id, display_name, permissions]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        pin_hash:
+          type: string
+          nullable: true
+          description: argon2id in PHC format; null if the person has no PIN yet.
+        permissions:
+          type: array
+          description: What the person may do at this outlet.
+          items: {type: string, example: sale.void}
+
+    Roster:
+      type: object
+      required: [device, outlet, staff, generated_at]
+      properties:
+        device: {$ref: '#/components/schemas/Device'}
+        outlet: {$ref: '#/components/schemas/Outlet'}
+        staff:
+          type: array
+          items: {$ref: '#/components/schemas/RosterStaff'}
+        generated_at: {type: string, format: date-time}

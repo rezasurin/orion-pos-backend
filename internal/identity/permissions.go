@@ -110,6 +110,20 @@ func (a Access) Permissions() []Permission {
 	return out
 }
 
+// OutletsWith returns the outlets where the user holds p, and whether that is every outlet (an
+// owner). Use it to filter a list in SQL instead of in Go, so pages stay full.
+func (a Access) OutletsWith(p Permission) (all bool, outlets []uuid.UUID) {
+	if a.IsOwner {
+		return true, nil
+	}
+	for outlet, perms := range a.byOutlet {
+		if _, ok := perms[p]; ok {
+			outlets = append(outlets, outlet)
+		}
+	}
+	return false, outlets
+}
+
 func (a *Access) grant(outletID uuid.UUID, p Permission) {
 	if a.byOutlet == nil {
 		a.byOutlet = map[uuid.UUID]map[Permission]struct{}{}

@@ -84,7 +84,7 @@ func TestRealSpecPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []string{"Login", "RefreshSession", "Logout", "VerifyEmail", "ResendVerification"} {
+	for _, id := range []string{"Login", "RefreshSession", "Logout", "VerifyEmail", "ResendVerification", "ExchangeDeviceToken"} {
 		if !policies[id].public {
 			t.Errorf("%s should be public", id)
 		}
@@ -93,6 +93,18 @@ func TestRealSpecPolicies(t *testing.T) {
 		if p := policies[id]; p.public || p.audience != identity.AudienceTenant {
 			t.Errorf("%s policy = %+v, want user auth", id, p)
 		}
+	}
+	for id, perm := range map[string]string{
+		"ListRoles": "staff.manage", "ListStaff": "staff.manage", "CreateStaff": "staff.manage",
+		"UpdateStaff": "staff.manage", "SetStaffPin": "staff.manage",
+		"ListDevices": "device.manage", "PairDevice": "device.manage", "RevokeDevice": "device.manage",
+	} {
+		if p := policies[id]; p.public || p.audience != identity.AudienceTenant || p.permission != perm {
+			t.Errorf("%s policy = %+v, want user auth with %s", id, p, perm)
+		}
+	}
+	if p := policies["GetRoster"]; p.public || p.audience != identity.AudienceDevice || p.permission != "" {
+		t.Errorf("GetRoster policy = %+v, want device auth", p)
 	}
 }
 

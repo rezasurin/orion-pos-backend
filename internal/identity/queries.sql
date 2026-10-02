@@ -145,3 +145,66 @@ DELETE FROM refresh_token WHERE expires_at < @before;
 
 -- name: PurgeEmailVerifications :execrows
 DELETE FROM email_verification WHERE expires_at < @before;
+
+-- Devices.
+
+-- name: AllocateDeviceCode :one
+-- Hands out the next code for an outlet. The first call for an outlet inserts the counter; later
+-- calls take its row lock (after the tenant lock, in the fixed order) and increment it.
+INSERT INTO device_code_counter (outlet_id, tenant_id, next_code)
+VALUES (@outlet_id, @tenant_id, 2)
+ON CONFLICT (outlet_id) DO UPDATE SET next_code = device_code_counter.next_code + 1
+RETURNING (next_code - 1)::integer AS code;
+
+-- name: InsertDevice :exec
+INSERT INTO device (id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by)
+VALUES (@id, @tenant_id, @outlet_id, @device_code, @name, @secret_hash, @paired_by);
+
+-- name: GetDevice :one
+SELECT * FROM device WHERE tenant_id = @tenant_id AND id = @id;
+
+-- name: GetDeviceForUpdate :one
+SELECT * FROM device WHERE tenant_id = @tenant_id AND id = @id FOR UPDATE;
+
+-- name: ListDevices :many
+-- Non-owners see only the outlets where they may manage devices.
+SELECT * FROM device
+WHERE tenant_id = @tenant_id AND id > @after
+  AND (@all_outlets::boolean OR outlet_id = ANY(@outlet_ids::uuid[]))
+ORDER BY id
+LIMIT @page_size;
+
+-- name: RevokeDevice :exec
+UPDATE device SET revoked_at = @now, revoked_by = @revoked_by
+WHERE tenant_id = @tenant_id AND id = @id AND revoked_at IS NULL;
+
+-- name: RecordDeviceContact :exec
+-- Stamps a token exchange: when the device was seen, its app version and how far its clock is off.
+UPDATE device SET last_seen_at = @now, app_version = sqlc.narg(app_version), clock_skew_ms = sqlc.narg(clock_skew_ms)
+WHERE tenant_id = @tenant_id AND id = @id;
+
+-- name: TouchDevice :exec
+-- Keeps last_seen_at fresh without a write on every request: the caller passes a stale_before a
+-- minute in the past, so a device seen more recently than that is left alone.
+UPDATE device SET last_seen_at = @now
+WHERE tenant_id = @tenant_id AND id = @id AND (last_seen_at IS NULL OR last_seen_at < @stale_before);
+
+-- name: ListRosterStaff :many
+-- The staff a device at this outlet shows on its lock screen: active staff assigned to the outlet,
+-- and owners (who may act anywhere).
+SELECT s.id, s.display_name, s.pin_hash, coalesce(m.is_owner, false)::boolean AS is_owner
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = @tenant_id AND s.active
+  AND (coalesce(m.is_owner, false) OR EXISTS (
+        SELECT 1 FROM staff_outlet_role sor
+        WHERE sor.tenant_id = s.tenant_id AND sor.staff_id = s.id AND sor.outlet_id = @outlet_id))
+ORDER BY s.display_name, s.id;
+
+-- name: ListRosterPermissions :many
+-- Everyone's permissions at the outlet in one query.
+SELECT sor.staff_id, rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = @tenant_id AND sor.outlet_id = @outlet_id
+ORDER BY sor.staff_id, rp.permission;

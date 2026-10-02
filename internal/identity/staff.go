@@ -539,10 +539,18 @@ func outletsOf(lists ...[]OutletRole) []uuid.UUID {
 
 // mapStaffErr turns a foreign key violation (an outlet or role that does not exist, or one that
 // belongs to another tenant) into a validation error.
-func mapStaffErr(err error) error {
+func mapStaffErr(err error) error { return mapRefErr(err, "outlet or role") }
+
+// mapRefErr turns a reference to something that is not there into a validation error naming what
+// was unknown: a foreign key violation, or a row-level security violation, which is what an upsert
+// onto another tenant's row (a counter keyed by an outlet id from elsewhere) raises. A plain
+// missing-grant error (also 42501) is not mapped, so it still surfaces as the bug it is.
+func mapRefErr(err error, what string) error {
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-		return fmt.Errorf("%w: unknown outlet or role", kernel.ErrValidation)
+	if errors.As(err, &pgErr) {
+		if pgErr.Code == "23503" || (pgErr.Code == "42501" && strings.Contains(pgErr.Message, "row-level security")) {
+			return fmt.Errorf("%w: unknown %s", kernel.ErrValidation, what)
+		}
 	}
 	return mapErr(err)
 }

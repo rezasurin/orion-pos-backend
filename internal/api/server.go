@@ -39,6 +39,7 @@ type Server struct {
 	emailByIP      *httpserver.Limiter
 	emailByAccount *httpserver.Limiter
 	pinByUser      *httpserver.Limiter
+	pairByUser     *httpserver.Limiter
 }
 
 var _ openapi.StrictServerInterface = (*Server)(nil)
@@ -62,6 +63,7 @@ func New(d Deps) (*Server, error) {
 		emailByIP:      httpserver.NewLimiter(10*time.Second, 5),
 		emailByAccount: httpserver.NewLimiter(5*time.Minute, 3),
 		pinByUser:      httpserver.NewLimiter(6*time.Second, 10),
+		pairByUser:     httpserver.NewLimiter(12*time.Second, 5),
 	}, nil
 }
 

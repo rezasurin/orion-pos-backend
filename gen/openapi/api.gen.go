@@ -23,6 +23,21 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for DeviceSessionTokenType.
+const (
+	DeviceSessionTokenTypeBearer DeviceSessionTokenType = "Bearer"
+)
+
+// Valid indicates whether the value is a known member of the DeviceSessionTokenType enum.
+func (e DeviceSessionTokenType) Valid() bool {
+	switch e {
+	case DeviceSessionTokenTypeBearer:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for OutletSettingsCashRoundingMode.
 const (
 	Down    OutletSettingsCashRoundingMode = "down"
@@ -67,13 +82,13 @@ func (e OutletSettingsTimezone) Valid() bool {
 
 // Defines values for SessionTokenType.
 const (
-	Bearer SessionTokenType = "Bearer"
+	SessionTokenTypeBearer SessionTokenType = "Bearer"
 )
 
 // Valid indicates whether the value is a known member of the SessionTokenType enum.
 func (e SessionTokenType) Valid() bool {
 	switch e {
-	case Bearer:
+	case SessionTokenTypeBearer:
 		return true
 	default:
 		return false
@@ -131,6 +146,53 @@ func (e UserLocale) Valid() bool {
 	}
 }
 
+// Device defines model for Device.
+type Device struct {
+	AppVersion *string `json:"app_version,omitempty"`
+
+	// ClockSkewMs Server time minus device time. Positive means the device clock is behind.
+	ClockSkewMs *int `json:"clock_skew_ms,omitempty"`
+
+	// DeviceCode The middle of receipt numbers, `{outlet_code}-{device_code}-{counter}`; shown with at least two digits. Unique per outlet and never reused.
+	DeviceCode int                `json:"device_code"`
+	Id         openapi_types.UUID `json:"id"`
+	LastSeenAt *time.Time         `json:"last_seen_at,omitempty"`
+	LastSyncAt *time.Time         `json:"last_sync_at,omitempty"`
+	Name       string             `json:"name"`
+	OutletId   openapi_types.UUID `json:"outlet_id"`
+	PairedAt   time.Time          `json:"paired_at"`
+	PairedBy   openapi_types.UUID `json:"paired_by"`
+	RevokedAt  *time.Time         `json:"revoked_at,omitempty"`
+}
+
+// DevicePage defines model for DevicePage.
+type DevicePage struct {
+	Items      []Device            `json:"items"`
+	NextCursor *openapi_types.UUID `json:"next_cursor,omitempty"`
+}
+
+// DeviceSession defines model for DeviceSession.
+type DeviceSession struct {
+	AccessExpiresAt time.Time              `json:"access_expires_at"`
+	AccessToken     string                 `json:"access_token"`
+	DeviceId        openapi_types.UUID     `json:"device_id"`
+	OutletId        openapi_types.UUID     `json:"outlet_id"`
+	TenantId        openapi_types.UUID     `json:"tenant_id"`
+	TokenType       DeviceSessionTokenType `json:"token_type"`
+}
+
+// DeviceSessionTokenType defines model for DeviceSession.TokenType.
+type DeviceSessionTokenType string
+
+// DeviceTokenRequest defines model for DeviceTokenRequest.
+type DeviceTokenRequest struct {
+	AppVersion *string `json:"app_version,omitempty"`
+
+	// ClientTime The device's clock, so the server can record how far off it is.
+	ClientTime   *time.Time `json:"client_time,omitempty"`
+	DeviceSecret string     `json:"device_secret"`
+}
+
 // LoginRequest defines model for LoginRequest.
 type LoginRequest struct {
 	Email    string `json:"email"`
@@ -148,6 +210,13 @@ type Me struct {
 	Permissions []string      `json:"permissions"`
 	Tenant      TenantSummary `json:"tenant"`
 	User        User          `json:"user"`
+}
+
+// NewDevice defines model for NewDevice.
+type NewDevice struct {
+	// Name Example: Kasir 1
+	Name     string             `json:"name"`
+	OutletId openapi_types.UUID `json:"outlet_id"`
 }
 
 // NewStaff defines model for NewStaff.
@@ -199,6 +268,14 @@ type OutletSettingsCashRoundingMode string
 // OutletSettingsTimezone defines model for OutletSettings.Timezone.
 type OutletSettingsTimezone string
 
+// PairedDevice defines model for PairedDevice.
+type PairedDevice struct {
+	Device Device `json:"device"`
+
+	// DeviceSecret Shown once. Store it on the device; the server keeps only a hash.
+	DeviceSecret string `json:"device_secret"`
+}
+
 // Problem RFC 9457 problem details with a stable machine-readable `code`.
 type Problem struct {
 	// Code Stable, language-neutral code. Clients switch on this.
@@ -235,6 +312,26 @@ type Role struct {
 	IsSystem    bool               `json:"is_system"`
 	Name        string             `json:"name"`
 	Permissions []string           `json:"permissions"`
+}
+
+// Roster defines model for Roster.
+type Roster struct {
+	Device      Device        `json:"device"`
+	GeneratedAt time.Time     `json:"generated_at"`
+	Outlet      Outlet        `json:"outlet"`
+	Staff       []RosterStaff `json:"staff"`
+}
+
+// RosterStaff defines model for RosterStaff.
+type RosterStaff struct {
+	DisplayName string             `json:"display_name"`
+	Id          openapi_types.UUID `json:"id"`
+
+	// Permissions What the person may do at this outlet.
+	Permissions []string `json:"permissions"`
+
+	// PinHash argon2id in PHC format; null if the person has no PIN yet.
+	PinHash *string `json:"pin_hash,omitempty"`
 }
 
 // Session defines model for Session.
@@ -316,6 +413,9 @@ type VerifyEmailRequest struct {
 // Cursor defines model for Cursor.
 type Cursor = openapi_types.UUID
 
+// DeviceId defines model for DeviceId.
+type DeviceId = openapi_types.UUID
+
 // Limit defines model for Limit.
 type Limit = int
 
@@ -343,6 +443,13 @@ type Unauthorized = Problem
 // ValidationFailed RFC 9457 problem details with a stable machine-readable `code`.
 type ValidationFailed = Problem
 
+// ListDevicesParams defines parameters for ListDevices.
+type ListDevicesParams struct {
+	// Cursor The `next_cursor` of the previous page. Leave out for the first page.
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // ListStaffParams defines parameters for ListStaff.
 type ListStaffParams struct {
 	// Cursor The `next_cursor` of the previous page. Leave out for the first page.
@@ -364,6 +471,12 @@ type ResendVerificationJSONRequestBody = ResendVerificationRequest
 
 // VerifyEmailJSONRequestBody defines body for VerifyEmail for application/json ContentType.
 type VerifyEmailJSONRequestBody = VerifyEmailRequest
+
+// PairDeviceJSONRequestBody defines body for PairDevice for application/json ContentType.
+type PairDeviceJSONRequestBody = NewDevice
+
+// ExchangeDeviceTokenJSONRequestBody defines body for ExchangeDeviceToken for application/json ContentType.
+type ExchangeDeviceTokenJSONRequestBody = DeviceTokenRequest
 
 // CreateStaffJSONRequestBody defines body for CreateStaff for application/json ContentType.
 type CreateStaffJSONRequestBody = NewStaff
@@ -391,6 +504,18 @@ type ServerInterface interface {
 	// VerifyEmail Confirm an email address with the token from the verification email
 	// (POST /v1/auth/verify-email)
 	VerifyEmail(w http.ResponseWriter, r *http.Request)
+	// ListDevices Paired devices, a page at a time
+	// (GET /v1/devices)
+	ListDevices(w http.ResponseWriter, r *http.Request, params ListDevicesParams)
+	// PairDevice Pair a tablet with an outlet
+	// (POST /v1/devices/pair)
+	PairDevice(w http.ResponseWriter, r *http.Request)
+	// ExchangeDeviceToken Trade a device secret for an access token
+	// (POST /v1/devices/token)
+	ExchangeDeviceToken(w http.ResponseWriter, r *http.Request)
+	// RevokeDevice Revoke a device
+	// (DELETE /v1/devices/{deviceId})
+	RevokeDevice(w http.ResponseWriter, r *http.Request, deviceId DeviceId)
 	// GetMe The signed-in user and their business
 	// (GET /v1/me)
 	GetMe(w http.ResponseWriter, r *http.Request)
@@ -400,6 +525,9 @@ type ServerInterface interface {
 	// GetOutlet One outlet with its settings
 	// (GET /v1/outlets/{outletId})
 	GetOutlet(w http.ResponseWriter, r *http.Request, outletId OutletId)
+	// GetRoster What a paired device needs to start working
+	// (GET /v1/pos/roster)
+	GetRoster(w http.ResponseWriter, r *http.Request)
 	// ListRoles The business's roles with their permissions
 	// (GET /v1/roles)
 	ListRoles(w http.ResponseWriter, r *http.Request)
@@ -451,6 +579,30 @@ func (_ Unimplemented) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
+// ListDevices Paired devices, a page at a time
+// (GET /v1/devices)
+func (_ Unimplemented) ListDevices(w http.ResponseWriter, r *http.Request, params ListDevicesParams) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// PairDevice Pair a tablet with an outlet
+// (POST /v1/devices/pair)
+func (_ Unimplemented) PairDevice(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// ExchangeDeviceToken Trade a device secret for an access token
+// (POST /v1/devices/token)
+func (_ Unimplemented) ExchangeDeviceToken(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RevokeDevice Revoke a device
+// (DELETE /v1/devices/{deviceId})
+func (_ Unimplemented) RevokeDevice(w http.ResponseWriter, r *http.Request, deviceId DeviceId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
 // GetMe The signed-in user and their business
 // (GET /v1/me)
 func (_ Unimplemented) GetMe(w http.ResponseWriter, r *http.Request) {
@@ -466,6 +618,12 @@ func (_ Unimplemented) ListOutlets(w http.ResponseWriter, r *http.Request) {
 // GetOutlet One outlet with its settings
 // (GET /v1/outlets/{outletId})
 func (_ Unimplemented) GetOutlet(w http.ResponseWriter, r *http.Request, outletId OutletId) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// GetRoster What a paired device needs to start working
+// (GET /v1/pos/roster)
+func (_ Unimplemented) GetRoster(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -578,6 +736,106 @@ func (siw *ServerInterfaceWrapper) VerifyEmail(w http.ResponseWriter, r *http.Re
 	handler.ServeHTTP(w, r)
 }
 
+// ListDevices operation middleware
+func (siw *ServerInterfaceWrapper) ListDevices(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListDevicesParams
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListDevices(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PairDevice operation middleware
+func (siw *ServerInterfaceWrapper) PairDevice(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PairDevice(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ExchangeDeviceToken operation middleware
+func (siw *ServerInterfaceWrapper) ExchangeDeviceToken(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ExchangeDeviceToken(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeDevice operation middleware
+func (siw *ServerInterfaceWrapper) RevokeDevice(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "deviceId" -------------
+	var deviceId DeviceId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "deviceId", chi.URLParam(r, "deviceId"), &deviceId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "deviceId", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeDevice(w, r, deviceId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetMe operation middleware
 func (siw *ServerInterfaceWrapper) GetMe(w http.ResponseWriter, r *http.Request) {
 
@@ -623,6 +881,20 @@ func (siw *ServerInterfaceWrapper) GetOutlet(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetOutlet(w, r, outletId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRoster operation middleware
+func (siw *ServerInterfaceWrapper) GetRoster(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRoster(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -909,6 +1181,21 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Put(options.BaseURL+"/v1/staff/{staffId}/pin", wrapper.SetStaffPin)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/devices", wrapper.ListDevices)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/devices/pair", wrapper.PairDevice)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/v1/devices/token", wrapper.ExchangeDeviceToken)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/v1/devices/{deviceId}", wrapper.RevokeDevice)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/v1/pos/roster", wrapper.GetRoster)
 	})
 
 	return r
@@ -1293,6 +1580,346 @@ func (response VerifyEmail429ApplicationProblemPlusJSONResponse) VisitVerifyEmai
 	return err
 }
 
+type ListDevicesRequestObject struct {
+	Params ListDevicesParams
+}
+
+type ListDevicesResponseObject interface {
+	VisitListDevicesResponse(w http.ResponseWriter) error
+}
+
+type ListDevices200JSONResponse DevicePage
+
+func (response ListDevices200JSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListDevices400ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response ListDevices400ApplicationProblemPlusJSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListDevices401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ListDevices401ApplicationProblemPlusJSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListDevices403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ListDevices403ApplicationProblemPlusJSONResponse) VisitListDevicesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PairDeviceRequestObject struct {
+	Body *PairDeviceJSONRequestBody
+}
+
+type PairDeviceResponseObject interface {
+	VisitPairDeviceResponse(w http.ResponseWriter) error
+}
+
+type PairDevice201JSONResponse PairedDevice
+
+func (response PairDevice201JSONResponse) VisitPairDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PairDevice400ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response PairDevice400ApplicationProblemPlusJSONResponse) VisitPairDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PairDevice401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response PairDevice401ApplicationProblemPlusJSONResponse) VisitPairDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PairDevice403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response PairDevice403ApplicationProblemPlusJSONResponse) VisitPairDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PairDevice429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response PairDevice429ApplicationProblemPlusJSONResponse) VisitPairDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExchangeDeviceTokenRequestObject struct {
+	Body *ExchangeDeviceTokenJSONRequestBody
+}
+
+type ExchangeDeviceTokenResponseObject interface {
+	VisitExchangeDeviceTokenResponse(w http.ResponseWriter) error
+}
+
+type ExchangeDeviceToken200JSONResponse DeviceSession
+
+func (response ExchangeDeviceToken200JSONResponse) VisitExchangeDeviceTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExchangeDeviceToken400ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response ExchangeDeviceToken400ApplicationProblemPlusJSONResponse) VisitExchangeDeviceTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExchangeDeviceToken401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response ExchangeDeviceToken401ApplicationProblemPlusJSONResponse) VisitExchangeDeviceTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExchangeDeviceToken403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response ExchangeDeviceToken403ApplicationProblemPlusJSONResponse) VisitExchangeDeviceTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExchangeDeviceToken429ApplicationProblemPlusJSONResponse struct {
+	TooManyRequestsApplicationProblemPlusJSONResponse
+}
+
+func (response ExchangeDeviceToken429ApplicationProblemPlusJSONResponse) VisitExchangeDeviceTokenResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.RetryAfter != nil {
+		w.Header().Set("Retry-After", fmt.Sprint(*response.Headers.RetryAfter))
+	}
+	w.WriteHeader(429)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeDeviceRequestObject struct {
+	DeviceId DeviceId `json:"deviceId"`
+}
+
+type RevokeDeviceResponseObject interface {
+	VisitRevokeDeviceResponse(w http.ResponseWriter) error
+}
+
+type RevokeDevice204Response struct {
+}
+
+func (response RevokeDevice204Response) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokeDevice400ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeDevice400ApplicationProblemPlusJSONResponse) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeDevice401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeDevice401ApplicationProblemPlusJSONResponse) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeDevice403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeDevice403ApplicationProblemPlusJSONResponse) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeDevice404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeDevice404ApplicationProblemPlusJSONResponse) VisitRevokeDeviceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetMeRequestObject struct {
 }
 
@@ -1476,6 +2103,62 @@ func (response GetOutlet404ApplicationProblemPlusJSONResponse) VisitGetOutletRes
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRosterRequestObject struct {
+}
+
+type GetRosterResponseObject interface {
+	VisitGetRosterResponse(w http.ResponseWriter) error
+}
+
+type GetRoster200JSONResponse Roster
+
+func (response GetRoster200JSONResponse) VisitGetRosterResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRoster401ApplicationProblemPlusJSONResponse struct {
+	UnauthorizedApplicationProblemPlusJSONResponse
+}
+
+func (response GetRoster401ApplicationProblemPlusJSONResponse) VisitGetRosterResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	if response.Headers.WWWAuthenticate != nil {
+		w.Header().Set("WWW-Authenticate", fmt.Sprint(*response.Headers.WWWAuthenticate))
+	}
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRoster403ApplicationProblemPlusJSONResponse struct {
+	ForbiddenApplicationProblemPlusJSONResponse
+}
+
+func (response GetRoster403ApplicationProblemPlusJSONResponse) VisitGetRosterResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -1913,6 +2596,18 @@ type StrictServerInterface interface {
 	// VerifyEmail Confirm an email address with the token from the verification email
 	// (POST /v1/auth/verify-email)
 	VerifyEmail(ctx context.Context, request VerifyEmailRequestObject) (VerifyEmailResponseObject, error)
+	// ListDevices Paired devices, a page at a time
+	// (GET /v1/devices)
+	ListDevices(ctx context.Context, request ListDevicesRequestObject) (ListDevicesResponseObject, error)
+	// PairDevice Pair a tablet with an outlet
+	// (POST /v1/devices/pair)
+	PairDevice(ctx context.Context, request PairDeviceRequestObject) (PairDeviceResponseObject, error)
+	// ExchangeDeviceToken Trade a device secret for an access token
+	// (POST /v1/devices/token)
+	ExchangeDeviceToken(ctx context.Context, request ExchangeDeviceTokenRequestObject) (ExchangeDeviceTokenResponseObject, error)
+	// RevokeDevice Revoke a device
+	// (DELETE /v1/devices/{deviceId})
+	RevokeDevice(ctx context.Context, request RevokeDeviceRequestObject) (RevokeDeviceResponseObject, error)
 	// GetMe The signed-in user and their business
 	// (GET /v1/me)
 	GetMe(ctx context.Context, request GetMeRequestObject) (GetMeResponseObject, error)
@@ -1922,6 +2617,9 @@ type StrictServerInterface interface {
 	// GetOutlet One outlet with its settings
 	// (GET /v1/outlets/{outletId})
 	GetOutlet(ctx context.Context, request GetOutletRequestObject) (GetOutletResponseObject, error)
+	// GetRoster What a paired device needs to start working
+	// (GET /v1/pos/roster)
+	GetRoster(ctx context.Context, request GetRosterRequestObject) (GetRosterResponseObject, error)
 	// ListRoles The business's roles with their permissions
 	// (GET /v1/roles)
 	ListRoles(ctx context.Context, request ListRolesRequestObject) (ListRolesResponseObject, error)
@@ -2133,6 +2831,120 @@ func (sh *strictHandler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ListDevices operation middleware
+func (sh *strictHandler) ListDevices(w http.ResponseWriter, r *http.Request, params ListDevicesParams) {
+	var request ListDevicesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListDevices(ctx, request.(ListDevicesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListDevices")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListDevicesResponseObject); ok {
+		if err := validResponse.VisitListDevicesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PairDevice operation middleware
+func (sh *strictHandler) PairDevice(w http.ResponseWriter, r *http.Request) {
+	var request PairDeviceRequestObject
+
+	var body PairDeviceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PairDevice(ctx, request.(PairDeviceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PairDevice")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PairDeviceResponseObject); ok {
+		if err := validResponse.VisitPairDeviceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ExchangeDeviceToken operation middleware
+func (sh *strictHandler) ExchangeDeviceToken(w http.ResponseWriter, r *http.Request) {
+	var request ExchangeDeviceTokenRequestObject
+
+	var body ExchangeDeviceTokenJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ExchangeDeviceToken(ctx, request.(ExchangeDeviceTokenRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ExchangeDeviceToken")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ExchangeDeviceTokenResponseObject); ok {
+		if err := validResponse.VisitExchangeDeviceTokenResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeDevice operation middleware
+func (sh *strictHandler) RevokeDevice(w http.ResponseWriter, r *http.Request, deviceId DeviceId) {
+	var request RevokeDeviceRequestObject
+
+	request.DeviceId = deviceId
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeDevice(ctx, request.(RevokeDeviceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeDevice")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeDeviceResponseObject); ok {
+		if err := validResponse.VisitRevokeDeviceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetMe operation middleware
 func (sh *strictHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	var request GetMeRequestObject
@@ -2200,6 +3012,30 @@ func (sh *strictHandler) GetOutlet(w http.ResponseWriter, r *http.Request, outle
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetOutletResponseObject); ok {
 		if err := validResponse.VisitGetOutletResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetRoster operation middleware
+func (sh *strictHandler) GetRoster(w http.ResponseWriter, r *http.Request) {
+	var request GetRosterRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRoster(ctx, request.(GetRosterRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRoster")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRosterResponseObject); ok {
+		if err := validResponse.VisitGetRosterResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -2359,76 +3195,95 @@ func (sh *strictHandler) SetStaffPin(w http.ResponseWriter, r *http.Request, sta
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"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",
-	"ROtfnL11a/+iIrn9fPuvAQA=",
+	"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",
+	"qr6DX1zrmb9+j5fuZzJTPF39Ur6JFl8X/z8A",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

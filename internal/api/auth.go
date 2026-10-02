@@ -89,7 +89,7 @@ func (s *Server) ResendVerification(ctx context.Context, req openapi.ResendVerif
 
 func toSession(s identity.Session) openapi.Session {
 	return openapi.Session{
-		TokenType:        openapi.Bearer,
+		TokenType:        openapi.SessionTokenTypeBearer,
 		AccessToken:      s.AccessToken,
 		AccessExpiresAt:  s.AccessExpiresAt,
 		RefreshToken:     s.RefreshToken,

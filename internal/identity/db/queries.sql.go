@@ -12,6 +12,29 @@ import (
 	"github.com/google/uuid"
 )
 
+const allocateDeviceCode = `-- name: AllocateDeviceCode :one
+
+INSERT INTO device_code_counter (outlet_id, tenant_id, next_code)
+VALUES ($1, $2, 2)
+ON CONFLICT (outlet_id) DO UPDATE SET next_code = device_code_counter.next_code + 1
+RETURNING (next_code - 1)::integer AS code
+`
+
+type AllocateDeviceCodeParams struct {
+	OutletID uuid.UUID
+	TenantID uuid.UUID
+}
+
+// Devices.
+// Hands out the next code for an outlet. The first call for an outlet inserts the counter; later
+// calls take its row lock (after the tenant lock, in the fixed order) and increment it.
+func (q *Queries) AllocateDeviceCode(ctx context.Context, arg AllocateDeviceCodeParams) (int32, error) {
+	row := q.db.QueryRow(ctx, allocateDeviceCode, arg.OutletID, arg.TenantID)
+	var code int32
+	err := row.Scan(&code)
+	return code, err
+}
+
 const deleteStaffOutletRoles = `-- name: DeleteStaffOutletRoles :exec
 DELETE FROM staff_outlet_role
 WHERE tenant_id = $1 AND staff_id = $2
@@ -37,6 +60,72 @@ func (q *Queries) DeleteStaffOutletRoles(ctx context.Context, arg DeleteStaffOut
 		arg.RoleIds,
 	)
 	return err
+}
+
+const getDevice = `-- name: GetDevice :one
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device WHERE tenant_id = $1 AND id = $2
+`
+
+type GetDeviceParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) GetDevice(ctx context.Context, arg GetDeviceParams) (Device, error) {
+	row := q.db.QueryRow(ctx, getDevice, arg.TenantID, arg.ID)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.DeviceCode,
+		&i.Name,
+		&i.SecretHash,
+		&i.PairedBy,
+		&i.PairedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.LastSeenAt,
+		&i.LastSyncAt,
+		&i.AppVersion,
+		&i.ClockSkewMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getDeviceForUpdate = `-- name: GetDeviceForUpdate :one
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+`
+
+type GetDeviceForUpdateParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) GetDeviceForUpdate(ctx context.Context, arg GetDeviceForUpdateParams) (Device, error) {
+	row := q.db.QueryRow(ctx, getDeviceForUpdate, arg.TenantID, arg.ID)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.DeviceCode,
+		&i.Name,
+		&i.SecretHash,
+		&i.PairedBy,
+		&i.PairedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.LastSeenAt,
+		&i.LastSyncAt,
+		&i.AppVersion,
+		&i.ClockSkewMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
 
 const getMember = `-- name: GetMember :one
@@ -276,6 +365,34 @@ func (q *Queries) GetVerificationForUpdate(ctx context.Context, arg GetVerificat
 	return i, err
 }
 
+const insertDevice = `-- name: InsertDevice :exec
+INSERT INTO device (id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+`
+
+type InsertDeviceParams struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	OutletID   uuid.UUID
+	DeviceCode int32
+	Name       string
+	SecretHash []byte
+	PairedBy   uuid.UUID
+}
+
+func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) error {
+	_, err := q.db.Exec(ctx, insertDevice,
+		arg.ID,
+		arg.TenantID,
+		arg.OutletID,
+		arg.DeviceCode,
+		arg.Name,
+		arg.SecretHash,
+		arg.PairedBy,
+	)
+	return err
+}
+
 const insertEmailVerification = `-- name: InsertEmailVerification :exec
 
 INSERT INTO email_verification (id, tenant_id, user_id, token_hash, expires_at)
@@ -459,6 +576,66 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) error {
 	return err
 }
 
+const listDevices = `-- name: ListDevices :many
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device
+WHERE tenant_id = $1 AND id > $2
+  AND ($3::boolean OR outlet_id = ANY($4::uuid[]))
+ORDER BY id
+LIMIT $5
+`
+
+type ListDevicesParams struct {
+	TenantID   uuid.UUID
+	After      uuid.UUID
+	AllOutlets bool
+	OutletIds  []uuid.UUID
+	PageSize   int32
+}
+
+// Non-owners see only the outlets where they may manage devices.
+func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Device, error) {
+	rows, err := q.db.Query(ctx, listDevices,
+		arg.TenantID,
+		arg.After,
+		arg.AllOutlets,
+		arg.OutletIds,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Device
+	for rows.Next() {
+		var i Device
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OutletID,
+			&i.DeviceCode,
+			&i.Name,
+			&i.SecretHash,
+			&i.PairedBy,
+			&i.PairedAt,
+			&i.RevokedAt,
+			&i.RevokedBy,
+			&i.LastSeenAt,
+			&i.LastSyncAt,
+			&i.AppVersion,
+			&i.ClockSkewMs,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRolePermissions = `-- name: ListRolePermissions :many
 SELECT role_id, permission FROM role_permission
 WHERE tenant_id = $1 AND role_id = ANY($2::uuid[])
@@ -552,6 +729,95 @@ func (q *Queries) ListRolesByIDs(ctx context.Context, arg ListRolesByIDsParams) 
 			&i.IsSystem,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRosterPermissions = `-- name: ListRosterPermissions :many
+SELECT sor.staff_id, rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = $1 AND sor.outlet_id = $2
+ORDER BY sor.staff_id, rp.permission
+`
+
+type ListRosterPermissionsParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+}
+
+type ListRosterPermissionsRow struct {
+	StaffID    uuid.UUID
+	Permission string
+}
+
+// Everyone's permissions at the outlet in one query.
+func (q *Queries) ListRosterPermissions(ctx context.Context, arg ListRosterPermissionsParams) ([]ListRosterPermissionsRow, error) {
+	rows, err := q.db.Query(ctx, listRosterPermissions, arg.TenantID, arg.OutletID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRosterPermissionsRow
+	for rows.Next() {
+		var i ListRosterPermissionsRow
+		if err := rows.Scan(&i.StaffID, &i.Permission); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRosterStaff = `-- name: ListRosterStaff :many
+SELECT s.id, s.display_name, s.pin_hash, coalesce(m.is_owner, false)::boolean AS is_owner
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = $1 AND s.active
+  AND (coalesce(m.is_owner, false) OR EXISTS (
+        SELECT 1 FROM staff_outlet_role sor
+        WHERE sor.tenant_id = s.tenant_id AND sor.staff_id = s.id AND sor.outlet_id = $2))
+ORDER BY s.display_name, s.id
+`
+
+type ListRosterStaffParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+}
+
+type ListRosterStaffRow struct {
+	ID          uuid.UUID
+	DisplayName string
+	PinHash     *string
+	IsOwner     bool
+}
+
+// The staff a device at this outlet shows on its lock screen: active staff assigned to the outlet,
+// and owners (who may act anywhere).
+func (q *Queries) ListRosterStaff(ctx context.Context, arg ListRosterStaffParams) ([]ListRosterStaffRow, error) {
+	rows, err := q.db.Query(ctx, listRosterStaff, arg.TenantID, arg.OutletID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRosterStaffRow
+	for rows.Next() {
+		var i ListRosterStaffRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DisplayName,
+			&i.PinHash,
+			&i.IsOwner,
 		); err != nil {
 			return nil, err
 		}
@@ -723,6 +989,53 @@ func (q *Queries) PurgeRefreshTokens(ctx context.Context, before time.Time) (int
 	return result.RowsAffected(), nil
 }
 
+const recordDeviceContact = `-- name: RecordDeviceContact :exec
+UPDATE device SET last_seen_at = $1, app_version = $2, clock_skew_ms = $3
+WHERE tenant_id = $4 AND id = $5
+`
+
+type RecordDeviceContactParams struct {
+	Now         *time.Time
+	AppVersion  *string
+	ClockSkewMs *int32
+	TenantID    uuid.UUID
+	ID          uuid.UUID
+}
+
+// Stamps a token exchange: when the device was seen, its app version and how far its clock is off.
+func (q *Queries) RecordDeviceContact(ctx context.Context, arg RecordDeviceContactParams) error {
+	_, err := q.db.Exec(ctx, recordDeviceContact,
+		arg.Now,
+		arg.AppVersion,
+		arg.ClockSkewMs,
+		arg.TenantID,
+		arg.ID,
+	)
+	return err
+}
+
+const revokeDevice = `-- name: RevokeDevice :exec
+UPDATE device SET revoked_at = $1, revoked_by = $2
+WHERE tenant_id = $3 AND id = $4 AND revoked_at IS NULL
+`
+
+type RevokeDeviceParams struct {
+	Now       *time.Time
+	RevokedBy *uuid.UUID
+	TenantID  uuid.UUID
+	ID        uuid.UUID
+}
+
+func (q *Queries) RevokeDevice(ctx context.Context, arg RevokeDeviceParams) error {
+	_, err := q.db.Exec(ctx, revokeDevice,
+		arg.Now,
+		arg.RevokedBy,
+		arg.TenantID,
+		arg.ID,
+	)
+	return err
+}
+
 const revokeRefreshFamily = `-- name: RevokeRefreshFamily :exec
 UPDATE refresh_token SET revoked_at = $1
 WHERE id IN (
@@ -763,6 +1076,30 @@ func (q *Queries) SetStaffPIN(ctx context.Context, arg SetStaffPINParams) error 
 		arg.Now,
 		arg.TenantID,
 		arg.ID,
+	)
+	return err
+}
+
+const touchDevice = `-- name: TouchDevice :exec
+UPDATE device SET last_seen_at = $1
+WHERE tenant_id = $2 AND id = $3 AND (last_seen_at IS NULL OR last_seen_at < $4)
+`
+
+type TouchDeviceParams struct {
+	Now         *time.Time
+	TenantID    uuid.UUID
+	ID          uuid.UUID
+	StaleBefore *time.Time
+}
+
+// Keeps last_seen_at fresh without a write on every request: the caller passes a stale_before a
+// minute in the past, so a device seen more recently than that is left alone.
+func (q *Queries) TouchDevice(ctx context.Context, arg TouchDeviceParams) error {
+	_, err := q.db.Exec(ctx, touchDevice,
+		arg.Now,
+		arg.TenantID,
+		arg.ID,
+		arg.StaleBefore,
 	)
 	return err
 }

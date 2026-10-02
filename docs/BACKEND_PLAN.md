@@ -218,6 +218,30 @@ Notes:
   document is 3.0.3 because the code generator supports it fully; `POST
   /v1/auth/resend-verification` was added so an unverified owner is never stuck.
 
+#### 4.3.2 Device pairing as built (B0.8)
+
+- **Pair.** A user with `device.manage` at an outlet calls `POST /v1/devices/pair`. The response
+  carries the secret once, as `dk1.<tenant id>.<device id>.<256-bit secret>`; only its SHA-256 is
+  stored, so a lost secret means pairing again. Pairing, like every limit check, runs after
+  `LockTenant` (the check itself arrives with B0.9).
+- **Device codes** come from a per-outlet counter (`device_code_counter`, an upsert), not
+  `max()+1`, so revoking the newest device never frees its code. Receipts show it with at least two
+  digits, `{outlet}-{code:02d}-{counter}`.
+- **Exchange.** `POST /v1/devices/token` trades the secret for a 30 minute access token
+  (`aud=device`, claims `tid`, `did`, `oid`) signed with the device key. It also records the app
+  version and the clock skew (server minus device) for the "stopped syncing" support view.
+- **Revocation is immediate.** Every request to a device route reloads the device (one primary-key
+  read, with `last_seen_at` refreshed at most once a minute), so a revoked device fails with
+  `device_revoked` while its token is still valid, and cannot get a new one. This is stricter than
+  ADR 0004 requires; the offline tablet itself can still sell until it reconnects.
+- **Roster.** `GET /v1/pos/roster` returns the device, its outlet with settings, and the active
+  staff assigned to that outlet plus owners, each with their PIN hash (null until set) and their
+  permissions at that outlet. Two queries however many people there are. The sync pull (Phase 1)
+  will deliver later changes to the same data; the roster is the first load.
+- Device access tokens cannot call user routes and user tokens cannot call device routes: they use
+  different keys and audiences.
+- Revoking and pairing are written to `tenant_audit_log`; a token exchange is not (too frequent).
+
 ### 4.4 Roles and permissions
 
 ADR 0002 requires roles from the start.
@@ -792,7 +816,7 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 | B0.5 | ✅ `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `TenantTx` helper that sets `app.tenant_id`, lock timeout and deadlock retry, tenant context | 1d |
 | B0.6 | ✅ Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid`; `river` and `orion worker` with the verification email and the token purge (see 4.3.1) | 3d |
 | B0.7 | ✅ Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id), and the tenant audit log it needs (see 4.4.1) | 2d |
-| B0.8 | Device pairing, device token exchange, revocation, `device_code` allocation | 2d |
+| B0.8 | ✅ Device pairing, device token exchange, revocation, `device_code` allocation, and `GET /v1/pos/roster` (the roster download in the Phase 0 exit; see 4.3.2) | 2d |
 | B0.9 | Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests) | 2d |
 | B0.10 | Platform: `operator`, TOTP enrolment and login, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set flag, override entitlement, suspend tenant), each writing to the audit log | 3d |
 | B0.11 | Tenant isolation test suite (two tenants, every endpoint) | 1d |

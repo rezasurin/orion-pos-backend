@@ -162,6 +162,31 @@ type ChangeLog struct {
 	CreatedAt  time.Time
 }
 
+type Device struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	OutletID    uuid.UUID
+	DeviceCode  int32
+	Name        string
+	SecretHash  []byte
+	PairedBy    uuid.UUID
+	PairedAt    time.Time
+	RevokedAt   *time.Time
+	RevokedBy   *uuid.UUID
+	LastSeenAt  *time.Time
+	LastSyncAt  *time.Time
+	AppVersion  *string
+	ClockSkewMs *int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type DeviceCodeCounter struct {
+	OutletID uuid.UUID
+	TenantID uuid.UUID
+	NextCode int32
+}
+
 type EmailVerification struct {
 	ID        uuid.UUID
 	TenantID  uuid.UUID
