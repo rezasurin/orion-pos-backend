@@ -1,0 +1,818 @@
+# Orion POS backend: implementation plan
+
+This is the backend plan behind the product roadmap and the architecture records (ADRs). Both
+currently live in the back-office repo:
+
+- Roadmap: [`Orion-POS/Inventory-React/docs/ROADMAP.md`](https://github.com/Orion-POS/Inventory-React/blob/dev/docs/ROADMAP.md)
+- ADRs: [`docs/adr`](https://github.com/Orion-POS/Inventory-React/tree/dev/docs/adr), referred to
+  below as ADR 0002 to ADR 0008
+
+The roadmap says *what* ships in each phase. This document says *how* the Go service delivers it:
+the repository layout, the cross-cutting rules every module follows, the data model, the API, and
+a task list for each phase with exit criteria.
+
+Estimates are in full-time weeks for one developer, as in the roadmap. They cover backend work only
+and run in parallel with front-end work in the same phase, so they do not add up to the roadmap
+totals.
+
+---
+
+## 1. Principles
+
+These come from the ADRs and are not re-argued here.
+
+1. **One Go binary, one PostgreSQL database** (ADR 0002). Modules have clear boundaries inside one
+   process. There are no microservices, no Redis and no message broker.
+2. **The OpenAPI document is the contract** (ADR 0003). Server stubs and the TypeScript client are
+   generated from it, and CI fails when the generated code is stale.
+3. **Every business table has `tenant_id` from the first migration**, and `outlet_id` where the
+   row belongs to an outlet (ADR 0002).
+4. **The POS is offline-first.** The server must accept the same event twice with no effect, and
+   sales and payments are append-only (ADR 0004).
+5. **Money is integer rupiah, and stock is an append-only ledger** (ADR 0006).
+6. **Entitlements are checked in one place** (ADR 0007, ADR 0008). There is no billing code
+   before Phase 5.
+7. **Operators and tenants are separate**, with separate accounts, token audiences, route
+   prefixes and an audit log (ADR 0008).
+
+---
+
+## 2. Tech stack
+
+The ADRs suggest these as defaults. This plan adopts them so the choices are made once.
+
+| Concern | Choice | Notes |
+|---|---|---|
+| Language | Go, latest stable, pinned in `go.mod` and CI | Upgrade on each minor release |
+| HTTP router | `chi` | Plays well with `oapi-codegen` and standard `net/http` middleware |
+| Contract | OpenAPI 3.1 + `oapi-codegen` (strict server) | Typed request/response objects per operation |
+| DB driver | `pgx` v5 | Pool via `pgxpool` |
+| Queries | `sqlc` | SQL in `.sql` files, generated Go in `internal/<module>/db` |
+| Migrations | `goose` | SQL migrations, embedded in the binary, run by `orion migrate` |
+| Background jobs | `river` | Postgres-backed; same transaction as the business write |
+| IDs | UUIDv7 (`github.com/google/uuid`) | Time-ordered; client-generated for synced events |
+| Password / PIN hashing | `argon2id` (`golang.org/x/crypto`) | |
+| TOTP | `github.com/pquerna/otp` | Operator 2FA |
+| Logging | `log/slog`, JSON | Request id, tenant id and actor on every line |
+| Errors | Sentry SDK (or self-hosted GlitchTip, same SDK) | |
+| Tests | standard `testing` + `testcontainers-go` for Postgres | Real Postgres, no mocks of the DB |
+| Lint | `golangci-lint` | `govet`, `staticcheck`, `errcheck`, `gosec`, `depguard` (module boundaries) |
+| Email | Transactional provider behind an interface (for example Postmark or Resend) | Needed in Phase 0 for owner verification |
+
+---
+
+## 3. Repository layout
+
+```
+orion-pos-backend/
+├── api/
+│   ├── openapi.yaml            # source of truth (split into files under api/paths, api/schemas if large)
+│   └── oapi-codegen.yaml
+├── cmd/
+│   └── orion/                  # single binary: `orion serve | migrate | worker | admin ...`
+├── internal/
+│   ├── platform/               # operator accounts, admin endpoints, audit log (ADR 0008)
+│   ├── tenancy/                # tenants, outlets, signup
+│   ├── identity/               # users, staff, roles, permissions, sessions, devices, PINs
+│   ├── entitlements/           # plans, flags, overrides, resolution (ADR 0007/0008)
+│   ├── catalog/                # items, variants, modifiers, categories, prices, versioning
+│   ├── sales/                  # sales, lines, discounts, voids, refunds, shifts, cash drawer
+│   ├── payments/               # cash, manual QRIS, gateway QRIS/e-wallets, webhooks
+│   ├── inventory/              # ingredients, recipes, UoM, ledger, opname, waste, purchasing
+│   ├── sync/                   # push inbox, pull deltas, cursors
+│   ├── reporting/              # end-of-shift, end-of-day, sales reports
+│   ├── billing/                # Phase 5 only: subscriptions, invoices, promo codes
+│   ├── notify/                 # email, in-app announcements
+│   └── kernel/                 # shared, dependency-free: money, ids, clock, errors, tenant context, tx helper
+├── migrations/                 # goose SQL files, one global sequence
+├── gen/                        # oapi-codegen output (checked in, verified in CI)
+├── testdata/
+│   └── pricing-vectors/        # golden JSON vectors shared with the TS client (section 6.4)
+├── deploy/                     # Dockerfile, compose for local dev, infra notes
+├── docs/
+│   ├── BACKEND_PLAN.md
+│   └── runbooks/               # restore, rotate secrets, revoke device, incident
+└── Makefile                    # gen, lint, test, migrate, run
+```
+
+### Module rules
+
+- Each module exposes a small Go interface (`internal/<module>/service.go`). Other modules import
+  only that interface, never another module's `db` package or tables.
+- `depguard` rules in `golangci-lint` enforce this, since the compiler will not (ADR 0002).
+- Cross-module writes that must be atomic (for example a sale consuming stock) share one
+  transaction through `kernel.Tx`, passed in by the caller. The consuming module still writes only
+  its own tables.
+- Asynchronous reactions go through `river` jobs inserted in the same transaction (a transactional
+  outbox, for free).
+
+### Where the OpenAPI document lives
+
+The back office, the POS and the admin console all consume the contract, and the back-office repo
+will become a monorepo in Phase 1. Two options:
+
+- **A. The spec lives here** in `api/openapi.yaml`. CI publishes the generated TypeScript types as
+  a versioned package (GitHub Packages) or the front-end CI pulls the spec at a pinned commit.
+- **B. The backend moves into the front-end monorepo** at the Phase 1 restructure, and the spec
+  sits at the root.
+
+**Recommendation: start with A in Phase 0**, and decide on B at the Phase 1 monorepo restructure.
+With one developer, B removes the version dance entirely and is probably the better end state.
+
+---
+
+## 4. Cross-cutting design
+
+### 4.1 Multi-tenancy
+
+- `tenant_id uuid not null` on every business table. `outlet_id` where the row is outlet-scoped.
+- Composite foreign keys `(tenant_id, id)` so a row can never reference another tenant's row,
+  even through a bug.
+- **Row-level security as a second line of defence**, on from the first migration:
+  - the app connects as a role `orion_app` that does not own the tables;
+  - each request transaction runs `SET LOCAL app.tenant_id = '<uuid>'`;
+  - every tenant table has a policy `USING (tenant_id = current_setting('app.tenant_id')::uuid)`;
+  - the `platform` module and background jobs that span tenants use a separate role
+    `orion_platform` with `BYPASSRLS`, only from code under `internal/platform` and named jobs.
+- Handlers never take `tenant_id` from the request body. It comes from the authenticated principal.
+- A test in CI creates two tenants and asserts that every list endpoint returns nothing from the
+  other tenant.
+
+### 4.2 Identifiers
+
+- UUIDv7 primary keys everywhere. Synced records (sales, payments, shift events, stock events
+  from the POS) use the **client-generated** id.
+- Human-readable receipt numbers per ADR 0004: `{outlet_code}-{device_code}-{counter}`, for
+  example `JKT1-03-000482`. The server stores the string and its parts, with a unique constraint
+  on `(tenant_id, outlet_id, device_code, counter)`. Gaps are allowed and numbers are never reused.
+- `device_code` is allocated by the server at pairing, unique per outlet, never reused (so a
+  re-paired, wiped device gets a new one).
+
+### 4.3 Authentication and principals
+
+There are four kinds of principal. Each has its own token audience, and middleware rejects a
+token on routes for another audience.
+
+| Principal | How it signs in | Token | Routes |
+|---|---|---|---|
+| **Owner/manager user** | Email + password (argon2id), email verified | Access token (JWT, 15 min, `aud=tenant`) + rotating refresh token (opaque, hashed in DB, 30 days) | `/v1/...` |
+| **Device** | Paired once by a signed-in owner/manager | Long-lived opaque device secret (hashed in DB, revocable), exchanged for short-lived access JWTs (`aud=device`) | `/v1/pos/...`, `/v1/sync/...` |
+| **Cashier on a device** | PIN on the device, offline | No server token. Events carry `staff_id`; the server checks the staff member belongs to the device's outlet and was active at event time | — |
+| **Operator** | Email + password + **required TOTP** | JWT (`aud=operator`, 15 min) + refresh; separate signing key | `/admin/...` |
+
+Notes:
+
+- **Device pairing** (ADR 0004): the owner signs in on the tablet, picks an outlet, and the server
+  creates a `device` row with a `device_code` and returns the device secret once. Revocation sets
+  `revoked_at`; the next token exchange fails, and the POS shows "device revoked" (it can still
+  sell until it next goes online, which ADR 0004 accepts).
+- **Cashier PINs**: the server stores an argon2id hash of each staff PIN and ships the hashes for
+  the outlet's staff to paired devices in the pull payload. A 4–6 digit PIN hash can be brute-forced
+  by anyone holding the device's storage, so **the PIN is a convenience switch, not a security
+  boundary**: it controls who is recorded as acting, and permissions (void, refund, open drawer)
+  are enforced by role. Mitigations: hashes go only to paired, non-revoked devices; the device
+  locks out after repeated failures; a manager can rotate a PIN, which reaches devices at the next
+  pull. This trade-off should be written up as an ADR.
+- Signing keys: one per audience, from environment/secret store, with a `kid` header so they can
+  be rotated.
+- Rate limits (in-process token bucket keyed by IP and account, good enough for one instance):
+  login, pairing, PIN-rotation, signup, promo-code redemption.
+
+### 4.4 Roles and permissions
+
+ADR 0002 requires roles from the start.
+
+- Permissions are fixed strings in code: `catalog.manage`, `sale.void`, `sale.refund`,
+  `drawer.open_no_sale`, `shift.close`, `discount.apply_manual`, `report.view`,
+  `staff.manage`, `device.manage`, `settings.manage`, `inventory.manage`, and so on.
+- Roles are per tenant: `role(id, tenant_id, name, is_system)` and `role_permission`. Seed system
+  roles at signup: Owner, Manager, Cashier, Kitchen.
+- Staff are assigned roles per outlet (`staff_outlet_role`), ready for multi-outlet.
+- The device receives the roster with each person's permissions so checks work offline. The server
+  **re-checks on push**: a void by someone without `sale.void` at event time is accepted (the money
+  already moved) but flagged for review, not silently dropped.
+
+### 4.5 Entitlements and feature flags
+
+One module, one function, used by handlers, jobs and the POS payload (ADR 0007, ADR 0008).
+
+```go
+type Resolver interface {
+    // Effective value for one key, resolved global default -> plan -> tenant override.
+    Get(ctx context.Context, tenantID uuid.UUID, key Key) (Value, error)
+    // Full snapshot for a tenant, for the POS cache and the back-office boot payload.
+    Snapshot(ctx context.Context, tenantID uuid.UUID) (Snapshot, error)
+}
+```
+
+Tables:
+
+- `plan(id, code, name, is_public, created_at)`, with seeded `early_access`.
+- `entitlement_key(key, kind ['bool'|'int'], description, owner, is_temporary, default_value)`.
+  Both commercial modules (`module.inventory`, `limit.outlets`, `limit.devices`, `limit.staff`)
+  and technical flags (`flag.sync_v2`) live here, separated by a `category` column.
+- `plan_entitlement(plan_id, key, value)`.
+- `tenant_entitlement_override(tenant_id, key, value, reason, expires_at, set_by_operator_id)`.
+
+Rules:
+
+- Turning a module off **hides** it: endpoints return `403 module_disabled`, data stays.
+- Limits are checked at the point of creation (new outlet, pairing a device, adding staff), inside
+  the same transaction, with `SELECT ... FOR UPDATE` on the tenant row to avoid races.
+- The snapshot sent to the POS carries `expires_at` (for example 7 days). The POS applies it at the
+  next sync and never mid-shift.
+- In-process cache with a 30-second TTL, invalidated on write. One instance means no distributed
+  cache problem.
+
+### 4.6 Tenant plan fields (Phase 0, first migration)
+
+On `tenant`, per ADR 0007:
+
+```
+plan_id                 -> plan.id         (early_access for everyone)
+subscription_status     enum: early_access | trialing | active | past_due | grace | read_only | canceled
+trial_ends_at           timestamptz null
+paid_until              timestamptz null
+billing_starts_at       timestamptz null   -- per-tenant override of the global date (ADR 0008)
+suspended_at            timestamptz null   -- operator suspension, separate from billing status
+```
+
+No billing code reads these until Phase 5, but the read-only middleware (section 9, Phase 5) has a
+place to hook in.
+
+### 4.7 Audit logs
+
+Two separate append-only logs:
+
+- `platform_audit_log`: every operator action (ADR 0008): `operator_id`, `action`,
+  `target_type`, `target_id`, `tenant_id null`, `before jsonb`, `after jsonb`, `reason text not
+  null`, `ip`, `user_agent`, `created_at`.
+- `tenant_audit_log`: sensitive actions inside a tenant: role changes, PIN rotation, device
+  pairing and revocation, price changes, settings changes, voids and refunds (as references).
+
+Append-only is enforced in the database: `REVOKE UPDATE, DELETE` from the app roles, plus a
+trigger that raises on update or delete as a backstop.
+
+### 4.8 Money, tax and rounding
+
+- `bigint` rupiah everywhere in the database; `int64` in Go. A `kernel/money` package with only
+  integer operations and explicit rounding modes. No `float64` in any money path, enforced by a
+  lint rule on the `money` and `sales` packages.
+- Percentages are stored as **basis points** (`int`, 1000 = 10.00%).
+- Outlet settings (`outlet_settings`):
+  - `price_includes_tax bool`
+  - `tax_rate_bp int` (PBJT, set per local government, up to 10%)
+  - `service_charge_rate_bp int`
+  - `service_charge_taxable bool`
+  - `cash_rounding_unit int` (for example 100, 500, 1000; 0 = off)
+  - `cash_rounding_mode` (`nearest` | `down` | `up`)
+  - `timezone` (`Asia/Jakarta` | `Asia/Makassar` | `Asia/Jayapura`)
+  - `business_day_cutoff` (`time`, default `00:00`)
+- **The bill calculation is one written algorithm**, implemented in Go and TypeScript, and both
+  must pass the same golden vectors in `testdata/pricing-vectors/*.json` (section 6.4). The order:
+  1. line amount = unit price + modifier prices, times quantity
+  2. line discounts
+  3. bill discount, allocated across lines pro rata with largest-remainder allocation, so the parts
+     add up exactly
+  4. service charge on the discounted subtotal
+  5. tax on the discounted subtotal (+ service charge if taxable); for tax-inclusive prices, tax is
+     extracted rather than added
+  6. cash rounding applies **only to the cash tender**, recorded as a separate `rounding_amount`
+     so totals still reconcile
+- Rounding of tax and service charge: round half up, per bill (not per line). **Confirm with an
+  accountant before Phase 1 ships** (roadmap, Indonesia-specific requirements). The algorithm is
+  versioned (`pricing_version` on each sale) so a later correction does not reinterpret old sales.
+
+### 4.9 Time and the reporting day
+
+- All timestamps are `timestamptz` in UTC.
+- Synced events store both `device_time` and `received_at` (server). Ordering and reporting use
+  `received_at` for sequencing and `device_time` for "when it happened"; clock skew beyond a
+  threshold (for example 10 minutes) is recorded on the device row for support.
+- `business_date date` is computed **once**, when the sale is projected, from `device_time` in the
+  outlet's timezone and cutoff, and stored on the sale and shift. Reports group by it. Changing
+  an outlet's timezone does not rewrite history.
+
+### 4.10 Errors and API conventions
+
+- Errors use `application/problem+json` (RFC 9457) with a stable `code` field
+  (`validation_failed`, `module_disabled`, `limit_reached`, `not_found`, `conflict`,
+  `tenant_read_only`, `device_revoked`, ...). The front end switches on `code`, never on text.
+- List endpoints use cursor pagination (`?cursor=&limit=`), with UUIDv7 ordering as the cursor.
+- Mutating endpoints from the back office accept an `Idempotency-Key` header; the key and response
+  are stored for 24 hours (`idempotency_key` table). Sync events have their own idempotency
+  (section 5).
+- API versioning by path prefix (`/v1`). Additive changes only within a version.
+- `Accept-Language` (`id-ID` default, `en`) for any server-generated text (emails, error `detail`).
+  Error `code`s are language-neutral.
+
+### 4.11 Observability and operations
+
+- Structured logs with `request_id`, `tenant_id`, `principal_type`, `principal_id`, `device_id`.
+  Never log PINs, passwords, tokens, or customer personal data.
+- Sentry for panics and 5xx.
+- `/healthz` (process up) and `/readyz` (DB reachable, migrations at expected version).
+- Minimal metrics that matter: sync push latency and error rate, events per push, jobs failed,
+  webhook failures. A Prometheus `/metrics` endpoint behind auth, or log-based metrics if the host
+  makes that simpler.
+- Per-device `last_seen_at`, `last_sync_at`, `app_version`, `clock_skew_ms` for support and the
+  admin "stopped syncing" view.
+
+---
+
+## 5. Sync protocol (the most important code)
+
+ADR 0004 calls the sync protocol and its tests the most important code in the system. It gets its
+own design and is built test-first.
+
+### 5.1 Push: device to server
+
+```
+POST /v1/sync/push
+Authorization: Bearer <device access token>
+
+{
+  "device_id": "...",
+  "events": [
+    {
+      "id": "0192...",                    // UUIDv7, client-generated, is the record id
+      "idempotency_key": "0192...",       // equal to id for create events
+      "type": "sale.completed",
+      "staff_id": "...",
+      "device_time": "2026-10-02T09:14:03+07:00",
+      "schema_version": 1,
+      "payload": { ... }
+    }
+  ]
+}
+```
+
+Event types for Phase 1: `shift.opened`, `shift.closed`, `cash.movement` (pay in, pay out,
+no-sale drawer open), `sale.completed` (with lines, discounts and payments), `sale.voided`.
+Phase 2 adds `refund.issued` and `payment.gateway_confirmed`. Phase 3 adds stock events from the
+device if the POS ever records waste.
+
+Server behaviour:
+
+1. Authenticate the device. A revoked device gets `401 device_revoked`, and nothing is accepted.
+2. For each event, in order, in **its own transaction** (one bad event must not block the rest):
+   1. `INSERT INTO sync_inbox (tenant_id, device_id, idempotency_key, ...) ON CONFLICT DO NOTHING`.
+   2. If the row already existed, return the **stored result** (`accepted` or `rejected`) without
+      re-applying. This is what makes retries safe.
+   3. Otherwise validate and **project** the event into the module's tables (`sales`, `shifts`,
+      ...) and, from Phase 3, stock ledger rows. Store the outcome on the inbox row.
+3. Respond with a result per event:
+
+```
+{ "results": [ { "id": "...", "status": "accepted" | "duplicate" | "rejected", "code": "...", "detail": "..." } ],
+  "server_time": "..." }
+```
+
+Rules:
+
+- **Reject only what is malformed**: unknown type, failed schema validation, wrong tenant/outlet,
+  unknown staff. A sale whose totals look wrong, made by someone without the permission, or
+  against a price that has since changed is **accepted and flagged** (`sale_flag` table), because
+  the money has already changed hands. Rejected events stay on the device for support.
+- **Ordering**: a `sale.voided` arriving before its `sale.completed` (possible after reinstalls or
+  partial pushes) is parked as `pending_dependency` and retried when the sale arrives. The device
+  pushes in outbox order, so this should be rare.
+- Payload size limit per push (for example 500 events or 1 MB); the device pages.
+- Events are immutable. The same `idempotency_key` with a **different payload hash** is rejected
+  with `idempotency_conflict` and logged loudly, since it means a client bug.
+
+### 5.2 Pull: server to device
+
+```
+GET /v1/sync/pull?cursor=<opaque>
+```
+
+Returns everything the device needs, as deltas since its cursor:
+
+- catalog: items, variants, modifiers, categories, outlet prices and availability;
+- outlet settings (tax, service charge, rounding, timezone, receipt header/footer);
+- staff roster for the outlet: names, PIN hashes, permissions;
+- entitlements snapshot with `expires_at`;
+- announcements (Phase 2).
+
+Implementation:
+
+- A per-tenant `change_log(tenant_id, seq bigint, entity_type, entity_id, op, outlet_id null)`
+  written in the same transaction as each catalog/settings/staff change. `seq` comes from a
+  per-tenant counter row (`tenant.change_seq`, incremented with `UPDATE ... RETURNING`), which
+  keeps it gapless and ordered per tenant.
+- The cursor is the last `seq` seen. The response contains the **current state** of each changed
+  entity (not the history), plus deletions as tombstones.
+- `cursor=null` or a cursor older than retention returns a full snapshot.
+- Each sale records the `catalog_seq` it was priced against, so a sale against a stale price is
+  explainable.
+
+### 5.3 Tests written first
+
+Before any POS client code depends on it:
+
+- **Duplicate push**: the same batch pushed 2–5 times gives identical state and responses.
+- **Partial failure**: a crash after event N (simulated by killing the transaction) followed by a
+  retry of the whole batch loses nothing and duplicates nothing.
+- **Reordering**: random permutations of a valid event stream converge to the same final state
+  (property-based, using `testing/quick` or `rapid`).
+- **Concurrency**: two devices pushing at once to the same outlet, with overlapping shifts.
+- **Clock skew**: device clocks hours off still produce correct `business_date` behaviour as
+  specified.
+- **Revocation**: a device revoked mid-batch.
+- **Cross-tenant**: a device of tenant A sending an event that references tenant B's ids.
+- **End-of-day reconciliation**: a simulated week of sales; the server's end-of-day totals match
+  the totals the client computes from the same events. This is the Phase 1 exit test in miniature.
+
+---
+
+## 6. Data model by module
+
+Columns listed are the essential ones. All tables have `id uuid pk`, `tenant_id` (except platform
+tables), `created_at`, `updated_at` where mutable.
+
+### 6.1 Tenancy and identity (Phase 0)
+
+| Table | Key columns |
+|---|---|
+| `tenant` | `name`, `slug`, plan fields (4.6), `change_seq`, `suspended_at` |
+| `outlet` | `tenant_id`, `name`, `code` (short, for receipts, unique per tenant), `address`, `timezone` |
+| `outlet_settings` | `outlet_id`, tax/service/rounding/time (4.8), `receipt_header`, `receipt_footer` |
+| `user_account` | `email` (citext, unique), `password_hash`, `email_verified_at`, `locale` |
+| `tenant_member` | `tenant_id`, `user_id`, `is_owner` |
+| `staff` | `tenant_id`, `user_id null` (cashiers need no email), `display_name`, `pin_hash`, `pin_rotated_at`, `active` |
+| `role`, `role_permission`, `staff_outlet_role` | section 4.4 |
+| `device` | `tenant_id`, `outlet_id`, `device_code`, `name`, `secret_hash`, `paired_by`, `paired_at`, `revoked_at`, `last_seen_at`, `last_sync_at`, `app_version`, `clock_skew_ms` |
+| `refresh_token` | `principal_type`, `principal_id`, `token_hash`, `family_id`, `expires_at`, `revoked_at` (rotation with reuse detection) |
+
+### 6.2 Platform (Phase 0)
+
+| Table | Key columns |
+|---|---|
+| `operator` | `email`, `password_hash`, `totp_secret_enc`, `totp_confirmed_at`, `disabled_at` |
+| `operator_recovery_code` | `operator_id`, `code_hash`, `used_at` |
+| `platform_audit_log` | section 4.7 |
+| `platform_setting` | `key`, `value jsonb` (for example the global `billing_starts_at` in Phase 5) |
+| `announcement` (Phase 2) | `audience` (all / tenant), `tenant_id null`, `title`, `body` per locale, `starts_at`, `ends_at` |
+
+TOTP secrets are encrypted at rest with a key from the secret store (AES-GCM via a small
+`kernel/secrets` helper), not just hashed, because they must be read back.
+
+### 6.3 Catalog (Phase 1)
+
+| Table | Key columns |
+|---|---|
+| `category` | `name`, `sort_order` |
+| `item` | `category_id`, `name`, `sku`, `barcode`, `image_url`, `track_stock`, `archived_at` |
+| `variant` | `item_id`, `name`, `sku`, `barcode`, `base_price` (rupiah), `sort_order` |
+| `modifier_group` | `name`, `min_select`, `max_select`, `required` |
+| `modifier` | `group_id`, `name`, `price_delta` |
+| `item_modifier_group` | `item_id`, `group_id`, `sort_order` |
+| `outlet_variant` | `outlet_id`, `variant_id`, `price_override null`, `available` |
+| `bundle`, `bundle_component` | Later in Phase 1 or Phase 2, only if the design partner needs it |
+
+Archive, never hard-delete, anything a sale may reference. Sale lines also snapshot the name and
+price (6.4), so a later rename never changes a receipt.
+
+### 6.4 Sales and shifts (Phase 1)
+
+| Table | Key columns |
+|---|---|
+| `shift` | `outlet_id`, `device_id`, `opened_by`, `opened_at`, `opening_cash`, `closed_by`, `closed_at`, `counted_cash`, `expected_cash`, `business_date` |
+| `cash_movement` | `shift_id`, `kind` (pay_in, pay_out, no_sale), `amount`, `reason`, `staff_id` |
+| `sale` | `outlet_id`, `device_id`, `shift_id`, `staff_id`, `receipt_number` (+ parts), `device_time`, `received_at`, `business_date`, `pricing_version`, `catalog_seq`, `subtotal`, `discount_total`, `service_charge`, `tax`, `rounding_amount`, `total`, `status` (completed, voided) |
+| `sale_line` | `sale_id`, `variant_id`, `name_snapshot`, `unit_price`, `quantity`, `line_discount`, `allocated_bill_discount`, `line_total` |
+| `sale_line_modifier` | `sale_line_id`, `modifier_id`, `name_snapshot`, `price_delta` |
+| `sale_discount` | `sale_id`, `sale_line_id null`, `kind` (percent, amount), `value`, `amount`, `reason`, `approved_by` |
+| `payment` | `sale_id`, `method` (cash, qris_manual, qris_dynamic, ewallet, card_manual), `amount`, `tendered`, `change`, `reference`, `status` |
+| `void` | `sale_id`, `staff_id`, `approved_by`, `reason`, `device_time` |
+| `refund` (Phase 2) | `sale_id`, lines and amounts, `method`, `reason`, `staff_id`, `approved_by` |
+| `sale_flag` | `sale_id`, `code` (total_mismatch, permission_missing, stale_price), `detail` |
+| `sync_inbox` | `tenant_id`, `device_id`, `idempotency_key` (unique together), `event_type`, `payload_hash`, `payload jsonb`, `status`, `result jsonb`, `received_at` |
+
+`sale` status moves `completed -> voided` only through a `void` row; the sale row's monetary
+columns never change. Insert-only on `sale_line`, `payment`, `void`, `refund`. Revoke `UPDATE` on
+those tables from `orion_app` except for the `status` column on `sale` (column-level grant).
+
+The pricing vectors in `testdata/pricing-vectors/` are JSON files of the form
+`{ settings, lines, discounts, tender } -> { expected totals }`. The Go and TS implementations
+both run them in CI. Start with about 40 vectors covering inclusive and exclusive tax, service
+charge on and off, line and bill discounts, rounding at each unit, and rupiah amounts that do not
+divide evenly.
+
+### 6.5 Payments (Phase 1 manual, Phase 2 gateway)
+
+- Phase 1: payments arrive inside `sale.completed`. Manual QRIS stores the static QR reference and
+  the cashier's confirmation. Card is `card_manual` with an optional EDC approval code.
+- Phase 2, gateway:
+  - `payment_intent(id, tenant_id, outlet_id, sale_id null, method, amount, gateway, gateway_ref,
+    qr_string, status, expires_at)`.
+  - `POST /v1/pos/payment-intents` creates a dynamic QRIS or e-wallet charge (needs the device
+    online). The POS polls `GET /v1/pos/payment-intents/{id}` or waits for a push.
+  - `POST /webhooks/{gateway}`: verify the signature, store the raw body in `gateway_webhook`
+    (unique on the gateway's event id for idempotency), update the intent in the same transaction.
+  - A `river` job reconciles intents stuck in `pending` by asking the gateway's API, and a daily
+    job compares the gateway's settlement report with recorded payments and flags differences.
+  - A `Gateway` interface (`CreateQRIS`, `CreateEwalletCharge`, `GetStatus`, `VerifyWebhook`,
+    `Refund`) with one implementation for whichever gateway is chosen and a fake for tests.
+  - Sub-merchant / platform onboarding depends on the gateway's model (roadmap open question). Keep
+    per-tenant gateway credentials or sub-account ids in `tenant_payment_account`, encrypted.
+
+### 6.6 Inventory (Phase 3)
+
+The existing back-office pages (item library, UoM categories, transaction types, stock opname,
+adjustments, waste, used stock) define the shape. Mapping them onto the ledger:
+
+| Table | Key columns |
+|---|---|
+| `uom_category` | `name` |
+| `uom` | `category_id`, `name`, `kind` (reference, bigger, smaller), `ratio_num`, `ratio_den` (integer ratio to the reference unit, instead of float), `rounding_scaled`, `active` |
+| `ingredient` | `name`, `category_id`, `base_uom_id`, `track`, `archived_at` |
+| `ingredient_category` | `name`, `default_transaction_type_id` |
+| `recipe` | `variant_id` or `modifier_id`, `version`, `active_from` |
+| `recipe_line` | `recipe_id`, `ingredient_id`, `quantity_scaled` |
+| `stock_movement` | `outlet_id`, `ingredient_id`, `quantity_scaled` (signed), `kind` (receive, sale_consumption, waste, opname_adjustment, transfer_out, transfer_in, manual_adjustment), `source_type`, `source_id`, `reason`, `staff_id`, `occurred_at`, `business_date`, `unit_cost null` |
+| `stock_balance` | `outlet_id`, `ingredient_id`, `quantity_scaled`, `last_movement_id` (materialized) |
+| `purchase`, `purchase_line` | `supplier`, `transaction_type_id`, lines with quantity, UoM and cost |
+| `transaction_type` | `name`, `category` (matches the existing "Belanja Bahan Pasar" style setup) |
+| `opname`, `opname_line` | `status` (draft, counting, posted), counted vs. expected per ingredient |
+| `waste`, `transfer` | header + lines, each posting ledger rows |
+
+Rules:
+
+- **Scale**: quantities are integers in the base unit times 1000 (so 1 = 0.001 g or 0.001 ml). This
+  covers grams and millilitres with three decimals and stays far inside `bigint`.
+- Ledger rows are insert-only. `stock_balance` is updated in the **same transaction** as the
+  movement (`INSERT ... ON CONFLICT DO UPDATE SET quantity = quantity + excluded.quantity`).
+- **Sale consumption**: when a `sale.completed` event is projected, the inventory module (through
+  its interface) inserts one `sale_consumption` movement per recipe ingredient, using the recipe
+  version active at `device_time`. A void inserts the reversing movements. Negative balances are
+  allowed (ADR 0004).
+- **Opname**: counted quantity minus the balance at the count time gives one `opname_adjustment`
+  per ingredient. Posting is idempotent.
+- **Rebuild job** (ADR 0006): `orion admin rebuild-stock --tenant --outlet` recomputes balances
+  from the ledger and reports differences. A nightly job checks a sample and alerts on drift.
+
+### 6.7 Restaurant flow (Phase 4)
+
+This breaks the "a sale is complete when it reaches the server" assumption, so it needs an ADR of
+its own before the code.
+
+- `floor`, `table(outlet_id, floor_id, name, seats, position)`.
+- An **open bill** is an `order` with `order_line`s that change while it is open. Recommended
+  approach: keep it append-only as `order.line_added`, `order.line_removed`,
+  `order.sent_to_kitchen`, `order.moved_table`, `order.split`, `order.merged`, `order.closed`
+  events, with the `order` row as a projection. Closing an order produces a normal
+  `sale.completed`.
+- **Several devices on one open bill** is the first true multi-writer case. Since the events are
+  append-only, they merge without CRDTs, but "who sees the latest bill" needs the devices online
+  or on the same LAN. The ADR should decide: require connectivity for shared open bills, and allow
+  single-device open bills offline.
+- `kitchen_station`, `item_station` routing, `kitchen_ticket` (printed by the POS in Phase 4,
+  then a KDS view reading the same tickets).
+
+### 6.8 Billing (Phase 5 only)
+
+| Table | Key columns |
+|---|---|
+| `plan_price` | `plan_id`, `interval` (month, year), `amount`, `unit` (per outlet / per device / flat; decided by then) |
+| `subscription` | `tenant_id`, `plan_id`, `status`, `current_period_start`, `current_period_end`, `trial_ends_at`, `founding_price null` |
+| `invoice` | `tenant_id`, `number`, `period`, `subtotal`, `discount`, `tax`, `total`, `status` (draft, open, paid, void, expired), `due_at` |
+| `invoice_line` | `invoice_id`, `description`, `quantity`, `unit_amount`, `amount` |
+| `invoice_payment` | `invoice_id`, `gateway`, `method` (va, qris, transfer, card), `gateway_ref`, `amount`, `paid_at` |
+| `subscription_promo` | `code` (normalized, unique), `reward_kind` (trial_extension, percent_off, amount_off, plan_upgrade), `reward_value`, `periods`, `valid_from`, `valid_until`, `max_redemptions`, `applies_to_plan_ids` |
+| `subscription_promo_redemption` | `promo_id`, `tenant_id` (unique together), `redeemed_at`, `applied_at null`, `granted jsonb` |
+
+Note the names: `subscription_promo` here, `voucher` for cafe-to-customer promos in Phase 6
+(ADR 0008).
+
+---
+
+## 7. API surface by phase
+
+Paths under `/v1` are tenant-side (user or device tokens). Paths under `/admin` are operator-only.
+
+| Phase | Endpoints |
+|---|---|
+| 0 | `POST /v1/auth/login`, `/refresh`, `/logout`; `POST /v1/auth/verify-email`; `GET /v1/me`; `GET/PATCH /v1/outlets/{id}`; `GET/PUT /v1/outlets/{id}/settings`; `GET/POST/PATCH /v1/staff`; `PUT /v1/staff/{id}/pin`; `GET /v1/roles`; `POST /v1/devices/pair`; `POST /v1/devices/token`; `DELETE /v1/devices/{id}`; `GET /v1/entitlements`; `GET /v1/pos/receipt-test` (for the Phase 0 "print a test receipt from API data" exit); `POST /admin/auth/login`, `/totp/verify`; `GET /admin/audit-log` |
+| 1 | Catalog CRUD (`/v1/categories`, `/v1/items`, `/v1/items/{id}/variants`, `/v1/modifier-groups`, `/v1/outlets/{id}/prices`); `POST /v1/sync/push`; `GET /v1/sync/pull`; `GET /v1/reports/shift/{id}`; `GET /v1/reports/end-of-day?outlet_id&date`; `GET /v1/sales`, `GET /v1/sales/{id}` |
+| 2 | `POST /v1/signup`; onboarding (`POST /v1/outlets`, device pairing reused); `POST /v1/catalog/import` (CSV, async job, `GET /v1/jobs/{id}`); `POST /v1/pos/payment-intents`, `GET .../{id}`; `POST /webhooks/{gateway}`; refunds via sync; `GET /v1/reports/sales?group_by=day|item|payment_method`; `/admin/tenants`, `/admin/tenants/{id}`, `POST /admin/tenants/{id}/suspend|reinstate`, `DELETE /admin/devices/{id}`, `/admin/entitlements`, `/admin/flags`, `/admin/announcements`, `/admin/metrics` |
+| 3 | `/v1/uom-categories`, `/v1/ingredients`, `/v1/recipes`, `/v1/purchases`, `/v1/opnames` (+ `/post`), `/v1/waste`, `/v1/transfers`, `GET /v1/stock/balances`, `GET /v1/stock/movements` |
+| 4 | `/v1/floors`, `/v1/tables`, `/v1/kitchen-stations`; order events via sync; `GET /v1/kitchen/tickets` (KDS) |
+| 5 | `GET /v1/billing/subscription`, `GET /v1/billing/invoices`, `POST /v1/billing/invoices/{id}/pay`, `POST /v1/billing/promo-codes/redeem`, `GET /v1/export` (async); `/admin/billing/schedule`, `/admin/promos`, `/admin/plans`, `/admin/tenants/{id}/billing` |
+
+---
+
+## 8. Background jobs (river)
+
+| Job | Phase | Trigger |
+|---|---|---|
+| `send_email` | 0 | verification, password reset, device paired |
+| `purge_expired_tokens`, `purge_idempotency_keys` | 0 | daily |
+| `retry_pending_dependency_events` | 1 | on sale insert + every 5 min |
+| `end_of_day_rollup` | 1 | per outlet, after local cutoff + grace; also computed on read so it is never a blocker |
+| `catalog_import` | 2 | on CSV upload |
+| `reconcile_payment_intents` | 2 | every minute for pending intents |
+| `reconcile_gateway_settlement` | 2 | daily |
+| `tenant_daily_metrics` | 2 | nightly aggregates for the admin console (sales counts only, no business data, ADR 0008) |
+| `stock_balance_check` | 3 | nightly sample; full rebuild on demand |
+| `billing_start_notices` | 5 | notice schedule before the global/tenant billing date |
+| `billing_start_transition` | 5 | on the date: early_access -> trial/paid, applying stored promo redemptions |
+| `trial_reminders`, `issue_invoices`, `dunning`, `grace_to_read_only` | 5 | daily |
+| `tenant_export` | 5 | on request; zipped CSV/JSON to object storage, signed URL by email |
+
+---
+
+## 9. Phase-by-phase work
+
+Task ids (`B0.1` ...) are meant to become GitHub issues.
+
+### Phase 0: Foundation (backend share: about 3 weeks)
+
+| Id | Task | Size |
+|---|---|---|
+| B0.1 | Repo bootstrap: `go.mod`, Makefile, `golangci-lint` with `depguard`, GitHub Actions (lint, test with Postgres service, `make gen` + `git diff --exit-code`), Dockerfile, `docker compose` for local Postgres | 2d |
+| B0.2 | `cmd/orion` with `serve`, `migrate`, `worker` subcommands; config from env; graceful shutdown; `/healthz`, `/readyz`; slog; Sentry | 1d |
+| B0.3 | OpenAPI pipeline: `api/openapi.yaml`, `oapi-codegen` strict server, problem+json errors, CI staleness check, publish TS types (option A in section 3) | 2d |
+| B0.4 | First migrations: roles `orion_app` / `orion_platform`, `tenant` with plan fields, `outlet`, `outlet_settings`, `plan` seeded with `early_access`, RLS policies, `change_log` | 2d |
+| B0.5 | `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `Tx` helper that sets `app.tenant_id`, tenant context | 1d |
+| B0.6 | Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid` | 3d |
+| B0.7 | Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id) | 2d |
+| B0.8 | Device pairing, device token exchange, revocation, `device_code` allocation | 2d |
+| B0.9 | Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests) | 2d |
+| B0.10 | Platform: `operator`, TOTP enrolment and login, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set flag, override entitlement, suspend tenant), each writing to the audit log | 3d |
+| B0.11 | Tenant isolation test suite (two tenants, every endpoint) | 1d |
+| B0.12 | Receipt test endpoint: returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |
+| B0.13 | Ops: deploy target chosen (section 11), repeatable deploy from CI on tag, managed Postgres or pgBackRest with PITR, **restore drill documented in `docs/runbooks/restore.md` and done once** | 3d |
+| B0.14 | Seed command for a demo tenant (`orion admin seed-demo`) for front-end and MSW work | 0.5d |
+
+**Done when** (backend side of the roadmap exit): a tablet can pair with an outlet, fetch a device
+token, download the staff roster with PIN hashes, and fetch receipt data from the deployed API;
+an operator can sign in with TOTP from the CLI flow; every action shows in the audit log; and a
+backup has been restored into a scratch database.
+
+### Phase 1: Pilot-ready counter cafe (backend share: about 6–7 weeks)
+
+| Id | Task | Size |
+|---|---|---|
+| B1.1 | Catalog schema and CRUD endpoints, archive semantics, per-outlet prices and availability, `change_log` writes | 5d |
+| B1.2 | Pricing algorithm in Go + 40 golden vectors; publish vectors for the TS implementation | 3d |
+| B1.3 | **Sync tests first** (section 5.3) against a stub projector | 3d |
+| B1.4 | `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` | 4d |
+| B1.5 | Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check) | 5d |
+| B1.6 | Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling | 3d |
+| B1.7 | Outlet settings for tax, service charge, rounding, timezone, cutoff; `business_date` derivation | 1d |
+| B1.8 | Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers must match the POS's own totals | 4d |
+| B1.9 | Sales list and detail for the back office (read-only) | 2d |
+| B1.10 | Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long | 1d |
+| B1.11 | Load sanity check: one week of a busy cafe (for example 600 sales/day, 3 devices) pushed in bursts, p95 push latency under 300 ms | 1d |
+| B1.12 | Pilot runbook: how to read flags, fix a stuck device, rebuild a report | 1d |
+
+**Done when** the design partner's week passes with matching end-of-day totals (roadmap), **and**
+the server has zero duplicated or lost sales against the device outboxes (checked by comparing
+device receipt counters with `sale` rows, gaps explained by voids or unsent drafts).
+
+### Phase 2: Early access (backend share: about 5 weeks)
+
+| Id | Task | Size |
+|---|---|---|
+| B2.1 | Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
+| B2.2 | Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
+| B2.3 | CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit as a job | 4d |
+| B2.4 | Gateway integration behind the `Gateway` interface: dynamic QRIS and e-wallets, webhooks, reconciliation jobs (6.5) | 6d |
+| B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |
+| B2.6 | Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download | 3d |
+| B2.7 | Kitchen/bar tickets: station routing on items, included in pull; printing is client-side | 1d |
+| B2.8 | Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer | 5d |
+| B2.9 | `tenant_daily_metrics` aggregates, "stopped syncing" query | 1d |
+| B2.10 | Legal plumbing: `terms_acceptance(user_id, version, accepted_at)`; signup requires the current version | 0.5d |
+| B2.11 | Security pass: rate limits, headers, dependency audit (`govulncheck` in CI), secret rotation runbook, operator account review | 2d |
+
+**Done when** a stranger can sign up, import a menu, pair a tablet and sell with dynamic QRIS, and
+the operator can see them in the console, all without the developer touching the database.
+
+### Phase 3: Inventory (backend share: about 5–6 weeks)
+
+| Id | Task | Size |
+|---|---|---|
+| B3.1 | Write an ADR for the scaled-integer quantity unit (x1000 base unit) and integer UoM ratios | 0.5d |
+| B3.2 | UoM categories and units, ingredients and categories, transaction types (port of the existing Setup pages' data) | 4d |
+| B3.3 | Ledger + materialized balance + rebuild command and nightly check | 4d |
+| B3.4 | Recipes (versioned) on variants and modifiers; sale consumption and void reversal in the sale projector | 4d |
+| B3.5 | Purchasing / receiving with cost | 3d |
+| B3.6 | Stock opname: draft, count, post; adjustments | 3d |
+| B3.7 | Waste and transfers between outlets (transfer is two ledger rows in one transaction) | 2d |
+| B3.8 | Stock endpoints matching the existing Stock Management pages, so the back office can drop its mocks | 3d |
+| B3.9 | Inventory reports: movement history, waste report, opname variance, stock value at cost | 3d |
+
+**Done when** selling an item deducts its recipe's ingredients, a void restores them, an opname
+posts the difference, and a full rebuild reproduces every balance exactly.
+
+### Phase 4: Restaurant flow (backend share: about 4–5 weeks)
+
+| Id | Task | Size |
+|---|---|---|
+| B4.1 | ADR: open bills, multi-device editing, connectivity requirement (6.7) | 1d |
+| B4.2 | Floors and tables | 2d |
+| B4.3 | Order events and projection, including move, split and merge; closing produces `sale.completed` | 8d |
+| B4.4 | Near-real-time fan-out of open-bill changes to other devices in the outlet: Server-Sent Events from the API, with pull as the fallback | 3d |
+| B4.5 | Kitchen tickets per station, ticket status for a later KDS, `GET /v1/kitchen/tickets` | 3d |
+| B4.6 | Reports: covers, table turnover, average bill | 2d |
+
+**Done when** two tablets and a kitchen printer run a full service on shared open bills with
+splits and merges, and the end-of-day matches.
+
+### Phase 5: Paid launch (backend share: about 4–5 weeks)
+
+| Id | Task | Size |
+|---|---|---|
+| B5.1 | Plan prices, subscriptions, invoices (Orion computes the discount and tax; the gateway only collects) | 4d |
+| B5.2 | Gateway invoice payments by VA, QRIS, bank transfer and card; webhooks; reconciliation | 4d |
+| B5.3 | Billing start schedule: global date + tenant override, refusal of dates inside the notice period, notice emails and in-app notices | 2d |
+| B5.4 | Subscription promo codes: generation (random, no look-alike characters, case-insensitive), limits, redemption with rate limit, deferred application for early-access redemptions | 3d |
+| B5.5 | Trial (30 days) for new sign-ups, reminders; migration job for early-access tenants with founding price | 2d |
+| B5.6 | Grace period and read-only mode: middleware that blocks back-office writes for `read_only` tenants with `tenant_read_only`, while **sync push keeps working** (a cashier is never stopped mid-shift; sales are never dropped) | 2d |
+| B5.7 | Data export for every tenant (paid or not) as a job | 2d |
+| B5.8 | Admin: plan editing, billing status per tenant, promo usage | 3d |
+| B5.9 | End-to-end billing tests with a fake clock: trial -> invoice -> unpaid -> grace -> read-only -> paid -> active | 2d |
+
+**Done when** a new tenant signs up, trials, gets reminded, pays by VA or QRIS and keeps working,
+with nobody touching the database; and an unpaid tenant drops to read-only without losing a sale.
+
+### Phase 6: Growth (open-ended)
+
+- Loyalty, vouchers and rule-based promos (`voucher`, `promo_rule`; customers table with consent
+  and deletion under UU PDP **designed before** the feature).
+- Multi-outlet UI needs little backend work, because outlet ids and per-outlet roles exist from
+  Phase 0. Expect cross-outlet reports and transfers to need tuning.
+- Online-order integrations: inbound orders become `order` events (Phase 4 model).
+- Accounting export (CSV/journal formats).
+- PBJT reporting integrations where a local government requires them (tapping box / online
+  reporting), behind a per-outlet adapter.
+
+---
+
+## 10. Testing strategy
+
+| Layer | What | How |
+|---|---|---|
+| Unit | money, pricing, permission resolution, entitlement resolution, receipt number parsing, business date | table tests; golden vectors |
+| Repository | sqlc queries, RLS policies, constraints, append-only enforcement | `testcontainers-go` Postgres, one DB per package, migrations applied |
+| Sync | section 5.3 | property tests + scenario tests; run on every PR |
+| API | each operation through the generated server, including auth audiences and tenant isolation | `httptest` against the real router and DB |
+| Contract | generated code is current; spec lints (`redocly lint` or `vacuum`) | CI |
+| Billing / jobs | time-dependent flows | injected `Clock`, river test helpers |
+| Smoke | after each deploy: `/readyz`, login, pull for the demo tenant | CI job against the deployed URL |
+
+Coverage is not a target. The sync, pricing, ledger and billing packages must have their
+scenario suites before their endpoints are used by a client.
+
+---
+
+## 11. Deployment and operations
+
+- **Hosting** (roadmap open question). Recommendation: a region in Jakarta (AWS `ap-southeast-3`
+  or GCP `asia-southeast2`) for latency and to keep personal data in Indonesia, which simplifies
+  UU PDP questions. A single small VM or container service plus **managed PostgreSQL with
+  point-in-time recovery** is enough until well after paid launch. Revisit only if cost forces it.
+- **Deploy**: CI builds one container image per tag, runs migrations (`orion migrate up`), then
+  rolls the service. Migrations must be backward compatible with the previous binary (expand, then
+  contract) so a rollback is just redeploying the old image.
+- **Backups**: managed PITR (7–14 days) plus a nightly logical dump to separate object storage in
+  another account. A **restore drill every month** into a scratch database, with a script that
+  checks row counts and runs the stock rebuild and report totals. Recorded in the runbook.
+- **Secrets**: from the platform's secret manager; never in the repo. Rotation runbook for JWT
+  keys, the TOTP encryption key, gateway keys and the database password.
+- **Environments**: `local` (compose), `staging` (deployed from `main`, seeded demo tenant, gateway
+  sandbox), `production` (deployed from tags).
+- **Runbooks** (`docs/runbooks/`): restore, revoke a lost device, a stuck sync, rebuild stock,
+  rotate secrets, operator account compromise, gateway webhook outage.
+
+---
+
+## 12. Decisions still open
+
+These are the backend side of the roadmap's open questions. Each one should become an ADR when it
+is decided.
+
+| Decision | Needed by | Recommendation |
+|---|---|---|
+| Where the OpenAPI spec lives (option A or B, section 3) | Phase 0 / Phase 1 restructure | A now, revisit B in Phase 1 |
+| RLS on from day one | Phase 0 | Yes (section 4.1) |
+| PIN hashes on devices: accepted trade-off | Phase 0 | Write it up as an ADR (section 4.3) |
+| Pricing/tax rounding rules | Before Phase 1 pilot | Draft in 4.8; confirm with an accountant |
+| Hosting provider and region | Phase 0 | Jakarta region, managed Postgres |
+| Payment gateway | Phase 2 (apply in Phase 0) | Choose by sub-merchant/platform support and QRIS MDR; code behind the `Gateway` interface either way |
+| Open-bill concurrency model | Phase 4 | Event-sourced orders, connectivity required for shared bills |
+| Pricing unit (per outlet / device / tier) | Phase 5 | Schema supports all; decide commercially |
+
+## 13. Inconsistencies spotted in the source documents
+
+- ADR 0002 says the multi-outlet UI waits until **Phase 5**; the roadmap puts it in **Phase 6**.
+  The roadmap is newer, so this plan follows it. ADR 0002 should get a superseding note.
+- ADR 0008's timing table matches the roadmap, but ADR 0002's suggested libraries are "defaults,
+  not commitments"; section 2 of this plan commits to them. Record that as an ADR or a status
+  update on ADR 0002.
+- The ADRs and roadmap live in the back-office repo while this repo holds the backend. Once the
+  monorepo exists (Phase 1), move the ADRs to the root so the backend's decisions are recorded
+  next to the backend code.
