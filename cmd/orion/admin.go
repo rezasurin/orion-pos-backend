@@ -13,6 +13,7 @@ import (
 
 	"github.com/rezasurin/orion-pos-backend/internal/config"
 	"github.com/rezasurin/orion-pos-backend/internal/database"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
@@ -48,6 +49,7 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 	}
 	ids, err := identity.NewService(identity.Deps{
 		Pool: pool, TenantKeys: identity.NewEphemeralKeyring(), DeviceKeys: identity.NewEphemeralKeyring(),
+		Entitlements: entitlements.NewResolver(pool, kernel.SystemClock{}),
 	})
 	if err != nil {
 		return err

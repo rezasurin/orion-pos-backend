@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity/db"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 )
@@ -67,9 +68,18 @@ func (s *Service) PairDevice(ctx context.Context, c Caller, in NewDevice) (Paire
 	var out Device
 	err := kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		// Limits (limit.devices, B0.9) are checked here, under the tenant lock.
 		if err := kernel.LockTenant(ctx, tx); err != nil {
 			return err
+		}
+		// limit.devices counts devices that are not revoked, checked under the tenant lock.
+		if s.Entitlements != nil {
+			n, err := q.CountActiveDevices(ctx, tenantID)
+			if err != nil {
+				return err
+			}
+			if err := s.Entitlements.CheckLimit(ctx, tx, tenantID, entitlements.LimitDevices, n); err != nil {
+				return err
+			}
 		}
 		code, err := q.AllocateDeviceCode(ctx, db.AllocateDeviceCodeParams{OutletID: in.OutletID, TenantID: tenantID})
 		if err != nil {

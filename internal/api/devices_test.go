@@ -263,3 +263,43 @@ func TestPairingIsRateLimited(t *testing.T) {
 		t.Error("8 pairings in a row were all accepted")
 	}
 }
+
+func TestLimitsAndEntitlementsOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	tok := e.login(t, "owner@kopi.test").AccessToken
+
+	var snap struct {
+		Items []struct {
+			Key    string `json:"key"`
+			Kind   string `json:"kind"`
+			Value  int64  `json:"value"`
+			Source string `json:"source"`
+		} `json:"items"`
+		GeneratedAt string `json:"generated_at"`
+	}
+	r := e.do(t, "GET", "/v1/entitlements", tok, nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("entitlements: %d %s", r.Code, r.Body.String())
+	}
+	r.decode(t, &snap)
+	got := map[string]int64{}
+	for _, it := range snap.Items {
+		got[it.Key] = it.Value
+	}
+	if len(snap.Items) != 5 || got["limit.devices"] != -1 || got["module.inventory"] != 1 || snap.GeneratedAt == "" {
+		t.Errorf("early access snapshot = %+v", snap)
+	}
+	e.do(t, "GET", "/v1/entitlements", "", nil).problem(t, http.StatusUnauthorized, "invalid_token")
+
+	// Cap the tenant at one device: the second pairing is a 403 limit_reached.
+	e.d.Exec(t, `INSERT INTO tenant_entitlement_override (tenant_id, key, value, reason) VALUES ($1, 'limit.devices', 1, 'test')`, f.tenant.ID)
+	// Limits are read inside the creating transaction, not from the snapshot cache, so the override
+	// applies at once.
+	e.pairDevice(t, tok, f.outlet.ID.String(), "Kasir 1")
+	p := e.do(t, "POST", "/v1/devices/pair", tok, map[string]string{"outlet_id": f.outlet.ID.String(), "name": "Kasir 2"}).
+		problem(t, http.StatusForbidden, "limit_reached")
+	if d, _ := p["detail"].(string); d != "your plan allows 1 (limit.devices)" {
+		t.Errorf("detail = %q", d)
+	}
+}

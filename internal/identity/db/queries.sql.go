@@ -35,6 +35,28 @@ func (q *Queries) AllocateDeviceCode(ctx context.Context, arg AllocateDeviceCode
 	return code, err
 }
 
+const countActiveDevices = `-- name: CountActiveDevices :one
+SELECT count(*) FROM device WHERE tenant_id = $1 AND revoked_at IS NULL
+`
+
+func (q *Queries) CountActiveDevices(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveDevices, tenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countActiveStaff = `-- name: CountActiveStaff :one
+SELECT count(*) FROM staff WHERE tenant_id = $1 AND active
+`
+
+func (q *Queries) CountActiveStaff(ctx context.Context, tenantID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveStaff, tenantID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteStaffOutletRoles = `-- name: DeleteStaffOutletRoles :exec
 DELETE FROM staff_outlet_role
 WHERE tenant_id = $1 AND staff_id = $2

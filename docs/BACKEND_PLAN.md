@@ -319,6 +319,25 @@ Rules:
 - In-process cache with a 30-second TTL, invalidated on write. One instance means no distributed
   cache problem.
 
+#### 4.5.1 Entitlements as built (B0.9)
+
+- Values are integers: 0 or 1 for a bool, a count for a limit, `-1` for unlimited. Five keys are
+  seeded (`module.inventory`, `module.restaurant`, `limit.outlets`, `limit.devices`,
+  `limit.staff`); early access turns every module on and every limit off. Adding a key is a
+  migration.
+- Snapshots are cached in process for 30 s. Overrides are written by operator commands in another
+  process, so the TTL, not invalidation, bounds staleness; that is acceptable for modules and flags.
+- **Limits are never read from the cache.** `Resolver.CheckLimit` reads inside the creating
+  transaction, after `LockTenant`, with the current count, so an override applies at once and two
+  requests cannot both take the last slot (a test races ten tablets for three slots).
+  `limit.devices` counts devices that are not revoked, `limit.staff` active staff records;
+  `limit.outlets` is checked when outlet creation arrives with signup (Phase 2).
+- `403 limit_reached` and `403 module_disabled` are the error codes. `RequireModule` is ready for
+  the first module-gated endpoint (Phase 3).
+- The resolver reads the tenant's `plan_id` straight from the `tenant` row, the one place a module
+  reads another module's table: going through tenancy would make an import cycle, and the read is
+  one column.
+
 ### 4.6 Tenant plan fields (Phase 0, first migration)
 
 On `tenant`, per ADR 0007:
@@ -817,7 +836,7 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 | B0.6 | ✅ Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid`; `river` and `orion worker` with the verification email and the token purge (see 4.3.1) | 3d |
 | B0.7 | ✅ Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id), and the tenant audit log it needs (see 4.4.1) | 2d |
 | B0.8 | ✅ Device pairing, device token exchange, revocation, `device_code` allocation, and `GET /v1/pos/roster` (the roster download in the Phase 0 exit; see 4.3.2) | 2d |
-| B0.9 | Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests) | 2d |
+| B0.9 | ✅ Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests); enforced for devices and staff. Operator commands to set overrides arrive with B0.10 | 2d |
 | B0.10 | Platform: `operator`, TOTP enrolment and login, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set flag, override entitlement, suspend tenant), each writing to the audit log | 3d |
 | B0.11 | Tenant isolation test suite (two tenants, every endpoint) | 1d |
 | B0.12 | Receipt test endpoint: returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |

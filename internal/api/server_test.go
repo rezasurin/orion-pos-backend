@@ -17,6 +17,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/rezasurin/orion-pos-backend/internal/api"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
@@ -49,15 +50,16 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ents := entitlements.NewResolver(d.App, nil)
 	ids, err := identity.NewService(identity.Deps{
-		Pool: d.App, TenantKeys: identity.NewEphemeralKeyring(), DeviceKeys: identity.NewEphemeralKeyring(),
+		Entitlements: ents, Pool: d.App, TenantKeys: identity.NewEphemeralKeyring(), DeviceKeys: identity.NewEphemeralKeyring(),
 		Jobs: jobs, Gate: tenants.CheckActive,
 		PasswordCost: identity.ArgonParams{Time: 1, Memory: 8 * 1024, Threads: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := api.New(api.Deps{Identity: ids, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	srv, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

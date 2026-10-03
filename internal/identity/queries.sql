@@ -208,3 +208,9 @@ FROM staff_outlet_role sor
 JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
 WHERE sor.tenant_id = @tenant_id AND sor.outlet_id = @outlet_id
 ORDER BY sor.staff_id, rp.permission;
+
+-- name: CountActiveDevices :one
+SELECT count(*) FROM device WHERE tenant_id = @tenant_id AND revoked_at IS NULL;
+
+-- name: CountActiveStaff :one
+SELECT count(*) FROM staff WHERE tenant_id = @tenant_id AND active;

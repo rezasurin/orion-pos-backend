@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"github.com/getsentry/sentry-go"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
@@ -68,6 +70,14 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "no_tenant", "this account does not belong to a business"
 	case errors.Is(err, tenancy.ErrSuspended):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "tenant_suspended", "this business is suspended"
+	case errors.Is(err, entitlements.ErrLimitReached):
+		p.Status, p.Code, p.Detail = http.StatusForbidden, "limit_reached", "your plan's limit has been reached"
+		var le *entitlements.LimitError
+		if errors.As(err, &le) {
+			p.Detail = fmt.Sprintf("your plan allows %d (%s)", le.Limit, le.Key)
+		}
+	case errors.Is(err, entitlements.ErrModuleDisabled):
+		p.Status, p.Code, p.Detail = http.StatusForbidden, "module_disabled", "this module is not part of your plan"
 	case errors.Is(err, identity.ErrDeviceRevoked):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "device_revoked", "this device has been revoked"
 	case errors.As(err, &tenantRequired):

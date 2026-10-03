@@ -37,6 +37,8 @@ tags:
     description: People who work in the business, their roles and PINs
   - name: devices
     description: Pairing POS tablets and what they download
+  - name: entitlements
+    description: What the business's plan allows
 
 security:
   - userAuth: []
@@ -451,6 +453,25 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /v1/entitlements:
+    get:
+      operationId: getEntitlements
+      tags: [entitlements]
+      summary: Modules, limits and flags that apply to the business
+      description: |
+        Resolved as tenant override (unless expired), then plan, then default. A module that is off
+        answers its endpoints with `403 module_disabled`; a limit that would be exceeded answers
+        creation with `403 limit_reached`. Cached for up to 30 seconds.
+      responses:
+        '200':
+          description: The snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entitlements'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
 components:
   securitySchemes:
     userAuth:
@@ -517,7 +538,7 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
     Forbidden:
-      description: Authenticated but not allowed (`forbidden`, `email_not_verified`, `no_tenant`, `tenant_suspended`, `device_revoked`).
+      description: Authenticated but not allowed (`forbidden`, `email_not_verified`, `no_tenant`, `tenant_suspended`, `device_revoked`, `module_disabled`, `limit_reached`).
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
@@ -836,4 +857,26 @@ components:
         staff:
           type: array
           items: {$ref: '#/components/schemas/RosterStaff'}
+        generated_at: {type: string, format: date-time}
+
+    Entitlement:
+      type: object
+      required: [key, kind, category, value, source]
+      properties:
+        key: {type: string, example: limit.devices}
+        kind: {type: string, enum: [bool, int]}
+        category: {type: string, enum: [module, limit, flag]}
+        value:
+          type: integer
+          format: int64
+          description: 0 or 1 for a bool; a count for a limit, or -1 for unlimited.
+        source: {type: string, enum: [default, plan, override]}
+
+    Entitlements:
+      type: object
+      required: [items, generated_at]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Entitlement'}
         generated_at: {type: string, format: date-time}

@@ -197,6 +197,17 @@ type EmailVerification struct {
 	UsedAt    *time.Time
 }
 
+type EntitlementKey struct {
+	Key          string
+	Kind         string
+	Category     string
+	Description  string
+	Owner        string
+	IsTemporary  bool
+	DefaultValue int64
+	CreatedAt    time.Time
+}
+
 type Outlet struct {
 	ID         uuid.UUID
 	TenantID   uuid.UUID
@@ -231,6 +242,12 @@ type Plan struct {
 	Name      string
 	IsPublic  bool
 	CreatedAt time.Time
+}
+
+type PlanEntitlement struct {
+	PlanID uuid.UUID
+	Key    string
+	Value  int64
 }
 
 type RefreshToken struct {
@@ -349,6 +366,17 @@ type TenantAuditLog struct {
 	Detail     []byte
 	Ip         *netip.Addr
 	CreatedAt  time.Time
+}
+
+type TenantEntitlementOverride struct {
+	TenantID        uuid.UUID
+	Key             string
+	Value           int64
+	Reason          string
+	ExpiresAt       *time.Time
+	SetByOperatorID *uuid.UUID
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type TenantMember struct {

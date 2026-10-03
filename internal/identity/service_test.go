@@ -15,6 +15,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/notify"
@@ -64,12 +65,13 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	svc, err := identity.NewService(identity.Deps{
-		Pool:       d.App,
-		Clock:      clock,
-		TenantKeys: identity.NewEphemeralKeyring(),
-		DeviceKeys: identity.NewEphemeralKeyring(),
-		Hasher:     identity.NewHasher(4),
-		Jobs:       client,
+		Entitlements: entitlements.NewResolver(d.App, clock),
+		Pool:         d.App,
+		Clock:        clock,
+		TenantKeys:   identity.NewEphemeralKeyring(),
+		DeviceKeys:   identity.NewEphemeralKeyring(),
+		Hasher:       identity.NewHasher(4),
+		Jobs:         client,
 		// Cheap enough for tests; the production cost is exercised in password_test.go.
 		PasswordCost: identity.ArgonParams{Time: 1, Memory: 8 * 1024, Threads: 1},
 	})

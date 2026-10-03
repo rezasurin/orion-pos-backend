@@ -30,6 +30,8 @@ func isUnscoped(name string) bool {
 		return true
 	case name == "plan": // plans are global (ADR 0007)
 		return true
+	case name == "entitlement_key" || name == "plan_entitlement": // global configuration, like plan
+		return true
 	case strings.HasPrefix(name, "river_"): // the job queue; its arguments carry ids only
 		return true
 	}

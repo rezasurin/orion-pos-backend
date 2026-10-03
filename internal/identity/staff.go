@@ -188,6 +188,9 @@ func (s *Service) CreateStaff(ctx context.Context, c Caller, in NewStaff) (Staff
 		if len(in.OutletRoles) == 0 && !c.Access.Has(PermStaffManage) {
 			return &ForbiddenError{Permission: string(PermStaffManage)}
 		}
+		if err := s.checkStaffLimit(ctx, tx, q, c.Principal.TenantID); err != nil {
+			return err
+		}
 		var rotated *time.Time
 		if pinHash != nil {
 			rotated = &now

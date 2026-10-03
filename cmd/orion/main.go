@@ -24,6 +24,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/api"
 	"github.com/rezasurin/orion-pos-backend/internal/config"
 	"github.com/rezasurin/orion-pos-backend/internal/database"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
@@ -142,6 +143,7 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 
 	tenants := tenancy.NewService(pool)
+	ents := entitlements.NewResolver(pool, kernel.SystemClock{})
 	// The API only inserts jobs, in the same transaction as the write that needs them; the
 	// worker process runs them. A client without queues is insert-only.
 	jobs, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
@@ -154,12 +156,12 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	ids, err := identity.NewService(identity.Deps{
 		Pool: pool, Clock: kernel.SystemClock{}, TenantKeys: tenantKeys, DeviceKeys: deviceKeys,
-		Jobs: jobs, Gate: tenants.CheckActive,
+		Jobs: jobs, Gate: tenants.CheckActive, Entitlements: ents,
 	})
 	if err != nil {
 		return err
 	}
-	apiServer, err := api.New(api.Deps{Identity: ids, Tenancy: tenants, Logger: logger})
+	apiServer, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Tenancy: tenants, Logger: logger})
 	if err != nil {
 		return err
 	}

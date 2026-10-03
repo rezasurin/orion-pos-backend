@@ -19,6 +19,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity/db"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 )
@@ -68,7 +69,10 @@ type Deps struct {
 	Hasher     *Hasher
 	Jobs       JobInserter
 	Gate       TenantGate // optional
-	Config     Config
+	// Entitlements enforces plan limits (staff, devices) when creating things. Nil means no limits,
+	// which is only right for tests and tooling that deliberately bypass them.
+	Entitlements *entitlements.Resolver
+	Config       Config
 	// PasswordCost overrides the argon2id cost for new passwords. Leave it zero in production;
 	// tests lower it to stay fast.
 	PasswordCost ArgonParams
@@ -461,6 +465,9 @@ func (s *Service) CreateMember(ctx context.Context, in NewMember) (User, error) 
 		if err := kernel.LockTenant(ctx, tx); err != nil {
 			return err
 		}
+		if err := s.checkStaffLimit(ctx, tx, q, in.TenantID); err != nil {
+			return err
+		}
 		if err := q.InsertUser(ctx, db.InsertUserParams{
 			ID: userID, Email: in.Email, PasswordHash: hash, EmailVerifiedAt: verifiedAt, Locale: in.Locale,
 		}); err != nil {
@@ -609,4 +616,17 @@ func mapErr(err error) error {
 		}
 	}
 	return err
+}
+
+// checkStaffLimit enforces limit.staff. Call it after kernel.LockTenant, so two requests cannot
+// both take the last slot.
+func (s *Service) checkStaffLimit(ctx context.Context, tx pgx.Tx, q *db.Queries, tenantID uuid.UUID) error {
+	if s.Entitlements == nil {
+		return nil
+	}
+	n, err := q.CountActiveStaff(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	return s.Entitlements.CheckLimit(ctx, tx, tenantID, entitlements.LimitStaff, n)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	openapi "github.com/rezasurin/orion-pos-backend/gen/openapi"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
@@ -20,9 +21,10 @@ import (
 
 // Deps are the modules and settings the API needs.
 type Deps struct {
-	Identity *identity.Service
-	Tenancy  *tenancy.Service
-	Logger   *slog.Logger
+	Identity     *identity.Service
+	Entitlements *entitlements.Resolver
+	Tenancy      *tenancy.Service
+	Logger       *slog.Logger
 }
 
 // Server implements openapi.StrictServerInterface.
