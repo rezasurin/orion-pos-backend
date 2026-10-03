@@ -134,3 +134,23 @@ func TestAllocateErrors(t *testing.T) {
 		t.Error("non-zero total over zero weights: want error")
 	}
 }
+
+func TestExtractRate(t *testing.T) {
+	tests := []struct {
+		gross Rupiah
+		rate  BasisPoints
+		want  Rupiah
+	}{
+		{11_100, 1000, 1_009},
+		{11_000, 1000, 1_000},
+		{111_000, 1100, 11_000},
+		{100_000, 0, 0},
+		{10_500, 1000, 955}, // 954.545... rounds half up
+	}
+	for _, tt := range tests {
+		got, err := ExtractRate(tt.gross, tt.rate, RoundHalfUp)
+		if err != nil || got != tt.want {
+			t.Errorf("ExtractRate(%d, %d) = %d, %v; want %d", tt.gross, tt.rate, got, err, tt.want)
+		}
+	}
+}

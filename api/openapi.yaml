@@ -472,6 +472,28 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /v1/pos/receipt-test:
+    get:
+      operationId: getReceiptTest
+      tags: [devices]
+      summary: A sample receipt priced with the outlet's real settings
+      description: |
+        For the POS hardware spike: the outlet's header and footer, and a made-up sale priced with
+        its tax, service charge and cash rounding, numbered with the device's code. It is a preview
+        of the bill calculation in docs/BACKEND_PLAN.md section 4.8, without discounts; real sales
+        arrive in Phase 1. Money is integer rupiah.
+      security:
+        - deviceAuth: []
+      responses:
+        '200':
+          description: The sample receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceiptTest'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
 components:
   securitySchemes:
     userAuth:
@@ -880,3 +902,46 @@ components:
           type: array
           items: {$ref: '#/components/schemas/Entitlement'}
         generated_at: {type: string, format: date-time}
+
+    ReceiptTest:
+      type: object
+      required: [outlet, header, footer, receipt_number, printed_at, lines, subtotal, service_charge, tax, tax_included, total, rounding_amount, cash_total, pricing_version]
+      properties:
+        outlet:
+          type: object
+          required: [code, name, address, timezone]
+          properties:
+            code: {type: string}
+            name: {type: string}
+            address: {type: string}
+            timezone: {type: string}
+        header: {type: string}
+        footer: {type: string}
+        receipt_number:
+          type: string
+          example: JKT1-01-000001
+          description: "`{outlet_code}-{device_code:02d}-{counter:06d}`; the counter is always 1 here."
+        printed_at: {type: string, format: date-time}
+        lines:
+          type: array
+          items:
+            type: object
+            required: [name, quantity, unit_price, amount]
+            properties:
+              name: {type: string}
+              quantity: {type: integer}
+              unit_price: {type: integer, format: int64}
+              amount: {type: integer, format: int64}
+        subtotal: {type: integer, format: int64}
+        service_charge: {type: integer, format: int64}
+        tax: {type: integer, format: int64}
+        tax_included:
+          type: boolean
+          description: True when prices already include the tax, so it is shown but not added to the total.
+        total: {type: integer, format: int64}
+        rounding_amount:
+          type: integer
+          format: int64
+          description: Cash rounding, applied to a cash tender only.
+        cash_total: {type: integer, format: int64, description: total plus rounding_amount}
+        pricing_version: {type: string, example: sample-0}

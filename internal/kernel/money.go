@@ -35,6 +35,13 @@ func ApplyRate(amount Rupiah, rate BasisPoints, mode RoundingMode) (Rupiah, erro
 	return divRound(n, big.NewInt(10000), mode)
 }
 
+// ExtractRate returns the tax contained in a tax-inclusive amount: gross × rate / (10000 + rate),
+// rounded with mode. A gross of 11,100 at 11% contains 1,100.
+func ExtractRate(gross Rupiah, rate BasisPoints, mode RoundingMode) (Rupiah, error) {
+	n := new(big.Int).Mul(big.NewInt(int64(gross)), big.NewInt(int64(rate)))
+	return divRound(n, big.NewInt(10000+int64(rate)), mode)
+}
+
 // RoundToUnit rounds amount to a multiple of unit, for cash rounding (pembulatan). A unit of 0 or
 // 1 leaves the amount unchanged.
 func RoundToUnit(amount, unit Rupiah, mode RoundingMode) (Rupiah, error) {

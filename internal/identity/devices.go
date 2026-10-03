@@ -252,6 +252,20 @@ func (s *Service) CheckDevice(ctx context.Context, p Principal) error {
 	})
 }
 
+// GetDevice returns the device behind a device principal.
+func (s *Service) GetDevice(ctx context.Context, p Principal) (Device, error) {
+	var out Device
+	err := kernel.TenantTx(ctx, s.Pool, p.TenantID, func(tx pgx.Tx) error {
+		d, err := db.New(tx).GetDevice(ctx, db.GetDeviceParams{TenantID: p.TenantID, ID: p.DeviceID})
+		if err != nil {
+			return mapNoRows(err, ErrInvalidToken)
+		}
+		out = toDevice(d)
+		return nil
+	})
+	return out, err
+}
+
 // RosterStaff is one person on a device's lock screen.
 type RosterStaff struct {
 	StaffID     uuid.UUID

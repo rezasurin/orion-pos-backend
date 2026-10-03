@@ -839,7 +839,7 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 | B0.9 | ✅ Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests); enforced for devices and staff. Operator commands to set overrides arrive with B0.10 | 2d |
 | B0.10 | Platform: `operator`, TOTP enrolment and login, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set flag, override entitlement, suspend tenant), each writing to the audit log | 3d |
 | B0.11 | Tenant isolation test suite (two tenants, every endpoint) | 1d |
-| B0.12 | Receipt test endpoint: returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |
+| B0.12 | ✅ Receipt test endpoint (`GET /v1/pos/receipt-test`, device token; a made-up sale priced with the outlet's tax, service charge and cash rounding, numbered with the device code; a preview of 4.8 without discounts): returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |
 | B0.13 | Ops: deploy target chosen (section 11), repeatable deploy from CI on tag, managed Postgres or pgBackRest with PITR, **restore drill documented in `docs/runbooks/restore.md` and done once** | 3d |
 | B0.14 | ✅ Seed command for a demo tenant (`orion admin seed-demo`) for front-end and MSW work. `orion admin create-tenant` also exists (the rest of the `orion admin` CLI is B0.10) | 0.5d |
 

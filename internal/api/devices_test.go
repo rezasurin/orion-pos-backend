@@ -303,3 +303,39 @@ func TestLimitsAndEntitlementsOverHTTP(t *testing.T) {
 		t.Errorf("detail = %q", d)
 	}
 }
+
+func TestReceiptTest(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	e.d.Exec(t, `UPDATE outlet_settings SET tax_rate_bp = 1100, service_charge_rate_bp = 500, service_charge_taxable = true,
+		cash_rounding_unit = 500, receipt_header = 'Kopi Senja', receipt_footer = 'Terima kasih' WHERE outlet_id = $1`, f.outlet.ID)
+	e.pairDevice(t, owner, f.outlet.ID.String(), "first") // takes code 1
+	dev := e.deviceToken(t, e.pairDevice(t, owner, f.outlet.ID.String(), "second").DeviceSecret)
+
+	r := e.do(t, "GET", "/v1/pos/receipt-test", dev.AccessToken, nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("%d %s", r.Code, r.Body.String())
+	}
+	var got struct {
+		Outlet        struct{ Code, Timezone string } `json:"outlet"`
+		Header        string                          `json:"header"`
+		Footer        string                          `json:"footer"`
+		ReceiptNumber string                          `json:"receipt_number"`
+		Lines         []struct{ Name string }         `json:"lines"`
+		Subtotal      int64                           `json:"subtotal"`
+		ServiceCharge int64                           `json:"service_charge"`
+		Tax           int64                           `json:"tax"`
+		Total         int64                           `json:"total"`
+		Rounding      int64                           `json:"rounding_amount"`
+		CashTotal     int64                           `json:"cash_total"`
+	}
+	r.decode(t, &got)
+	if got.Outlet.Code != "JKT1" || got.Header != "Kopi Senja" || got.Footer != "Terima kasih" || got.ReceiptNumber != "JKT1-02-000001" ||
+		len(got.Lines) != 3 || got.Subtotal != 94_500 || got.ServiceCharge != 4_725 || got.Tax != 10_915 ||
+		got.Total != 110_140 || got.Rounding != -140 || got.CashTotal != 110_000 {
+		t.Errorf("receipt = %+v", got)
+	}
+	e.do(t, "GET", "/v1/pos/receipt-test", owner, nil).problem(t, http.StatusUnauthorized, "invalid_token")
+	e.do(t, "GET", "/v1/pos/receipt-test", "", nil).problem(t, http.StatusUnauthorized, "invalid_token")
+}
