@@ -39,6 +39,7 @@ const usage = `usage: orion <command>
 commands:
   serve                    run the HTTP API
   worker                   run background jobs
+  admin <command>          operator commands: create-tenant, seed-demo
   migrate up|down|status   manage the database schema
   version                  print the build version
 `
@@ -74,6 +75,8 @@ func run(args []string) error {
 		return serve(ctx, cfg, logger)
 	case "worker":
 		return worker(ctx, cfg, logger)
+	case "admin":
+		return admin(ctx, cfg, logger, args[1:])
 	case "migrate":
 		return migrate(ctx, cfg, logger, args[1:])
 	default:

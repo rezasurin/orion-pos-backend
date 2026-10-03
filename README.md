@@ -18,6 +18,7 @@ Requirements: Go (version in `go.mod`), Docker, and `golangci-lint` for `make li
 make db-up   # local Postgres
 make run     # migrate and serve on :8080
 make worker  # background jobs (in a second terminal); emails are written to the log
+./bin/orion admin seed-demo   # demo business: owner@demo.orion.test / demo-password-1, cashier PINs, a paired device
 make test    # all tests, against a real Postgres started by testcontainers
 make lint
 make gen     # regenerate sqlc and OpenAPI code after editing migrations, queries or api/openapi.yaml

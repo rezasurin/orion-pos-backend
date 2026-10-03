@@ -822,7 +822,7 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 | B0.11 | Tenant isolation test suite (two tenants, every endpoint) | 1d |
 | B0.12 | Receipt test endpoint: returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |
 | B0.13 | Ops: deploy target chosen (section 11), repeatable deploy from CI on tag, managed Postgres or pgBackRest with PITR, **restore drill documented in `docs/runbooks/restore.md` and done once** | 3d |
-| B0.14 | Seed command for a demo tenant (`orion admin seed-demo`) for front-end and MSW work | 0.5d |
+| B0.14 | ✅ Seed command for a demo tenant (`orion admin seed-demo`) for front-end and MSW work. `orion admin create-tenant` also exists (the rest of the `orion admin` CLI is B0.10) | 0.5d |
 
 **Done when** (backend side of the roadmap exit): a tablet can pair with an outlet, fetch a device
 token, download the staff roster with PIN hashes, and fetch receipt data from the deployed API;
