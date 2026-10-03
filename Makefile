@@ -6,6 +6,8 @@ COMPOSE := docker compose -f deploy/compose.yaml
 # Local database from deploy/compose.yaml.
 export ORION_MIGRATE_DATABASE_URL ?= postgres://orion_owner:orion@localhost:5432/orion?sslmode=disable
 export ORION_DATABASE_URL ?= postgres://orion_api:orion@localhost:5432/orion?sslmode=disable
+# A fixed key for local development only; real environments use a secret from the secret store.
+export ORION_SECRETS_KEY ?= b3Jpb24tbG9jYWwtZGV2ZWxvcG1lbnQta2V5LTAwMDE
 export ORION_PLATFORM_DATABASE_URL ?= postgres://orion_admin:orion@localhost:5432/orion?sslmode=disable
 
 .PHONY: help gen lint test build run worker migrate db-up db-down db-reset

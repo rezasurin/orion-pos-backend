@@ -208,6 +208,26 @@ type EntitlementKey struct {
 	CreatedAt    time.Time
 }
 
+type Operator struct {
+	ID              uuid.UUID
+	Email           string
+	PasswordHash    string
+	TotpSecretEnc   []byte
+	TotpConfirmedAt *time.Time
+	TotpLastStep    int64
+	DisabledAt      *time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type OperatorRecoveryCode struct {
+	ID         uuid.UUID
+	OperatorID uuid.UUID
+	CodeHash   []byte
+	UsedAt     *time.Time
+	CreatedAt  time.Time
+}
+
 type Outlet struct {
 	ID         uuid.UUID
 	TenantID   uuid.UUID
@@ -248,6 +268,21 @@ type PlanEntitlement struct {
 	PlanID uuid.UUID
 	Key    string
 	Value  int64
+}
+
+type PlatformAuditLog struct {
+	ID         uuid.UUID
+	OperatorID *uuid.UUID
+	Action     string
+	TargetType string
+	TargetID   *uuid.UUID
+	TenantID   *uuid.UUID
+	Before     []byte
+	After      []byte
+	Reason     string
+	Ip         *netip.Addr
+	UserAgent  *string
+	CreatedAt  time.Time
 }
 
 type RefreshToken struct {

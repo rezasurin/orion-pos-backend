@@ -83,6 +83,28 @@ func (q *Queries) GetKeyKind(ctx context.Context, key string) (string, error) {
 	return kind, err
 }
 
+const getOverride = `-- name: GetOverride :one
+SELECT value, reason, expires_at FROM tenant_entitlement_override WHERE tenant_id = $1 AND key = $2
+`
+
+type GetOverrideParams struct {
+	TenantID uuid.UUID
+	Key      string
+}
+
+type GetOverrideRow struct {
+	Value     int64
+	Reason    string
+	ExpiresAt *time.Time
+}
+
+func (q *Queries) GetOverride(ctx context.Context, arg GetOverrideParams) (GetOverrideRow, error) {
+	row := q.db.QueryRow(ctx, getOverride, arg.TenantID, arg.Key)
+	var i GetOverrideRow
+	err := row.Scan(&i.Value, &i.Reason, &i.ExpiresAt)
+	return i, err
+}
+
 const listEntitlements = `-- name: ListEntitlements :many
 SELECT k.key, k.kind, k.category, k.default_value,
        pe.value AS plan_value,

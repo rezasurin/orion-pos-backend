@@ -46,6 +46,11 @@ Outside local development the service needs JWT signing keys (`ORION_JWT_TENANT_
 until every token it signed has expired (access tokens: 15 minutes for users, 30 minutes for
 devices), then remove it.
 
+The operator console needs `ORION_PLATFORM_DATABASE_URL` on `orion serve` too, `ORION_SECRETS_KEY`
+(encrypts TOTP seeds; losing it locks every operator out, so keep it in the secret store and back
+it up apart from the database) and `ORION_JWT_OPERATOR_KEYS`. Create the first operator with
+`orion admin create-operator --email you@example.com --reason bootstrap` and store what it prints.
+
 There is no email provider yet. `ORION_EMAIL_PROVIDER=log` writes each message, including
 verification links, to the log, so `orion worker` refuses it when `ORION_ENV=production`.
 

@@ -39,6 +39,8 @@ tags:
     description: Pairing POS tablets and what they download
   - name: entitlements
     description: What the business's plan allows
+  - name: admin
+    description: Operator (Orion staff) sign-in and audit log. Needs ORION_PLATFORM_DATABASE_URL on the server.
 
 security:
   - userAuth: []
@@ -494,6 +496,82 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /admin/auth/login:
+    post:
+      operationId: adminLogin
+      tags: [admin]
+      summary: Operator password step
+      description: |
+        Returns a challenge token valid for 5 minutes. It is not a session: exchange it with a TOTP
+        or recovery code at `/admin/auth/totp/verify`. Unknown operators and wrong passwords look
+        the same.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Password accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorChallenge'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/auth/totp/verify:
+    post:
+      operationId: adminVerifyTotp
+      tags: [admin]
+      summary: Operator second step
+      description: |
+        A TOTP code works once; so does each recovery code. The first successful code confirms
+        enrolment. The session lasts one hour; there is no refresh, sign in again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorVerifyRequest'
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorSession'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/audit-log:
+    get:
+      operationId: adminListAuditLog
+      tags: [admin]
+      summary: Platform audit log, newest first
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of entries; `next_cursor` leads to older ones
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
 components:
   securitySchemes:
     userAuth:
@@ -501,6 +579,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Access token of an owner or manager (audience `tenant`), from `POST /v1/auth/login`.
+    operatorAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Operator session token (audience `operator`), from `/admin/auth/totp/verify`.
     deviceAuth:
       type: http
       scheme: bearer
@@ -571,6 +654,11 @@ components:
           schema: {$ref: '#/components/schemas/Problem'}
     Conflict:
       description: The request conflicts with current state (`conflict`, `tenant_required`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unavailable:
+      description: The operator console is not enabled on this server (`admin_disabled`).
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
@@ -945,3 +1033,54 @@ components:
           description: Cash rounding, applied to a cash tender only.
         cash_total: {type: integer, format: int64, description: total plus rounding_amount}
         pricing_version: {type: string, example: sample-0}
+
+    OperatorChallenge:
+      type: object
+      required: [challenge_token, challenge_expires_at, totp_enrolled]
+      properties:
+        challenge_token: {type: string}
+        challenge_expires_at: {type: string, format: date-time}
+        totp_enrolled: {type: boolean, description: False until the first successful code.}
+
+    OperatorVerifyRequest:
+      type: object
+      required: [challenge_token]
+      properties:
+        challenge_token: {type: string, maxLength: 1024}
+        code: {type: string, maxLength: 12, description: The 6-digit TOTP code.}
+        recovery_code: {type: string, maxLength: 40}
+
+    OperatorSession:
+      type: object
+      required: [token_type, access_token, access_expires_at, operator_id]
+      properties:
+        token_type: {type: string, enum: [Bearer]}
+        access_token: {type: string}
+        access_expires_at: {type: string, format: date-time}
+        operator_id: {type: string, format: uuid}
+
+    AuditEntry:
+      type: object
+      required: [id, action, target_type, reason, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        operator_id: {type: string, format: uuid, nullable: true}
+        action: {type: string, example: tenant.suspended}
+        target_type: {type: string}
+        target_id: {type: string, format: uuid, nullable: true}
+        tenant_id: {type: string, format: uuid, nullable: true}
+        before: {nullable: true, description: State before the action, as JSON.}
+        after: {nullable: true, description: State after the action, as JSON.}
+        reason: {type: string}
+        ip: {type: string}
+        user_agent: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    AuditLogPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AuditEntry'}
+        next_cursor: {type: string, format: uuid}

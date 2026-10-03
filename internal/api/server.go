@@ -16,6 +16,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
@@ -23,8 +24,11 @@ import (
 type Deps struct {
 	Identity     *identity.Service
 	Entitlements *entitlements.Resolver
-	Tenancy      *tenancy.Service
-	Logger       *slog.Logger
+	// Platform serves the operator console. Nil when the server has no platform database; operator
+	// routes then answer 503 admin_disabled.
+	Platform *platform.Service
+	Tenancy  *tenancy.Service
+	Logger   *slog.Logger
 }
 
 // Server implements openapi.StrictServerInterface.
@@ -42,6 +46,10 @@ type Server struct {
 	emailByAccount *httpserver.Limiter
 	pinByUser      *httpserver.Limiter
 	pairByUser     *httpserver.Limiter
+
+	adminByIP        *httpserver.Limiter
+	adminByAccount   *httpserver.Limiter
+	adminByChallenge *httpserver.Limiter
 }
 
 var _ openapi.StrictServerInterface = (*Server)(nil)
@@ -66,6 +74,10 @@ func New(d Deps) (*Server, error) {
 		emailByAccount: httpserver.NewLimiter(5*time.Minute, 3),
 		pinByUser:      httpserver.NewLimiter(6*time.Second, 10),
 		pairByUser:     httpserver.NewLimiter(12*time.Second, 5),
+
+		adminByIP:        httpserver.NewLimiter(6*time.Second, 10),
+		adminByAccount:   httpserver.NewLimiter(time.Minute, 5),
+		adminByChallenge: httpserver.NewLimiter(time.Minute, 5),
 	}, nil
 }
 

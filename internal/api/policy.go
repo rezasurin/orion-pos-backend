@@ -11,6 +11,7 @@ import (
 // policy is what an operation requires of its caller, read from the OpenAPI document so the
 // contract and the enforcement cannot drift apart.
 type policy struct {
+	operator   bool              // operatorAuth: an Orion operator, not a tenant principal
 	public     bool              // security: [] in the spec
 	audience   identity.Audience // the token family the route accepts
 	permission string            // x-permission, empty if any signed-in caller will do
@@ -41,6 +42,8 @@ func policiesFromSpec(doc *openapi3.T) (map[string]policy, error) {
 					switch scheme {
 					case "userAuth":
 						p.audience = identity.AudienceTenant
+					case "operatorAuth":
+						p.operator = true
 					case "deviceAuth":
 						p.audience = identity.AudienceDevice
 					default:

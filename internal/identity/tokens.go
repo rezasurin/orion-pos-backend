@@ -111,6 +111,18 @@ func (k *Keyring) verify(token string, aud Audience, now func() time.Time, claim
 	return nil
 }
 
+// SignClaims signs claims with the active key, for other modules that issue their own tokens
+// (operators). The caller sets the issuer, audience and expiry.
+func (k *Keyring) SignClaims(claims jwt.Claims) (string, error) { return k.sign(claims) }
+
+// VerifyClaims checks a token's signature, issuer, expiry and audience and fills claims.
+func (k *Keyring) VerifyClaims(token string, aud Audience, now func() time.Time, claims jwt.Claims) error {
+	return k.verify(token, aud, now, claims)
+}
+
+// Issuer is the `iss` claim of every token Orion issues.
+const Issuer = issuer
+
 // accessClaims are the claims of an access token. Device tokens add the device and its outlet.
 type accessClaims struct {
 	jwt.RegisteredClaims

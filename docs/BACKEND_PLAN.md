@@ -242,6 +242,34 @@ Notes:
   different keys and audiences.
 - Revoking and pairing are written to `tenant_audit_log`; a token exchange is not (too frequent).
 
+#### 4.3.3 Operators as built (B0.10)
+
+- **Separate world.** `operator`, `operator_recovery_code` and `platform_audit_log` are readable only
+  through `orion_platform`; `orion_app` has no privilege on them (a schema test checks every
+  privilege). Operator tokens use `aud=operator` and their own signing keys
+  (`ORION_JWT_OPERATOR_KEYS`), so no tenant or device token can be one.
+- **Two steps, always.** `POST /admin/auth/login` checks the password and returns a 5 minute
+  challenge, which is not a session. `POST /admin/auth/totp/verify` takes a TOTP code or a recovery
+  code and returns a 1 hour session. Unknown operator, wrong password, wrong code and disabled
+  account give the same `invalid_credentials`. There is no refresh token: an operator signs in
+  again each hour, which is acceptable for a handful of people (add one if it hurts).
+- **Codes work once.** The last accepted TOTP time step is stored, under a row lock, so a code
+  cannot be replayed within its window and two simultaneous uses of one code produce one session
+  (tested). Each challenge allows five guesses, and each address and account are limited too.
+- **Enrolment** happens through the CLI: `orion admin create-operator` prints a generated password,
+  the TOTP secret and URI, and ten recovery codes, once. Recovery codes are 80-bit random values
+  stored as SHA-256. The first successful code confirms enrolment. TOTP seeds are encrypted with
+  AES-256-GCM (`kernel.Box`, key `ORION_SECRETS_KEY`, bound to the operator's id) because they must
+  be read back. **Losing that key locks every operator out**, so it is backed up separately from the
+  database, in the secret store.
+- **Audit.** Every operator action writes `platform_audit_log` in the same transaction as the
+  change, with before and after state, the operator, the address, the user agent and a required
+  reason; sign-ins, enrolment and recovery-code use are logged too. The first operator is created
+  with no actor (there is nobody to attribute it to); every later one needs `--operator`.
+  `GET /admin/audit-log` pages newest first.
+- **Console off by default.** `orion serve` mounts `/admin` working only when
+  `ORION_PLATFORM_DATABASE_URL` is set; otherwise those routes answer `503 admin_disabled`.
+
 ### 4.4 Roles and permissions
 
 ADR 0002 requires roles from the start.
@@ -837,7 +865,7 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 | B0.7 | ✅ Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id), and the tenant audit log it needs (see 4.4.1) | 2d |
 | B0.8 | ✅ Device pairing, device token exchange, revocation, `device_code` allocation, and `GET /v1/pos/roster` (the roster download in the Phase 0 exit; see 4.3.2) | 2d |
 | B0.9 | ✅ Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests); enforced for devices and staff. Operator commands to set overrides arrive with B0.10 | 2d |
-| B0.10 | Platform: `operator`, TOTP enrolment and login, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set flag, override entitlement, suspend tenant), each writing to the audit log | 3d |
+| B0.10 | ✅ Platform: `operator`, TOTP sign-in, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set and clear entitlement overrides, suspend and reinstate tenants), each writing to the audit log with a required reason (see 4.3.3). Not built: operator refresh tokens, `set-flag` (flags are overrides) | 3d |
 | B0.11 | Tenant isolation test suite (two tenants, every endpoint) | 1d |
 | B0.12 | ✅ Receipt test endpoint (`GET /v1/pos/receipt-test`, device token; a made-up sale priced with the outlet's tax, service charge and cash rounding, numbered with the device code; a preview of 4.8 without discounts): returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |
 | B0.13 | Ops: deploy target chosen (section 11), repeatable deploy from CI on tag, managed Postgres or pgBackRest with PITR, **restore drill documented in `docs/runbooks/restore.md` and done once** | 3d |

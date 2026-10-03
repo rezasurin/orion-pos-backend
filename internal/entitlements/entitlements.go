@@ -241,13 +241,19 @@ type Override struct {
 	OperatorID *uuid.UUID
 }
 
-// SetOverride creates or replaces an override. The caller (operator tooling) writes the audit entry
-// in the same unit of work from B0.10 on.
+// SetOverride creates or replaces an override.
 func (a *Admin) SetOverride(ctx context.Context, o Override) error {
+	return pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) error { return a.SetOverrideTx(ctx, tx, o) })
+}
+
+// SetOverrideTx is SetOverride inside the caller's transaction, so operator tooling can write the
+// platform audit entry atomically with the change.
+func (a *Admin) SetOverrideTx(ctx context.Context, tx pgx.Tx, o Override) error {
 	if o.Reason == "" {
 		return fmt.Errorf("%w: a reason is required", kernel.ErrValidation)
 	}
-	kind, err := db.New(a.pool).GetKeyKind(ctx, string(o.Key))
+	q := db.New(tx)
+	kind, err := q.GetKeyKind(ctx, string(o.Key))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("%w: %s", ErrUnknownKey, o.Key)
 	}
@@ -257,14 +263,33 @@ func (a *Admin) SetOverride(ctx context.Context, o Override) error {
 	if o.Value < Unlimited || (kind == "bool" && o.Value > 1) {
 		return fmt.Errorf("%w: %s takes %s", kernel.ErrValidation, o.Key, map[string]string{"bool": "0 or 1", "int": "a count or -1 for unlimited"}[kind])
 	}
-	return db.New(a.pool).UpsertOverride(ctx, db.UpsertOverrideParams{
+	return q.UpsertOverride(ctx, db.UpsertOverrideParams{
 		TenantID: o.TenantID, Key: string(o.Key), Value: o.Value, Reason: o.Reason,
 		ExpiresAt: o.ExpiresAt, SetByOperatorID: o.OperatorID,
 	})
 }
 
+// GetOverrideTx returns the current override, or nil if there is none.
+func (a *Admin) GetOverrideTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, key Key) (*Override, error) {
+	row, err := db.New(tx).GetOverride(ctx, db.GetOverrideParams{TenantID: tenantID, Key: string(key)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Override{TenantID: tenantID, Key: key, Value: row.Value, Reason: row.Reason, ExpiresAt: row.ExpiresAt}, nil
+}
+
 // ClearOverride removes an override and reports whether there was one.
 func (a *Admin) ClearOverride(ctx context.Context, tenantID uuid.UUID, key Key) (bool, error) {
-	n, err := db.New(a.pool).DeleteOverride(ctx, db.DeleteOverrideParams{TenantID: tenantID, Key: string(key)})
+	var ok bool
+	err := pgx.BeginFunc(ctx, a.pool, func(tx pgx.Tx) (err error) { ok, err = a.ClearOverrideTx(ctx, tx, tenantID, key); return })
+	return ok, err
+}
+
+// ClearOverrideTx is ClearOverride inside the caller's transaction.
+func (a *Admin) ClearOverrideTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, key Key) (bool, error) {
+	n, err := db.New(tx).DeleteOverride(ctx, db.DeleteOverrideParams{TenantID: tenantID, Key: string(key)})
 	return n > 0, err
 }

@@ -30,6 +30,18 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 		if !ok {
 			return nil, identity.ErrInvalidToken
 		}
+		if pol.operator {
+			plat, err := s.platformOrErr()
+			if err != nil {
+				return nil, err
+			}
+			op, err := plat.Authenticate(ctx, bearer)
+			if err != nil {
+				return nil, err
+			}
+			httpserver.AddLogAttrs(ctx, slog.String("principal_type", "operator"), slog.String("principal_id", op.ID.String()))
+			return next(ctx, w, r, req)
+		}
 		p, err := s.Identity.Authenticate(pol.audience, bearer)
 		if err != nil {
 			return nil, err

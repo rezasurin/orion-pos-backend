@@ -3,6 +3,8 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -20,6 +22,8 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 	"github.com/rezasurin/orion-pos-backend/internal/testdb"
 )
@@ -30,10 +34,11 @@ const password = "correct horse battery"
 
 // env is the whole service wired the way cmd/orion wires it, behind an in-memory HTTP server.
 type env struct {
-	d       *testdb.DB
-	handler http.Handler
-	ids     *identity.Service
-	tenants *tenancy.Service
+	d        *testdb.DB
+	handler  http.Handler
+	ids      *identity.Service
+	tenants  *tenancy.Service
+	platform *platform.Service
 }
 
 type tenantFixture struct {
@@ -42,7 +47,9 @@ type tenantFixture struct {
 	owner  identity.User
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T) *env { t.Helper(); return newEnvWith(t, true) }
+
+func newEnvWith(t *testing.T, withPlatform bool) *env {
 	t.Helper()
 	d := testdb.New(t)
 	tenants := tenancy.NewService(d.App)
@@ -59,7 +66,24 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	var plat *platform.Service
+	if withPlatform {
+		key := make([]byte, 32)
+		_, _ = rand.Read(key)
+		box, err := kernel.NewBox(base64.RawURLEncoding.EncodeToString(key))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plat, err = platform.NewService(platform.Deps{
+			Pool: d.Platform, Box: box, Keys: identity.NewEphemeralKeyring(),
+			Entitlements: entitlements.NewAdmin(d.Platform), Tenants: tenancy.NewAdmin(d.Platform),
+			PasswordCost: identity.ArgonParams{Time: 1, Memory: 8 * 1024, Threads: 1},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +91,7 @@ func newEnv(t *testing.T) *env {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Routes: func(r chi.Router) { srv.Routes(r) },
 	})
-	return &env{d: d, handler: handler, ids: ids, tenants: tenants}
+	return &env{d: d, handler: handler, ids: ids, tenants: tenants, platform: plat}
 }
 
 // business creates a tenant with one outlet and a verified owner.

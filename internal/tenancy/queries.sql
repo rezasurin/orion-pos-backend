@@ -36,3 +36,11 @@ SELECT sqlc.embed(o), sqlc.embed(s)
 FROM outlet o
 JOIN outlet_settings s ON s.tenant_id = o.tenant_id AND s.outlet_id = o.id
 WHERE o.tenant_id = @tenant_id AND o.id = @id;
+
+-- Queries below run as orion_platform, from operator tooling.
+
+-- name: GetTenantBySlug :one
+SELECT * FROM tenant WHERE slug = @slug;
+
+-- name: SetTenantSuspended :exec
+UPDATE tenant SET suspended_at = sqlc.narg(suspended_at) WHERE id = @id;

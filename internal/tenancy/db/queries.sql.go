@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -64,6 +65,32 @@ SELECT id, name, slug, plan_id, subscription_status, trial_ends_at, paid_until, 
 
 func (q *Queries) GetTenant(ctx context.Context, id uuid.UUID) (Tenant, error) {
 	row := q.db.QueryRow(ctx, getTenant, id)
+	var i Tenant
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Slug,
+		&i.PlanID,
+		&i.SubscriptionStatus,
+		&i.TrialEndsAt,
+		&i.PaidUntil,
+		&i.BillingStartsAt,
+		&i.SuspendedAt,
+		&i.ChangeSeq,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getTenantBySlug = `-- name: GetTenantBySlug :one
+
+SELECT id, name, slug, plan_id, subscription_status, trial_ends_at, paid_until, billing_starts_at, suspended_at, change_seq, created_at, updated_at FROM tenant WHERE slug = $1
+`
+
+// Queries below run as orion_platform, from operator tooling.
+func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (Tenant, error) {
+	row := q.db.QueryRow(ctx, getTenantBySlug, slug)
 	var i Tenant
 	err := row.Scan(
 		&i.ID,
@@ -266,4 +293,18 @@ func (q *Queries) RecordChange(ctx context.Context, arg RecordChangeParams) (int
 	var seq int64
 	err := row.Scan(&seq)
 	return seq, err
+}
+
+const setTenantSuspended = `-- name: SetTenantSuspended :exec
+UPDATE tenant SET suspended_at = $1 WHERE id = $2
+`
+
+type SetTenantSuspendedParams struct {
+	SuspendedAt *time.Time
+	ID          uuid.UUID
+}
+
+func (q *Queries) SetTenantSuspended(ctx context.Context, arg SetTenantSuspendedParams) error {
+	_, err := q.db.Exec(ctx, setTenantSuspended, arg.SuspendedAt, arg.ID)
+	return err
 }

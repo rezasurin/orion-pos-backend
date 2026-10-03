@@ -36,3 +36,6 @@ SET value = EXCLUDED.value, reason = EXCLUDED.reason, expires_at = EXCLUDED.expi
 
 -- name: DeleteOverride :execrows
 DELETE FROM tenant_entitlement_override WHERE tenant_id = @tenant_id AND key = @key;
+
+-- name: GetOverride :one
+SELECT value, reason, expires_at FROM tenant_entitlement_override WHERE tenant_id = @tenant_id AND key = @key;

@@ -17,6 +17,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
@@ -58,6 +59,12 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 	case errors.Is(err, kernel.ErrValidation):
 		p.Status, p.Code = http.StatusBadRequest, "validation_failed"
 		p.Detail = strings.TrimPrefix(err.Error(), kernel.ErrValidation.Error()+": ")
+	case errors.Is(err, errAdminDisabled):
+		p.Status, p.Code, p.Detail = http.StatusServiceUnavailable, "admin_disabled", "the operator console is not enabled on this server"
+	case errors.Is(err, platform.ErrInvalidCredentials):
+		p.Status, p.Code, p.Detail = http.StatusUnauthorized, "invalid_credentials", "credentials or code are wrong"
+	case errors.Is(err, platform.ErrInvalidToken):
+		p.Status, p.Code, p.Detail = http.StatusUnauthorized, "invalid_token", "the token is invalid, expired or already used"
 	case errors.Is(err, identity.ErrInvalidCredentials):
 		p.Status, p.Code, p.Detail = http.StatusUnauthorized, "invalid_credentials", "email or password is wrong"
 	case errors.Is(err, identity.ErrTokenReuse):

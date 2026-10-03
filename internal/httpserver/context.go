@@ -14,6 +14,7 @@ type ctxKey int
 const (
 	clientIPKey ctxKey = iota
 	logAttrsKey
+	userAgentKey
 )
 
 // ClientIP is the address of the caller as the service sees it. See the trustProxy argument of
@@ -21,6 +22,12 @@ const (
 func ClientIP(ctx context.Context) string {
 	ip, _ := ctx.Value(clientIPKey).(string)
 	return ip
+}
+
+// UserAgent is the caller's User-Agent header, truncated, for the audit log.
+func UserAgent(ctx context.Context) string {
+	ua, _ := ctx.Value(userAgentKey).(string)
+	return ua
 }
 
 // clientIPMiddleware records the caller's address. Behind exactly one trusted proxy (a load
@@ -41,7 +48,12 @@ func clientIPMiddleware(trustProxy bool) func(http.Handler) http.Handler {
 					}
 				}
 			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), clientIPKey, ip)))
+			ua := r.UserAgent()
+			if len(ua) > 200 {
+				ua = ua[:200]
+			}
+			ctx := context.WithValue(context.WithValue(r.Context(), clientIPKey, ip), userAgentKey, ua)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }

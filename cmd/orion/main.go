@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/notify"
+	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
@@ -161,7 +163,23 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	apiServer, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Tenancy: tenants, Logger: logger})
+	var plat *platform.Service
+	if cfg.PlatformDatabaseURL != "" {
+		pp, err := database.Connect(ctx, cfg.PlatformDatabaseURL)
+		if err != nil {
+			return err
+		}
+		defer pp.Close()
+		if err := database.CheckPlatformRole(ctx, pp); err != nil {
+			return err
+		}
+		if plat, err = newPlatform(cfg, logger, pp); err != nil {
+			return err
+		}
+	} else {
+		logger.Warn("ORION_PLATFORM_DATABASE_URL is not set: the operator console (/admin) is disabled")
+	}
+	apiServer, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: logger})
 	if err != nil {
 		return err
 	}
@@ -221,6 +239,16 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 // keyrings reads the JWT signing keys. Outside local development they are required; locally,
 // missing keys are replaced by random ones, so tokens stop working at every restart.
 func keyrings(cfg config.Config, logger *slog.Logger) (tenant, device *identity.Keyring, err error) {
+	return keyring(cfg, logger, "ORION_JWT_TENANT_KEYS", cfg.TenantJWTKeys, "ORION_JWT_DEVICE_KEYS", cfg.DeviceJWTKeys)
+}
+
+// operatorKeyring reads the operator session signing keys, with the same local-development rule.
+func operatorKeyring(cfg config.Config, logger *slog.Logger) (*identity.Keyring, error) {
+	k, _, err := keyring(cfg, logger, "ORION_JWT_OPERATOR_KEYS", cfg.OperatorJWTKeys, "", "x")
+	return k, err
+}
+
+func keyring(cfg config.Config, logger *slog.Logger, nameA, specA, nameB, specB string) (a, b *identity.Keyring, err error) {
 	load := func(name, spec string) (*identity.Keyring, error) {
 		if spec != "" {
 			k, err := identity.ParseKeyring(spec)
@@ -235,13 +263,15 @@ func keyrings(cfg config.Config, logger *slog.Logger) (tenant, device *identity.
 		logger.Warn("using a random signing key; tokens will not survive a restart", "setting", name)
 		return identity.NewEphemeralKeyring(), nil
 	}
-	if tenant, err = load("ORION_JWT_TENANT_KEYS", cfg.TenantJWTKeys); err != nil {
+	if a, err = load(nameA, specA); err != nil {
 		return nil, nil, err
 	}
-	if device, err = load("ORION_JWT_DEVICE_KEYS", cfg.DeviceJWTKeys); err != nil {
-		return nil, nil, err
+	if nameB != "" {
+		if b, err = load(nameB, specB); err != nil {
+			return nil, nil, err
+		}
 	}
-	return tenant, device, nil
+	return a, b, nil
 }
 
 // worker runs river's job workers. Jobs span tenants, so it connects as orion_platform.
@@ -294,4 +324,23 @@ func worker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return fmt.Errorf("river stop: %w", err)
 	}
 	return nil
+}
+
+// newPlatform wires the operator module on a platform-role pool.
+func newPlatform(cfg config.Config, logger *slog.Logger, pool *pgxpool.Pool) (*platform.Service, error) {
+	if cfg.SecretsKey == "" {
+		return nil, errors.New("ORION_SECRETS_KEY is required for the operator console (32 random bytes, base64url: openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')")
+	}
+	box, err := kernel.NewBox(cfg.SecretsKey)
+	if err != nil {
+		return nil, fmt.Errorf("ORION_SECRETS_KEY: %w", err)
+	}
+	keys, err := operatorKeyring(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	return platform.NewService(platform.Deps{
+		Pool: pool, Box: box, Keys: keys, Clock: kernel.SystemClock{},
+		Entitlements: entitlements.NewAdmin(pool), Tenants: tenancy.NewAdmin(pool),
+	})
 }

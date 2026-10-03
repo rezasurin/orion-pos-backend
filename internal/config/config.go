@@ -30,6 +30,11 @@ type Config struct {
 	// signs; the rest only verify, which is how a key is rotated. Required outside local.
 	TenantJWTKeys string
 	DeviceJWTKeys string
+	// OperatorJWTKeys signs operator sessions, with its own keys so a tenant key never signs one.
+	OperatorJWTKeys string
+	// SecretsKey is a base64url 32-byte key that encrypts operator TOTP seeds at rest. Losing it
+	// locks every operator out; keep it in the secret store, separate from the database backups.
+	SecretsKey string
 
 	// EmailProvider names how email is sent. Only "log" exists so far, which writes messages to
 	// the log and is refused in production.
@@ -58,6 +63,8 @@ func Load() (Config, error) {
 		PublicURL:           getenv("ORION_PUBLIC_URL", "http://localhost:5173"),
 		TenantJWTKeys:       os.Getenv("ORION_JWT_TENANT_KEYS"),
 		DeviceJWTKeys:       os.Getenv("ORION_JWT_DEVICE_KEYS"),
+		OperatorJWTKeys:     os.Getenv("ORION_JWT_OPERATOR_KEYS"),
+		SecretsKey:          os.Getenv("ORION_SECRETS_KEY"),
 		EmailProvider:       getenv("ORION_EMAIL_PROVIDER", "log"),
 		HTTPAddr:            getenv("ORION_HTTP_ADDR", ":8080"),
 		LogFormat:           getenv("ORION_LOG_FORMAT", "json"),

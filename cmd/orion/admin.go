@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -16,12 +17,23 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
 const adminUsage = `usage: orion admin <command>
 
-commands:
+operator commands (connect as the platform role, ORION_PLATFORM_DATABASE_URL and ORION_SECRETS_KEY;
+every change is written to the platform audit log with --reason, attributed to --operator):
+  create-operator   --email E --reason R [--operator E]
+                    creates an operator and prints their password, TOTP secret and recovery codes
+                    once; the first operator is created without --operator
+  set-override      --operator E --tenant SLUG --key K --value N --reason R [--expires RFC3339]
+  clear-override    --operator E --tenant SLUG --key K --reason R
+  suspend-tenant    --operator E --tenant SLUG --reason R
+  reinstate-tenant  --operator E --tenant SLUG --reason R
+
+tenant commands (connect as the service role, ORION_DATABASE_URL):
   create-tenant   --name N --slug S --outlet-name N --outlet-code C --owner-email E [--password P]
                   creates a business with its first outlet and a verified owner; a random
                   password is generated and printed once if --password is not given
@@ -35,6 +47,10 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 	if len(args) == 0 {
 		fmt.Print(adminUsage)
 		return errors.New("missing admin command")
+	}
+	switch args[0] {
+	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant":
+		return adminPlatform(ctx, cfg, logger, args)
 	}
 	if cfg.DatabaseURL == "" {
 		return errors.New("ORION_DATABASE_URL is required")
@@ -185,4 +201,82 @@ func randomPassword() (string, error) {
 		out[i] = alphabet[n.Int64()]
 	}
 	return string(out), nil
+}
+
+// adminPlatform runs the operator commands on the platform role.
+func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, args []string) error {
+	if cfg.PlatformDatabaseURL == "" {
+		return errors.New("ORION_PLATFORM_DATABASE_URL is required")
+	}
+	pool, err := database.Connect(ctx, cfg.PlatformDatabaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	if err := database.CheckPlatformRole(ctx, pool); err != nil {
+		return err
+	}
+	svc, err := newPlatform(cfg, logger, pool)
+	if err != nil {
+		return err
+	}
+
+	fs := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	email := fs.String("email", "", "new operator's email")
+	operator := fs.String("operator", "", "your operator email, for the audit log")
+	reason := fs.String("reason", "", "why (required, goes in the audit log)")
+	tenant := fs.String("tenant", "", "tenant slug")
+	key := fs.String("key", "", "entitlement key")
+	value := fs.Int64("value", 0, "override value (0/1 for modules, a count or -1 for limits)")
+	expires := fs.String("expires", "", "override expiry, RFC 3339")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	var actor platform.Actor
+	if *operator != "" {
+		op, err := svc.OperatorByEmail(ctx, *operator)
+		if err != nil {
+			return fmt.Errorf("--operator %s: %w", *operator, err)
+		}
+		if op.Disabled {
+			return fmt.Errorf("--operator %s is disabled", *operator)
+		}
+		actor.OperatorID = &op.ID
+	} else if args[0] != "create-operator" {
+		return errors.New("--operator is required")
+	}
+
+	switch args[0] {
+	case "create-operator":
+		n, err := svc.CreateOperator(ctx, actor, *email, *reason)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("operator %s created (shown once, store them now)\n", n.Operator.Email)
+		fmt.Printf("password:       %s\n", n.Password)
+		fmt.Printf("totp secret:    %s\n", n.TOTPSecret)
+		fmt.Printf("totp uri:       %s\n", n.TOTPURI)
+		fmt.Println("recovery codes (each works once):")
+		for _, c := range n.RecoveryCodes {
+			fmt.Println("  " + c)
+		}
+		return nil
+	case "set-override":
+		var exp *time.Time
+		if *expires != "" {
+			t, err := time.Parse(time.RFC3339, *expires)
+			if err != nil {
+				return fmt.Errorf("--expires: %w", err)
+			}
+			exp = &t
+		}
+		return svc.SetOverride(ctx, actor, *tenant, entitlements.Key(*key), *value, exp, *reason)
+	case "clear-override":
+		return svc.ClearOverride(ctx, actor, *tenant, entitlements.Key(*key), *reason)
+	case "suspend-tenant":
+		return svc.SetTenantSuspended(ctx, actor, *tenant, true, *reason)
+	default: // reinstate-tenant
+		return svc.SetTenantSuspended(ctx, actor, *tenant, false, *reason)
+	}
 }
