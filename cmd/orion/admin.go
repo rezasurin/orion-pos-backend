@@ -33,6 +33,13 @@ every change is written to the platform audit log with --reason, attributed to -
   clear-override    --operator E --tenant SLUG --key K --reason R
   suspend-tenant    --operator E --tenant SLUG --reason R
   reinstate-tenant  --operator E --tenant SLUG --reason R
+  support-report    --operator E --tenant SLUG --reason R
+                    prints a business's devices (last contact, clock skew, undelivered events, open
+                    alerts), events parked waiting for a record, rejected events and review flags of
+                    the last week by code, and the most recently flagged sales. Read-only, but audited.
+  abandon-event     --operator E --tenant SLUG --event ID --reason R
+                    gives up on a parked event whose record will never arrive; it becomes rejected
+                    with the code "abandoned"
 
 tenant commands (connect as the service role, ORION_DATABASE_URL):
   create-tenant   --name N --slug S --outlet-name N --outlet-code C --owner-email E [--password P]
@@ -50,7 +57,7 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 		return errors.New("missing admin command")
 	}
 	switch args[0] {
-	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant":
+	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant", "support-report", "abandon-event":
 		return adminPlatform(ctx, cfg, logger, args)
 	}
 	if cfg.DatabaseURL == "" {
@@ -284,6 +291,7 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 	key := fs.String("key", "", "entitlement key")
 	value := fs.Int64("value", 0, "override value (0/1 for modules, a count or -1 for limits)")
 	expires := fs.String("expires", "", "override expiry, RFC 3339")
+	event := fs.String("event", "", "sync event id")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -329,9 +337,92 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 		return svc.SetOverride(ctx, actor, *tenant, entitlements.Key(*key), *value, exp, *reason)
 	case "clear-override":
 		return svc.ClearOverride(ctx, actor, *tenant, entitlements.Key(*key), *reason)
+	case "support-report":
+		r, err := svc.SupportReport(ctx, actor, *tenant, *reason)
+		if err != nil {
+			return err
+		}
+		printSupportReport(r)
+		return nil
+	case "abandon-event":
+		id, err := uuid.Parse(*event)
+		if err != nil {
+			return fmt.Errorf("--event: %w", err)
+		}
+		if err := svc.AbandonParkedEvent(ctx, actor, *tenant, id, *reason); err != nil {
+			return err
+		}
+		fmt.Printf("event %s abandoned\n", id)
+		return nil
 	case "suspend-tenant":
 		return svc.SetTenantSuspended(ctx, actor, *tenant, true, *reason)
 	default: // reinstate-tenant
 		return svc.SetTenantSuspended(ctx, actor, *tenant, false, *reason)
+	}
+}
+
+// printSupportReport writes a support report as plain text, to paste into a ticket.
+func printSupportReport(r platform.SupportReport) {
+	ago := func(t *time.Time) string {
+		if t == nil {
+			return "never"
+		}
+		return r.GeneratedAt.Sub(*t).Round(time.Minute).String() + " ago"
+	}
+	state := ""
+	if r.Suspended {
+		state = " (SUSPENDED)"
+	}
+	fmt.Printf("%s%s  %s\nas of %s; counts cover since %s\n\n", r.TenantName, state, r.TenantID,
+		r.GeneratedAt.Format(time.RFC3339), r.WindowStartAt.Format(time.RFC3339))
+
+	fmt.Println("devices")
+	for _, d := range r.Devices {
+		status := ""
+		if d.Revoked {
+			status = " REVOKED"
+		}
+		skew := "-"
+		if d.ClockSkewMs != nil {
+			skew = (time.Duration(*d.ClockSkewMs) * time.Millisecond).Round(time.Second).String()
+		}
+		version := "-"
+		if d.AppVersion != nil {
+			version = *d.AppVersion
+		}
+		fmt.Printf("  %s-%02d %-20s last sync %s, last seen %s, app %s, clock skew %s%s\n",
+			d.OutletCode, d.Code, d.Name, ago(d.LastSyncAt), ago(d.LastSeenAt), version, skew, status)
+		if d.UnsyncedEvents > 0 {
+			fmt.Printf("        %d events not delivered, the oldest from %s\n", d.UnsyncedEvents, ago(d.OldestUnsyncedAt))
+		}
+		for _, a := range d.OpenAlerts {
+			fmt.Printf("        open alert: %s\n", a)
+		}
+	}
+	if len(r.Devices) == 0 {
+		fmt.Println("  none")
+	}
+
+	fmt.Printf("\nparked events (waiting for a record that has not arrived): %d\n", len(r.Parked))
+	for _, p := range r.Parked {
+		fmt.Printf("  %s  %-15s from %-15s received %s, waiting for %s\n", p.ID, p.Type, p.Device, p.ReceivedAt.Format(time.RFC3339), p.DependsOn)
+	}
+	counts := func(title string, cs []platform.CodeCount) {
+		fmt.Printf("\n%s\n", title)
+		for _, c := range cs {
+			fmt.Printf("  %-24s %d\n", c.Code, c.Count)
+		}
+		if len(cs) == 0 {
+			fmt.Println("  none")
+		}
+	}
+	counts("rejected events", r.Rejected)
+	counts("review flags", r.Flags)
+	fmt.Printf("\nrecently flagged sales\n")
+	for _, f := range r.FlaggedSales {
+		fmt.Printf("  %s  %s  %s  %d  %s  %v\n", f.Receipt, f.BusinessDate.Format(time.DateOnly), f.Status, f.Total, f.ID, f.Codes)
+	}
+	if len(r.FlaggedSales) == 0 {
+		fmt.Println("  none")
 	}
 }

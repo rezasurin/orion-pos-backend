@@ -11,7 +11,30 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const abandonParkedEvent = `-- name: AbandonParkedEvent :exec
+UPDATE sync_inbox SET status = 'rejected', code = 'abandoned', detail = $1, depends_on = NULL
+WHERE tenant_id = $2 AND device_id = $3 AND idempotency_key = $4
+`
+
+type AbandonParkedEventParams struct {
+	Detail         *string
+	TenantID       uuid.UUID
+	DeviceID       uuid.UUID
+	IdempotencyKey uuid.UUID
+}
+
+func (q *Queries) AbandonParkedEvent(ctx context.Context, arg AbandonParkedEventParams) error {
+	_, err := q.db.Exec(ctx, abandonParkedEvent,
+		arg.Detail,
+		arg.TenantID,
+		arg.DeviceID,
+		arg.IdempotencyKey,
+	)
+	return err
+}
 
 const advanceTOTP = `-- name: AdvanceTOTP :exec
 UPDATE operator SET totp_last_step = $1, totp_confirmed_at = coalesce(totp_confirmed_at, $2::timestamptz)
@@ -100,6 +123,40 @@ func (q *Queries) GetOperatorForUpdate(ctx context.Context, id uuid.UUID) (Opera
 		&i.DisabledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getParkedEventForUpdate = `-- name: GetParkedEventForUpdate :one
+SELECT tenant_id, device_id, idempotency_key, id, event_type, depends_on FROM sync_inbox
+WHERE tenant_id = $1 AND id = $2 AND status = 'pending_dependency'
+FOR UPDATE
+`
+
+type GetParkedEventForUpdateParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+type GetParkedEventForUpdateRow struct {
+	TenantID       uuid.UUID
+	DeviceID       uuid.UUID
+	IdempotencyKey uuid.UUID
+	ID             uuid.UUID
+	EventType      string
+	DependsOn      *uuid.UUID
+}
+
+func (q *Queries) GetParkedEventForUpdate(ctx context.Context, arg GetParkedEventForUpdateParams) (GetParkedEventForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getParkedEventForUpdate, arg.TenantID, arg.ID)
+	var i GetParkedEventForUpdateRow
+	err := row.Scan(
+		&i.TenantID,
+		&i.DeviceID,
+		&i.IdempotencyKey,
+		&i.ID,
+		&i.EventType,
+		&i.DependsOn,
 	)
 	return i, err
 }
@@ -231,6 +288,241 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportDevices = `-- name: SupportDevices :many
+
+SELECT d.id, d.name, d.device_code, o.code AS outlet_code, d.revoked_at, d.last_seen_at, d.last_sync_at, d.app_version,
+       d.clock_skew_ms, d.unsynced_events, d.oldest_unsynced_at,
+       coalesce((SELECT array_agg(a.kind ORDER BY a.kind) FROM device_alert a
+                 WHERE a.tenant_id = d.tenant_id AND a.device_id = d.id AND a.resolved_at IS NULL), '{}')::text[] AS open_alerts
+FROM device d JOIN outlet o ON o.tenant_id = d.tenant_id AND o.id = d.outlet_id
+WHERE d.tenant_id = $1
+ORDER BY o.code, d.device_code
+`
+
+type SupportDevicesRow struct {
+	ID               uuid.UUID
+	Name             string
+	DeviceCode       int32
+	OutletCode       string
+	RevokedAt        *time.Time
+	LastSeenAt       *time.Time
+	LastSyncAt       *time.Time
+	AppVersion       *string
+	ClockSkewMs      *int32
+	UnsyncedEvents   int32
+	OldestUnsyncedAt *time.Time
+	OpenAlerts       []string
+}
+
+// Support tooling (support.go): read-only views of one business's sync health, and the one write an
+// operator may make there. They run as orion_platform, across every table they touch.
+func (q *Queries) SupportDevices(ctx context.Context, tenantID uuid.UUID) ([]SupportDevicesRow, error) {
+	rows, err := q.db.Query(ctx, supportDevices, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportDevicesRow
+	for rows.Next() {
+		var i SupportDevicesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.DeviceCode,
+			&i.OutletCode,
+			&i.RevokedAt,
+			&i.LastSeenAt,
+			&i.LastSyncAt,
+			&i.AppVersion,
+			&i.ClockSkewMs,
+			&i.UnsyncedEvents,
+			&i.OldestUnsyncedAt,
+			&i.OpenAlerts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportFlagCounts = `-- name: SupportFlagCounts :many
+SELECT code, count(*)::bigint AS flags FROM flag
+WHERE tenant_id = $1 AND created_at >= $2
+GROUP BY code ORDER BY flags DESC, code
+`
+
+type SupportFlagCountsParams struct {
+	TenantID uuid.UUID
+	Since    time.Time
+}
+
+type SupportFlagCountsRow struct {
+	Code  string
+	Flags int64
+}
+
+func (q *Queries) SupportFlagCounts(ctx context.Context, arg SupportFlagCountsParams) ([]SupportFlagCountsRow, error) {
+	rows, err := q.db.Query(ctx, supportFlagCounts, arg.TenantID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportFlagCountsRow
+	for rows.Next() {
+		var i SupportFlagCountsRow
+		if err := rows.Scan(&i.Code, &i.Flags); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportFlaggedSales = `-- name: SupportFlaggedSales :many
+SELECT s.id, s.receipt_number, o.code AS outlet_code, s.business_date, s.total, s.status,
+       array_agg(DISTINCT f.code ORDER BY f.code)::text[] AS codes, max(f.created_at)::timestamptz AS flagged_at
+FROM flag f
+JOIN sale s ON s.tenant_id = f.tenant_id AND s.id = f.target_id
+JOIN outlet o ON o.tenant_id = s.tenant_id AND o.id = s.outlet_id
+WHERE f.tenant_id = $1 AND f.created_at >= $2
+GROUP BY s.id, s.receipt_number, o.code, s.business_date, s.total, s.status
+ORDER BY flagged_at DESC, s.id
+LIMIT 20
+`
+
+type SupportFlaggedSalesParams struct {
+	TenantID uuid.UUID
+	Since    time.Time
+}
+
+type SupportFlaggedSalesRow struct {
+	ID            uuid.UUID
+	ReceiptNumber string
+	OutletCode    string
+	BusinessDate  pgtype.Date
+	Total         int64
+	Status        string
+	Codes         []string
+	FlaggedAt     time.Time
+}
+
+// The sales most recently flagged, with their flag codes.
+func (q *Queries) SupportFlaggedSales(ctx context.Context, arg SupportFlaggedSalesParams) ([]SupportFlaggedSalesRow, error) {
+	rows, err := q.db.Query(ctx, supportFlaggedSales, arg.TenantID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportFlaggedSalesRow
+	for rows.Next() {
+		var i SupportFlaggedSalesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ReceiptNumber,
+			&i.OutletCode,
+			&i.BusinessDate,
+			&i.Total,
+			&i.Status,
+			&i.Codes,
+			&i.FlaggedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportParked = `-- name: SupportParked :many
+SELECT i.id, i.event_type, i.depends_on, i.received_at, d.name AS device_name
+FROM sync_inbox i JOIN device d ON d.tenant_id = i.tenant_id AND d.id = i.device_id
+WHERE i.tenant_id = $1 AND i.status = 'pending_dependency'
+ORDER BY i.received_at, i.id
+LIMIT 100
+`
+
+type SupportParkedRow struct {
+	ID         uuid.UUID
+	EventType  string
+	DependsOn  *uuid.UUID
+	ReceivedAt time.Time
+	DeviceName string
+}
+
+// Events waiting for a record that has not arrived, oldest first.
+func (q *Queries) SupportParked(ctx context.Context, tenantID uuid.UUID) ([]SupportParkedRow, error) {
+	rows, err := q.db.Query(ctx, supportParked, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportParkedRow
+	for rows.Next() {
+		var i SupportParkedRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventType,
+			&i.DependsOn,
+			&i.ReceivedAt,
+			&i.DeviceName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportRejected = `-- name: SupportRejected :many
+SELECT coalesce(code, '')::text AS code, count(*)::bigint AS events
+FROM sync_inbox
+WHERE tenant_id = $1 AND status = 'rejected' AND received_at >= $2
+GROUP BY code ORDER BY events DESC, code
+`
+
+type SupportRejectedParams struct {
+	TenantID uuid.UUID
+	Since    time.Time
+}
+
+type SupportRejectedRow struct {
+	Code   string
+	Events int64
+}
+
+func (q *Queries) SupportRejected(ctx context.Context, arg SupportRejectedParams) ([]SupportRejectedRow, error) {
+	rows, err := q.db.Query(ctx, supportRejected, arg.TenantID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportRejectedRow
+	for rows.Next() {
+		var i SupportRejectedRow
+		if err := rows.Scan(&i.Code, &i.Events); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

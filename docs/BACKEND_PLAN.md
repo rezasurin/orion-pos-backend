@@ -1215,7 +1215,7 @@ backup has been restored into a scratch database.
 | B1.9 | ✅ Sales list and detail for the back office (read-only; see 6.4.3) | 2d |
 | B1.10 | ✅ Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long (see 4.11.1) | 1d |
 | B1.11 | ✅ Load sanity check: one week of a busy cafe (600 sales/day, 3 devices) pushed in bursts, p95 push latency under 300 ms (see 5.1.2) | 1d |
-| B1.12 | Pilot runbook: how to read flags, fix a stuck device, rebuild a report | 1d |
+| B1.12 | ✅ Pilot runbook (`docs/runbooks/pilot.md`): how to read flags, fix a stuck device, rebuild a report, run the load check. Support tooling: `orion admin support-report` and `abandon-event` (audited) | 1d |
 
 **Done when** the design partner's week passes with matching end-of-day totals (roadmap), **and**
 the server has zero duplicated or lost sales against the device outboxes (checked by comparing
