@@ -39,6 +39,8 @@ tags:
     description: Pairing POS tablets and what they download
   - name: catalog
     description: What the business sells - categories, items, variants, modifiers and per-outlet prices
+  - name: sync
+    description: The device's offline-first sync with the server
   - name: entitlements
     description: What the business's plan allows
   - name: admin
@@ -454,6 +456,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Roster'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/sync/push:
+    post:
+      operationId: pushEvents
+      tags: [sync]
+      summary: Push the device's events to the server
+      description: |
+        The device sends what happened since its last push, oldest first. Each event is applied in
+        its own transaction, exactly once: pushing the same event again returns `duplicate` and
+        changes nothing, so a lost response is harmless. The same `idempotency_key` with different
+        content is rejected as `idempotency_conflict`.
+
+        One result per event, in order:
+
+        - `accepted`: stored. With `code: pending_dependency` the event is parked until the record
+          it refers to arrives (a void ahead of its sale); the device should treat it as delivered.
+        - `duplicate`: already accepted earlier; nothing was applied again.
+        - `rejected`: malformed; it will never be applied. Keep it for support and do not resend
+          (`unknown_type`, `unsupported_schema_version`, `unknown_staff`, `wrong_outlet`,
+          `malformed`, `unknown_reference`, `invalid_value`, `idempotency_conflict`, `id_conflict`,
+          `device_revoked`, and codes of the event type's own validation).
+        - `retry`: the server failed to process it; nothing was recorded. Send it again later.
+
+        Only malformed events are rejected. A sale with odd totals, or made by someone without the
+        permission, is accepted and flagged for review, because the money has already moved.
+
+        At most 500 events and 1 MB per push; page through the outbox. A revoked device gets
+        `403 device_revoked` and nothing is accepted.
+      security:
+        - deviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushRequest'
+      responses:
+        '200':
+          description: One result per event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushResponse'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
@@ -1703,6 +1751,74 @@ components:
       properties:
         price_override: {type: integer, format: int64, nullable: true, minimum: 0, maximum: 1000000000}
         available: {type: boolean}
+
+    SyncEvent:
+      type: object
+      required: [id, idempotency_key, type, staff_id, device_time, schema_version, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Client-generated UUIDv7. For a create event it is the id of the record created.
+        idempotency_key:
+          type: string
+          format: uuid
+          description: Equal to `id` for create events.
+        type:
+          type: string
+          example: sale.completed
+          description: One of `shift.opened`, `shift.closed`, `cash.movement`, `sale.completed`, `sale.voided`.
+        staff_id:
+          type: string
+          format: uuid
+          description: Who performed the action on the device.
+        device_time:
+          type: string
+          format: date-time
+          description: When it happened, by the device's clock.
+        schema_version: {type: integer, minimum: 1}
+        payload:
+          type: object
+          additionalProperties: true
+          description: Depends on `type`. Kept exactly as sent.
+          x-go-type: json.RawMessage
+
+    PushRequest:
+      type: object
+      required: [device_id, events]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+          description: Must be the device the token belongs to.
+        client_time:
+          type: string
+          format: date-time
+          description: The device's clock when it sent this, so the server can record how far off it is.
+        app_version: {type: string, maxLength: 40}
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: {$ref: '#/components/schemas/SyncEvent'}
+
+    SyncResult:
+      type: object
+      required: [id, status]
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [accepted, duplicate, rejected, retry]}
+        code: {type: string, description: Why, for `rejected` and `retry`, or `pending_dependency` for a parked event.}
+        detail: {type: string, description: Human-readable; not stable.}
+
+    PushResponse:
+      type: object
+      required: [results, server_time]
+      properties:
+        results:
+          type: array
+          items: {$ref: '#/components/schemas/SyncResult'}
+        server_time: {type: string, format: date-time}
 
     OperatorChallenge:
       type: object

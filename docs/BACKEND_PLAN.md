@@ -632,6 +632,59 @@ Rules:
 - Events are immutable. The same `idempotency_key` with a **different payload hash** is rejected
   with `idempotency_conflict` and logged loudly, since it means a client bug.
 
+#### 5.1.1 Push as built (B1.3 and B1.4)
+
+- **Code.** `internal/sync` holds the push (`Service.Push`), the `Projector` interface the event
+  types plug into, and `sync_inbox` (migration 00010). `POST /v1/sync/push` is the only endpoint;
+  its `payload` is kept as the raw JSON the device sent. The server accepts every event type the
+  registered projectors handle, and none until B1.5 registers the real ones (a push then answers
+  `rejected unknown_type` for everything, which is the safe default).
+- **Per event, one transaction** (`kernel.TenantTx`, so a deadlock reruns it): share-lock the
+  device row (a revocation waits for events in flight, and nothing commits after it returns), claim
+  the key with `INSERT ... ON CONFLICT DO NOTHING`, run the projector inside a savepoint (rolled
+  back unless the event was applied, so a rejected or parked event leaves nothing), store the
+  outcome, and release any parked event waiting for what this one created.
+- **Answers.** `accepted`; `duplicate` (already accepted: a resend changes nothing, and resends
+  after the first all answer alike); `rejected` with a `code` (kept in the inbox, so a resend gets
+  the same answer and support can read it); `retry` (an internal failure: nothing was recorded, the
+  device keeps the event). A parked event answers `accepted` with `code: pending_dependency`. The
+  plan's list had no `retry`; without it a server fault would have had to fail the whole push, so
+  one poison event could block every event behind it.
+- **Revoked device.** At the start of a push: `403 device_revoked`, nothing accepted (the existing
+  code is 403, not the 401 written in 5.1). Part way through: events after the revocation are
+  answered `rejected device_revoked` and not stored.
+- **What the core rejects:** `malformed` (not storable: missing ids, staff or time, a bad type or
+  schema version, a payload that is not an object; not stored), `unknown_type`,
+  `unsupported_schema_version`, `unknown_staff`, `wrong_outlet` (a payload `outlet_id` that is not the
+  device's), `idempotency_conflict`, `id_conflict` (an event id another device used first; event ids
+  are unique per business). A projector adds its own codes. A database error that says "this data
+  cannot be stored" (a foreign key, a unique constraint, a check, a value out of range, a row of
+  another business that row-level security hides) becomes a rejection too (`unknown_reference`,
+  `duplicate`, `invalid_value`), which is how a device referring to another business's ids is
+  turned away. Anything else is a `retry`.
+- **Not rejected:** a deactivated cashier's event is accepted (`identity.Acting.Has` is false for
+  them, so a projector flags it). There is no staff history, so a cashier deactivated *after* a
+  sale still gets that late sale flagged `permission_missing`; the flag is for review, not an
+  error.
+- **Content hash.** `payload_hash` is SHA-256 over the type, staff, schema version, device time and
+  the payload re-encoded with sorted keys and numbers as written, so spacing and key order are not
+  content. The same key with a different hash is rejected and logged at error level.
+- **Skew and bookkeeping.** A push may carry `client_time` and `app_version`; after the batch the
+  device row gets `last_sync_at`, `last_seen_at`, `app_version` and `clock_skew_ms` (server minus
+  device). `device_time` and `received_at` are stored as they are; nothing is corrected from the
+  server clock. `business_date` comes from `device_time` when the sale is projected (4.9).
+- **Dependencies.** A parked event is released by any applied event whose projector lists the
+  awaited id in `Applied(ids...)`, inside that event's transaction, oldest first, up to 1,000 per
+  event. Nothing expires a parked event yet; B1.10 alerts on events that stay unsynced or parked
+  too long.
+- **Tests** (all against a real database and the stub projector, also under `-race`): duplicate
+  pushes 2 to 5 times, eight concurrent pushes of one batch, a server fault mid-batch and a full
+  resend, the request dying mid-batch, 25 random orderings and batch cuts of a stream converging to
+  one state, a void before its sale from another device, two devices and a retry storm on one
+  outlet, skew, revocation before, during and in flight, another business's staff, ids and
+  outlet, one event id on two devices, content changes under one key, malformed events, and the
+  inbox being unrewritable.
+
 ### 5.2 Pull: server to device
 
 ```
@@ -949,8 +1002,8 @@ backup has been restored into a scratch database.
 |---|---|---|
 | B1.1 | ✅ Catalog schema and CRUD endpoints, archive semantics, per-outlet prices and availability, `change_log` writes (see 6.3.1) | 5d |
 | B1.2 | ✅ Pricing algorithm in Go + golden vectors (51, six of them invalid bills); the format and rules for the TS implementation are in `testdata/pricing-vectors/README.md` (see 4.8.1) | 3d |
-| B1.3 | **Sync tests first** (section 5.3) against a stub projector | 3d |
-| B1.4 | `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` | 4d |
+| B1.3 | ✅ **Sync tests first** (section 5.3) against a stub projector (`internal/sync/sync_test.go`, `internal/sync/syncstub`); the end-of-day reconciliation test waits for the real projectors (B1.5) | 3d |
+| B1.4 | ✅ `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` (see 5.1.1) | 4d |
 | B1.5 | Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check) | 5d |
 | B1.6 | Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling | 3d |
 | B1.7 | Outlet settings for tax, service charge, rounding, timezone, cutoff; `business_date` derivation | 1d |

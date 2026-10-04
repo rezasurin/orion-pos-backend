@@ -214,3 +214,26 @@ SELECT count(*) FROM device WHERE tenant_id = @tenant_id AND revoked_at IS NULL;
 
 -- name: CountActiveStaff :one
 SELECT count(*) FROM staff WHERE tenant_id = @tenant_id AND active;
+
+-- Used while projecting synced events (internal/sync). They run inside the event's transaction.
+
+-- name: GetDeviceForShare :one
+-- Holding a share lock on the device until the event commits makes revocation (an UPDATE) wait for
+-- events in flight, so nothing commits after a revoke has returned.
+SELECT * FROM device WHERE tenant_id = @tenant_id AND id = @id FOR SHARE;
+
+-- name: ListStaffPermissionsAt :many
+-- What one staff member may do at an outlet.
+SELECT rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = @tenant_id AND sor.staff_id = @staff_id AND sor.outlet_id = @outlet_id
+ORDER BY rp.permission;
+
+-- name: RecordDeviceSync :exec
+-- Stamps a push: when the device last synced, its app version and how far its clock is off.
+UPDATE device
+SET last_sync_at = @now, last_seen_at = @now,
+    app_version = coalesce(sqlc.narg(app_version), app_version),
+    clock_skew_ms = coalesce(sqlc.narg(clock_skew_ms), clock_skew_ms)
+WHERE tenant_id = @tenant_id AND id = @id;

@@ -18,6 +18,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
+	"github.com/rezasurin/orion-pos-backend/internal/sync"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
@@ -29,6 +30,7 @@ type Deps struct {
 	// Platform serves the operator console. Nil when the server has no platform database; operator
 	// routes then answer 503 admin_disabled.
 	Platform *platform.Service
+	Sync     *sync.Service
 	Tenancy  *tenancy.Service
 	Logger   *slog.Logger
 }

@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	openapi "github.com/rezasurin/orion-pos-backend/gen/openapi"
@@ -24,8 +26,10 @@ type world struct {
 	userA, userB      string // owner access tokens
 	deviceA, deviceB  string // device access tokens
 	staffA, deviceIDA string
+	deviceIDB         string
 	roleA             string
 	catA              catalogIDs
+	syncA             string   // an event record of tenant A, pushed by its device
 	secrets           []string // every identifier belonging to A
 }
 
@@ -51,7 +55,18 @@ func newWorld(t *testing.T) *world {
 	pa := e.pairDevice(t, w.userA, w.a.outlet.ID.String(), "Kasir A")
 	w.deviceIDA = pa.Device.ID
 	w.deviceA = e.deviceToken(t, pa.DeviceSecret).AccessToken
-	w.deviceB = e.deviceToken(t, e.pairDevice(t, w.userB, w.b.outlet.ID.String(), "Kasir B").DeviceSecret).AccessToken
+	pb := e.pairDevice(t, w.userB, w.b.outlet.ID.String(), "Kasir B")
+	w.deviceIDB = pb.Device.ID
+	w.deviceB = e.deviceToken(t, pb.DeviceSecret).AccessToken
+
+	evA := uuid.NewString()
+	if r := e.do(t, "POST", "/v1/sync/push", w.deviceA, map[string]any{"device_id": pa.Device.ID, "events": []map[string]any{{
+		"id": evA, "idempotency_key": evA, "type": "test.created", "staff_id": w.staffA,
+		"device_time": time.Now().UTC().Format(time.RFC3339), "schema_version": 1, "payload": map[string]any{"label": "A's secret sale"},
+	}}}); r.Code != http.StatusOK {
+		t.Fatalf("A's push: %d %s", r.Code, r.Body.String())
+	}
+	w.syncA = evA
 
 	var cat categoryBody
 	e.create(t, "/v1/categories", w.userA, map[string]any{"name": "Secret category"}, &cat)
@@ -66,7 +81,7 @@ func newWorld(t *testing.T) *world {
 	}, &it)
 	w.catA = catalogIDs{category: cat.ID, item: it.ID, variant: it.Variants[0].ID, group: grp.ID, modifier: grp.Modifiers[0].ID}
 
-	w.secrets = []string{w.catA.category, w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
+	w.secrets = []string{w.syncA, "A's secret sale", w.catA.category, w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
 		"Secret category", "Secret group", "Secret modifier", "Secret blend", "Secret size", "SECRET-SKU", "SECRET-BARCODE", "77777",
 		w.a.tenant.ID.String(), w.a.outlet.ID.String(), w.a.owner.ID.String(), w.staffA, w.deviceIDA, "owner@kopi.test", "Sari of A", "Kasir A", "JKT1"}
 	for _, r := range roles {
@@ -174,6 +189,30 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 				problem(t, http.StatusBadRequest, "validation_failed")
 		},
 
+		"PushEvents": func(t *testing.T) {
+			// B's tablet names A's cashier, tries to void A's record, and claims A's outlet.
+			push := func(ev map[string]any) response {
+				id := uuid.NewString()
+				ev["id"], ev["idempotency_key"] = id, id
+				ev["staff_id"], ev["device_time"], ev["schema_version"] = w.staffA, time.Now().UTC().Format(time.RFC3339), 1
+				return e.do(t, "POST", "/v1/sync/push", db, map[string]any{"device_id": w.deviceIDB, "events": []map[string]any{ev}})
+			}
+			r := push(map[string]any{"type": "test.voided", "payload": map[string]any{"target": w.syncA}})
+			var body pushBody
+			r.decode(t, &body)
+			if r.Code != http.StatusOK || body.Results[0].Code != "unknown_staff" {
+				t.Errorf("B voiding A's record: %d %s", r.Code, r.Body.String())
+			}
+			r = push(map[string]any{"type": "test.created", "payload": map[string]any{"label": "x", "outlet_id": aOutlet}})
+			body = pushBody{}
+			r.decode(t, &body)
+			if r.Code != http.StatusOK || body.Results[0].Status != "rejected" {
+				t.Errorf("B claiming A's outlet: %d %s", r.Code, r.Body.String())
+			}
+			// A device cannot push as another device.
+			e.do(t, "POST", "/v1/sync/push", db, map[string]any{"device_id": w.deviceIDA, "events": []map[string]any{}}).problem(t, http.StatusBadRequest, "validation_failed")
+		},
+
 		"GetOutlet": func(t *testing.T) {
 			w.gone(t, "GetOutlet", e.do(t, "GET", "/v1/outlets/"+aOutlet, ub, nil), http.StatusNotFound, "not_found")
 		},
@@ -222,6 +261,11 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 		t.Errorf("tenant B cannot reuse tenant A's SKU: %d %s", r.Code, r.Body.String())
 	}
 
+	var voided bool
+	if err := e.d.Owner.QueryRow(context.Background(), `SELECT voided FROM stub_record WHERE id = $1`, w.syncA).Scan(&voided); err != nil || voided {
+		t.Errorf("tenant A's record was voided by tenant B (%v, %v)", voided, err)
+	}
+
 	var itA itemBody
 	e.do(t, "GET", "/v1/items/"+w.catA.item, w.userA, nil).decode(t, &itA)
 	if itA.Name != "Secret blend" || itA.ArchivedAt != nil || itA.Variants[0].BasePrice != 77777 || len(itA.Variants) != 1 {
@@ -252,7 +296,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents",
 	} {
 		covered[op] = true
 	}

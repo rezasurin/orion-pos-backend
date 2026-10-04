@@ -117,6 +117,43 @@ func (q *Queries) GetDevice(ctx context.Context, arg GetDeviceParams) (Device, e
 	return i, err
 }
 
+const getDeviceForShare = `-- name: GetDeviceForShare :one
+
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device WHERE tenant_id = $1 AND id = $2 FOR SHARE
+`
+
+type GetDeviceForShareParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+// Used while projecting synced events (internal/sync). They run inside the event's transaction.
+// Holding a share lock on the device until the event commits makes revocation (an UPDATE) wait for
+// events in flight, so nothing commits after a revoke has returned.
+func (q *Queries) GetDeviceForShare(ctx context.Context, arg GetDeviceForShareParams) (Device, error) {
+	row := q.db.QueryRow(ctx, getDeviceForShare, arg.TenantID, arg.ID)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.DeviceCode,
+		&i.Name,
+		&i.SecretHash,
+		&i.PairedBy,
+		&i.PairedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.LastSeenAt,
+		&i.LastSyncAt,
+		&i.AppVersion,
+		&i.ClockSkewMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getDeviceForUpdate = `-- name: GetDeviceForUpdate :one
 SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device WHERE tenant_id = $1 AND id = $2 FOR UPDATE
 `
@@ -945,6 +982,41 @@ func (q *Queries) ListStaffOutletRoles(ctx context.Context, arg ListStaffOutletR
 	return items, nil
 }
 
+const listStaffPermissionsAt = `-- name: ListStaffPermissionsAt :many
+SELECT rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = $1 AND sor.staff_id = $2 AND sor.outlet_id = $3
+ORDER BY rp.permission
+`
+
+type ListStaffPermissionsAtParams struct {
+	TenantID uuid.UUID
+	StaffID  uuid.UUID
+	OutletID uuid.UUID
+}
+
+// What one staff member may do at an outlet.
+func (q *Queries) ListStaffPermissionsAt(ctx context.Context, arg ListStaffPermissionsAtParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listStaffPermissionsAt, arg.TenantID, arg.StaffID, arg.OutletID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var permission string
+		if err := rows.Scan(&permission); err != nil {
+			return nil, err
+		}
+		items = append(items, permission)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markEmailVerified = `-- name: MarkEmailVerified :exec
 UPDATE user_account SET email_verified_at = $1 WHERE id = $2 AND email_verified_at IS NULL
 `
@@ -1027,6 +1099,34 @@ type RecordDeviceContactParams struct {
 // Stamps a token exchange: when the device was seen, its app version and how far its clock is off.
 func (q *Queries) RecordDeviceContact(ctx context.Context, arg RecordDeviceContactParams) error {
 	_, err := q.db.Exec(ctx, recordDeviceContact,
+		arg.Now,
+		arg.AppVersion,
+		arg.ClockSkewMs,
+		arg.TenantID,
+		arg.ID,
+	)
+	return err
+}
+
+const recordDeviceSync = `-- name: RecordDeviceSync :exec
+UPDATE device
+SET last_sync_at = $1, last_seen_at = $1,
+    app_version = coalesce($2, app_version),
+    clock_skew_ms = coalesce($3, clock_skew_ms)
+WHERE tenant_id = $4 AND id = $5
+`
+
+type RecordDeviceSyncParams struct {
+	Now         *time.Time
+	AppVersion  *string
+	ClockSkewMs *int32
+	TenantID    uuid.UUID
+	ID          uuid.UUID
+}
+
+// Stamps a push: when the device last synced, its app version and how far its clock is off.
+func (q *Queries) RecordDeviceSync(ctx context.Context, arg RecordDeviceSyncParams) error {
+	_, err := q.db.Exec(ctx, recordDeviceSync,
 		arg.Now,
 		arg.AppVersion,
 		arg.ClockSkewMs,

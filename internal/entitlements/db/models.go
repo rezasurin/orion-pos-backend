@@ -440,6 +440,26 @@ type StaffOutletRole struct {
 	CreatedAt time.Time
 }
 
+type SyncInbox struct {
+	TenantID       uuid.UUID
+	DeviceID       uuid.UUID
+	IdempotencyKey uuid.UUID
+	ID             uuid.UUID
+	OutletID       uuid.UUID
+	StaffID        uuid.UUID
+	EventType      string
+	SchemaVersion  int32
+	DeviceTime     time.Time
+	PayloadHash    []byte
+	Payload        []byte
+	Status         string
+	Code           *string
+	Detail         *string
+	DependsOn      *uuid.UUID
+	ReceivedAt     time.Time
+	AppliedAt      *time.Time
+}
+
 type Tenant struct {
 	ID                 uuid.UUID
 	Name               string
