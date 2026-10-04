@@ -1,0 +1,42 @@
+{
+  "name": "negative-modifier-delta",
+  "note": "A modifier can lower the price: (30000 - 2000) * 3.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 30000,
+      "quantity": 3,
+      "modifiers": [
+        -2000
+      ]
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 84000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 84000
+      }
+    ],
+    "subtotal": 84000,
+    "discount_total": 0,
+    "net": 84000,
+    "service_charge": 0,
+    "tax": 9240,
+    "tax_included": false,
+    "total": 93240,
+    "rounding_amount": 0,
+    "cash_total": 93240
+  }
+}

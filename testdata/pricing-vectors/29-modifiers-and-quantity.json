@@ -1,0 +1,53 @@
+{
+  "name": "modifiers-and-quantity",
+  "note": "(25000 + 5000 + 4000) * 2 = 68000 for the first line.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 25000,
+      "quantity": 2,
+      "modifiers": [
+        5000,
+        4000
+      ]
+    },
+    {
+      "unit_price": 8000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 68000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 68000
+      },
+      {
+        "gross": 8000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 8000
+      }
+    ],
+    "subtotal": 76000,
+    "discount_total": 0,
+    "net": 76000,
+    "service_charge": 0,
+    "tax": 8360,
+    "tax_included": false,
+    "total": 84360,
+    "rounding_amount": 0,
+    "cash_total": 84360
+  }
+}

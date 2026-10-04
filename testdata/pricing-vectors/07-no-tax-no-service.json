@@ -1,0 +1,49 @@
+{
+  "name": "no-tax-no-service",
+  "note": "A business with neither: total equals the sum of the lines.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 15000,
+      "quantity": 3
+    },
+    {
+      "unit_price": 2500,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 45000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 45000
+      },
+      {
+        "gross": 2500,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 2500
+      }
+    ],
+    "subtotal": 47500,
+    "discount_total": 0,
+    "net": 47500,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 47500,
+    "rounding_amount": 0,
+    "cash_total": 47500
+  }
+}

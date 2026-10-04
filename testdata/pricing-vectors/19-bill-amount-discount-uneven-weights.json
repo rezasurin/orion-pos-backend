@@ -1,0 +1,64 @@
+{
+  "name": "bill-amount-discount-uneven-weights",
+  "note": "7 rupiah over lines of 1000, 2000 and 4000 by largest remainder: 1, 2, 4.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 1000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 2000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 4000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "amount",
+      "value": 7
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 1000,
+        "discount": 0,
+        "allocated_bill_discount": 1,
+        "total": 999
+      },
+      {
+        "gross": 2000,
+        "discount": 0,
+        "allocated_bill_discount": 2,
+        "total": 1998
+      },
+      {
+        "gross": 4000,
+        "discount": 0,
+        "allocated_bill_discount": 4,
+        "total": 3996
+      }
+    ],
+    "subtotal": 7000,
+    "discount_total": 7,
+    "net": 6993,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 6993,
+    "rounding_amount": 0,
+    "cash_total": 6993
+  }
+}

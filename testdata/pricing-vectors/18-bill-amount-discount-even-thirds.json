@@ -1,0 +1,64 @@
+{
+  "name": "bill-amount-discount-even-thirds",
+  "note": "10000 over three equal lines: 3334, 3333, 3333, the extra rupiah to the earliest.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "amount",
+      "value": 10000
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 10000,
+        "discount": 0,
+        "allocated_bill_discount": 3334,
+        "total": 6666
+      },
+      {
+        "gross": 10000,
+        "discount": 0,
+        "allocated_bill_discount": 3333,
+        "total": 6667
+      },
+      {
+        "gross": 10000,
+        "discount": 0,
+        "allocated_bill_discount": 3333,
+        "total": 6667
+      }
+    ],
+    "subtotal": 30000,
+    "discount_total": 10000,
+    "net": 20000,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 20000,
+    "rounding_amount": 0,
+    "cash_total": 20000
+  }
+}

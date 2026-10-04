@@ -1,0 +1,21 @@
+{
+  "name": "error-zero-quantity",
+  "note": "Quantity must be at least 1.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10000,
+      "quantity": 0
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected_error": "invalid_quantity"
+}

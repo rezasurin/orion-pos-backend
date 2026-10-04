@@ -425,6 +425,32 @@ trigger that raises on update or delete as a backstop.
   accountant before Phase 1 ships** (roadmap, Indonesia-specific requirements). The algorithm is
   versioned (`pricing_version` on each sale) so a later correction does not reinterpret old sales.
 
+#### 4.8.1 Pricing as built (B1.2)
+
+- `internal/pricing` is a pure package (no database, no clock) with one function, `Calculate`,
+  used by the sale projector (B1.5) to recompute every sale a device sends, and already by the
+  receipt test endpoint, so there is a single implementation. `pricing.Version` (1) is stored on
+  each sale as `pricing_version`.
+- **Discounts.** At most one discount per line and one bill discount, as percent (basis points)
+  or amount (rupiah). A fixed discount may not exceed what it applies to, a percent is 0 to
+  100%, and a bill discount works on the lines *after* their own discounts. More than one
+  discount on a target is an invalid bill, which the projector accepts and flags like any other
+  total it cannot reproduce.
+- **Tender decides rounding.** Cash rounding applies only when every payment is cash (`cash`);
+  `non_cash` and `mixed` bills are not rounded. `rounding_amount` is separate from `total`.
+- **Inclusive prices.** The tax is extracted from the discounted subtotal plus the service charge
+  when that is taxable, and the total is subtotal plus service charge; this matches the
+  receipt-test preview that existed before.
+- **Limits** keep the sums inside `int64`: 200 lines, 50 modifiers per line, quantity up to
+  10,000, unit prices and modifier deltas up to 1,000,000,000. Beyond them the bill is invalid
+  (`too_large`, `invalid_price`, ...).
+- **Vectors.** `testdata/pricing-vectors` holds 51 files. The expected numbers came from an
+  independent calculation in exact rational arithmetic, and the Go test fails if a vector has a
+  field Go does not read. A second test prices 3,000 random bills and checks that lines, discounts,
+  service charge, tax, total and rounding always reconcile.
+- Still open from section 4.8: the **accountant's confirmation** of per-bill half-up rounding for
+  tax and service charge must happen before the pilot sells anything.
+
 ### 4.9 Time and the reporting day
 
 - All timestamps are `timestamptz` in UTC.
@@ -922,7 +948,7 @@ backup has been restored into a scratch database.
 | Id | Task | Size |
 |---|---|---|
 | B1.1 | ✅ Catalog schema and CRUD endpoints, archive semantics, per-outlet prices and availability, `change_log` writes (see 6.3.1) | 5d |
-| B1.2 | Pricing algorithm in Go + 40 golden vectors; publish vectors for the TS implementation | 3d |
+| B1.2 | ✅ Pricing algorithm in Go + golden vectors (51, six of them invalid bills); the format and rules for the TS implementation are in `testdata/pricing-vectors/README.md` (see 4.8.1) | 3d |
 | B1.3 | **Sync tests first** (section 5.3) against a stub projector | 3d |
 | B1.4 | `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` | 4d |
 | B1.5 | Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check) | 5d |

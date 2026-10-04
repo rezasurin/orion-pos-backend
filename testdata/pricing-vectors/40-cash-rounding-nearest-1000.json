@@ -1,0 +1,39 @@
+{
+  "name": "cash-rounding-nearest-1000",
+  "note": "Total 99499 rounds to 99000; 99500 would round to 100000.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 1000,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 99499,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 99499,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 99499
+      }
+    ],
+    "subtotal": 99499,
+    "discount_total": 0,
+    "net": 99499,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 99499,
+    "rounding_amount": -499,
+    "cash_total": 99000
+  }
+}

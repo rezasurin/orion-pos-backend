@@ -1,0 +1,55 @@
+{
+  "name": "exclusive-service-discount-rounding-up",
+  "note": "Exclusive prices, service charge, a line discount and rounding up.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1000,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 1000,
+    "cash_rounding_mode": "up"
+  },
+  "lines": [
+    {
+      "unit_price": 47500,
+      "quantity": 2
+    },
+    {
+      "unit_price": 13200,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "line": 1,
+      "kind": "amount",
+      "value": 1200
+    }
+  ],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 95000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 95000
+      },
+      {
+        "gross": 13200,
+        "discount": 1200,
+        "allocated_bill_discount": 0,
+        "total": 12000
+      }
+    ],
+    "subtotal": 108200,
+    "discount_total": 1200,
+    "net": 107000,
+    "service_charge": 5350,
+    "tax": 11235,
+    "tax_included": false,
+    "total": 123585,
+    "rounding_amount": 415,
+    "cash_total": 124000
+  }
+}

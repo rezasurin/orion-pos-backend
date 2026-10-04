@@ -1,0 +1,54 @@
+{
+  "name": "full-bill-discount",
+  "note": "A 100% bill discount: nothing to pay, no tax or service charge.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 100,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 18000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 25000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "percent",
+      "value": 10000
+    }
+  ],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 18000,
+        "discount": 0,
+        "allocated_bill_discount": 18000,
+        "total": 0
+      },
+      {
+        "gross": 25000,
+        "discount": 0,
+        "allocated_bill_discount": 25000,
+        "total": 0
+      }
+    ],
+    "subtotal": 43000,
+    "discount_total": 43000,
+    "net": 0,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 0,
+    "rounding_amount": 0,
+    "cash_total": 0
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "name": "ten-lines-bill-discount",
+  "note": "Ten lines of different prices with a 15% bill discount.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 100,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 12000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 8500,
+      "quantity": 1
+    },
+    {
+      "unit_price": 33000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 4500,
+      "quantity": 1
+    },
+    {
+      "unit_price": 27500,
+      "quantity": 1
+    },
+    {
+      "unit_price": 19900,
+      "quantity": 1
+    },
+    {
+      "unit_price": 6100,
+      "quantity": 1
+    },
+    {
+      "unit_price": 15250,
+      "quantity": 1
+    },
+    {
+      "unit_price": 9990,
+      "quantity": 1
+    },
+    {
+      "unit_price": 41000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "percent",
+      "value": 1500
+    }
+  ],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 12000,
+        "discount": 0,
+        "allocated_bill_discount": 1800,
+        "total": 10200
+      },
+      {
+        "gross": 8500,
+        "discount": 0,
+        "allocated_bill_discount": 1275,
+        "total": 7225
+      },
+      {
+        "gross": 33000,
+        "discount": 0,
+        "allocated_bill_discount": 4950,
+        "total": 28050
+      },
+      {
+        "gross": 4500,
+        "discount": 0,
+        "allocated_bill_discount": 675,
+        "total": 3825
+      },
+      {
+        "gross": 27500,
+        "discount": 0,
+        "allocated_bill_discount": 4125,
+        "total": 23375
+      },
+      {
+        "gross": 19900,
+        "discount": 0,
+        "allocated_bill_discount": 2985,
+        "total": 16915
+      },
+      {
+        "gross": 6100,
+        "discount": 0,
+        "allocated_bill_discount": 915,
+        "total": 5185
+      },
+      {
+        "gross": 15250,
+        "discount": 0,
+        "allocated_bill_discount": 2288,
+        "total": 12962
+      },
+      {
+        "gross": 9990,
+        "discount": 0,
+        "allocated_bill_discount": 1498,
+        "total": 8492
+      },
+      {
+        "gross": 41000,
+        "discount": 0,
+        "allocated_bill_discount": 6150,
+        "total": 34850
+      }
+    ],
+    "subtotal": 177740,
+    "discount_total": 26661,
+    "net": 151079,
+    "service_charge": 7554,
+    "tax": 17450,
+    "tax_included": false,
+    "total": 176083,
+    "rounding_amount": 17,
+    "cash_total": 176100
+  }
+}
