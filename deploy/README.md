@@ -54,6 +54,15 @@ it up apart from the database) and `ORION_JWT_OPERATOR_KEYS`. Create the first o
 There is no email provider yet. `ORION_EMAIL_PROVIDER=log` writes each message, including
 verification links, to the log, so `orion worker` refuses it when `ORION_ENV=production`. To add one, follow `docs/guides/email-provider.md`.
 
+## CORS
+
+A browser app on another origin can call the API only if its origin is listed in
+`ORION_CORS_ALLOWED_ORIGINS` (comma-separated, for example `https://app.orion.example`; exact
+scheme, host and port, no wildcard, no path). Without it the API answers same-origin requests only,
+which is right when a reverse proxy serves the app and the API from one hostname. In local
+development it defaults to `ORION_PUBLIC_URL`. The API uses bearer tokens, not cookies, so
+credentials are never allowed. A bad value stops the service from starting.
+
 ## Device health alerts
 
 `orion worker` runs a monitor every five minutes that emails a business's owners when a tablet holds

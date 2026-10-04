@@ -197,10 +197,11 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 
 	router := httpserver.NewRouter(httpserver.Options{
-		Logger:     logger,
-		UseSentry:  useSentry,
-		TrustProxy: cfg.TrustProxy,
-		Routes:     apiServer.Routes,
+		Logger:             logger,
+		UseSentry:          useSentry,
+		TrustProxy:         cfg.TrustProxy,
+		CORSAllowedOrigins: cfg.CORSAllowedOrigins,
+		Routes:             apiServer.Routes,
 		Ready: map[string]httpserver.ReadinessCheck{
 			"database": func(ctx context.Context) error { return pool.Ping(ctx) },
 			// The schema may be newer than this binary (expand-then-contract migrations allow a

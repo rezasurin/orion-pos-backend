@@ -48,3 +48,46 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		}
 	}
 }
+
+func TestCORSOrigins(t *testing.T) {
+	for name, tc := range map[string]struct {
+		env     map[string]string
+		want    []string
+		wantErr string
+	}{
+		"local defaults to the front end": {env: map[string]string{"ORION_ENV": "local", "ORION_PUBLIC_URL": "http://localhost:5173"}, want: []string{"http://localhost:5173"}},
+		"elsewhere defaults to none":      {env: map[string]string{"ORION_ENV": "staging", "ORION_PUBLIC_URL": "https://app.orion.test"}, want: nil},
+		"a list is normalised": {
+			env:  map[string]string{"ORION_CORS_ALLOWED_ORIGINS": " https://App.Orion.test/ , http://localhost:5173 "},
+			want: []string{"https://app.orion.test", "http://localhost:5173"},
+		},
+		"setting it replaces the local default": {env: map[string]string{"ORION_ENV": "local", "ORION_CORS_ALLOWED_ORIGINS": "https://a.test"}, want: []string{"https://a.test"}},
+		"a wildcard":                            {env: map[string]string{"ORION_CORS_ALLOWED_ORIGINS": "*"}, wantErr: "wildcard"},
+		"a subdomain wildcard":                  {env: map[string]string{"ORION_CORS_ALLOWED_ORIGINS": "https://*.orion.test"}, wantErr: "wildcard"},
+		"a path":                                {env: map[string]string{"ORION_CORS_ALLOWED_ORIGINS": "https://app.orion.test/app"}, wantErr: "no path"},
+		"no scheme":                             {env: map[string]string{"ORION_CORS_ALLOWED_ORIGINS": "app.orion.test"}, wantErr: "scheme"},
+		"credentials":                           {env: map[string]string{"ORION_CORS_ALLOWED_ORIGINS": "https://u:p@app.orion.test"}, wantErr: "origin like"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, k := range []string{"ORION_ENV", "ORION_PUBLIC_URL", "ORION_CORS_ALLOWED_ORIGINS"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			c, err := Load()
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), "ORION_CORS_ALLOWED_ORIGINS") || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one naming the variable and %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(c.CORSAllowedOrigins, ",") != strings.Join(tc.want, ",") {
+				t.Errorf("origins = %v, want %v", c.CORSAllowedOrigins, tc.want)
+			}
+		})
+	}
+}

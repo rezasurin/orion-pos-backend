@@ -31,7 +31,7 @@ new since you last looked.
 | Absent vs null | Optional fields are omitted or `null`; treat both as "not set". In a `PATCH`, a field you leave out is unchanged. |
 | Request id | Error bodies carry `request_id`; quote it when reporting a problem. |
 | Health | `GET /healthz` (alive), `GET /readyz` (database reachable). |
-| CORS | The server sets **no CORS headers yet**. A browser app on another origin needs a reverse proxy on the same origin, or a backend change. Ask before assuming. |
+| CORS | Browser apps on another origin work when that origin is on the server's allowlist (`ORION_CORS_ALLOWED_ORIGINS`; locally the origin of `ORION_PUBLIC_URL`, by default `http://localhost:5173`). Matching is exact (scheme, host and port, no wildcard). Allowed: `GET POST PUT PATCH DELETE`, headers `Authorization` and `Content-Type`, **no cookies or credentials** (do not send `credentials: "include"`; tokens go in the `Authorization` header). `Retry-After` is readable from JavaScript. Preflight (`OPTIONS`) is answered before authentication, so it never returns 401. An origin that is not listed is not told it is refused: the browser simply blocks the response, so a CORS error in the console on a deployed environment means the origin is missing from the list. |
 
 ### Errors
 
@@ -504,7 +504,7 @@ shift).
 So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display,
 customers, loyalty, refunds beyond voids, payment gateways (QRIS dynamic, e-wallets: the methods
 exist as labels only), receipt printing endpoints, file/image upload (an item's `image_url` is a
-plain URL you host), real email delivery, CORS, and webhooks. The roadmap is in
+plain URL you host), real email delivery, and webhooks. The roadmap is in
 `docs/BACKEND_PLAN.md`.
 
 ## 11. Local development

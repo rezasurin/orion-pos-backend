@@ -58,6 +58,6 @@ Tests use a real Postgres (testcontainers, or `ORION_TEST_DATABASE_URL`). Never 
   carry out: `docs/guides/hosting-and-restore.md` (B0.13 is marked done as a guide; the host, the
   deploy workflow and the first restore drill, with `docs/runbooks/restore.md`, are still to do before
   the pilot) and `docs/guides/email-provider.md` (email still goes to the log).
-- Publishing the TypeScript client package (B0.3), CORS headers (none are set), and the
+- Publishing the TypeScript client package (B0.3), and the
   accountant's sign-off on per-bill half-up rounding before the pilot.
 - The pilot runbook is `docs/runbooks/pilot.md`.

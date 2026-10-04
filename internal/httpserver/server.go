@@ -26,6 +26,8 @@ type Options struct {
 	// TrustProxy says the service runs behind one proxy that appends the caller's address to
 	// X-Forwarded-For. See ClientIP.
 	TrustProxy bool
+	// CORSAllowedOrigins are the origins browsers may call the API from. Empty: same-origin only.
+	CORSAllowedOrigins []string
 	// Routes mounts the API on the router, inside the shared middleware.
 	Routes func(chi.Router)
 }
@@ -41,6 +43,7 @@ func NewRouter(o Options) chi.Router {
 	}
 	r.Use(recoverer(o.Logger))
 	r.Use(maxBody(maxBodyBytes))
+	r.Use(cors(o.CORSAllowedOrigins))
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

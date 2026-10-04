@@ -100,8 +100,9 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 		t.Fatal(err)
 	}
 	handler := httpserver.NewRouter(httpserver.Options{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Routes: func(r chi.Router) { srv.Routes(r) },
+		Logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		CORSAllowedOrigins: []string{corsOrigin},
+		Routes:             func(r chi.Router) { srv.Routes(r) },
 	})
 	return &env{d: d, handler: handler, ids: ids, tenants: tenants, platform: plat}
 }
@@ -441,5 +442,49 @@ func TestSessionsAreTenantScoped(t *testing.T) {
 		if o.ID == b.outlet.ID.String() {
 			t.Fatal("tenant A listed tenant B's outlet")
 		}
+	}
+}
+
+// corsOrigin is the front end the test server allows.
+const corsOrigin = "https://app.orion.test"
+
+// A browser asks permission with an unauthenticated OPTIONS request before every call that carries
+// an Authorization header. If that reached the access policy it would be a 401 and the back office
+// could never call the API from another origin.
+func TestABrowserPreflightPassesBeforeAuthentication(t *testing.T) {
+	e := newEnv(t)
+	for _, c := range []struct{ method, path string }{
+		{"POST", "/v1/auth/login"}, {"GET", "/v1/me"}, {"POST", "/v1/sync/push"}, {"GET", "/v1/sync/pull"},
+		{"PATCH", "/v1/outlets/00000000-0000-0000-0000-000000000000/settings"}, {"GET", "/v1/sales"},
+		{"POST", "/admin/auth/login"},
+	} {
+		req := httptest.NewRequest(http.MethodOptions, c.path, nil)
+		req.Header.Set("Origin", corsOrigin)
+		req.Header.Set("Access-Control-Request-Method", c.method)
+		req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+		rec := httptest.NewRecorder()
+		e.handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent || rec.Header().Get("Access-Control-Allow-Origin") != corsOrigin {
+			t.Errorf("preflight for %s %s: %d %v", c.method, c.path, rec.Code, rec.Header())
+		}
+	}
+
+	// The real call that follows is refused for lack of a token, and the app can read that refusal.
+	req := httptest.NewRequest(http.MethodGet, "/v1/me", nil)
+	req.Header.Set("Origin", corsOrigin)
+	rec := httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || rec.Header().Get("Access-Control-Allow-Origin") != corsOrigin {
+		t.Errorf("GET /v1/me without a token: %d %v", rec.Code, rec.Header())
+	}
+
+	// Another origin gets no permission.
+	req = httptest.NewRequest(http.MethodOptions, "/v1/me", nil)
+	req.Header.Set("Origin", "https://evil.test")
+	req.Header.Set("Access-Control-Request-Method", "GET")
+	rec = httptest.NewRecorder()
+	e.handler.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("an unlisted origin was allowed: %v", rec.Header())
 	}
 }

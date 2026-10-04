@@ -507,6 +507,17 @@ trigger that raises on update or delete as a backstop.
 - Per-device `last_seen_at`, `last_sync_at`, `app_version`, `clock_skew_ms` for support and the
   admin "stopped syncing" view.
 
+#### 4.10.1 CORS as built
+
+`internal/httpserver/cors.go`: an exact-match allowlist from `ORION_CORS_ALLOWED_ORIGINS` (default
+none; the origin of `ORION_PUBLIC_URL` when `ORION_ENV=local`). No wildcard (a bad value fails
+startup), no credentials (the API authenticates with bearer tokens, never cookies). A preflight is
+answered with 204 before routing and authentication; real responses, errors included, carry
+`Access-Control-Allow-Origin` and expose `Retry-After`. `Vary: Origin` is set whenever a request has
+an `Origin`, so a cache never serves one origin's answer to another. Tests cover exact matching
+(scheme, port, prefix, subdomain, `null`), the preflight through the real API for the login, sync,
+reports and admin routes, and the config parser.
+
 #### 4.11.1 Device health as built (B1.10)
 
 - **What the server knows.** Every push and pull stamps the device row: `last_sync_at` and

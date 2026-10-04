@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,6 +28,10 @@ type Config struct {
 
 	// PublicURL is the front end's base URL, used for links in emails.
 	PublicURL string
+	// CORSAllowedOrigins are the browser origins (scheme://host[:port]) allowed to call the API
+	// from another origin. Empty means none: same-origin only. In local development it defaults to
+	// the origin of PublicURL.
+	CORSAllowedOrigins []string
 	// TenantJWTKeys and DeviceJWTKeys are "kid:base64url-secret[,kid:secret...]". The first key
 	// signs; the rest only verify, which is how a key is rotated. Required outside local.
 	TenantJWTKeys string
@@ -109,6 +115,17 @@ func Load() (Config, error) {
 		}
 	}
 
+	origins, err := parseOrigins(os.Getenv("ORION_CORS_ALLOWED_ORIGINS"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("ORION_CORS_ALLOWED_ORIGINS: %w", err))
+	}
+	if len(origins) == 0 && os.Getenv("ORION_CORS_ALLOWED_ORIGINS") == "" && c.Env == "local" {
+		if o, err := parseOrigins(c.PublicURL); err == nil {
+			origins = o
+		}
+	}
+	c.CORSAllowedOrigins = origins
+
 	tp, err := parseBool("ORION_TRUST_PROXY")
 	if err != nil {
 		errs = append(errs, err)
@@ -121,6 +138,29 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORION_EMAIL_PROVIDER: unknown provider %q (want log)", c.EmailProvider))
 	}
 	return c, errors.Join(errs...)
+}
+
+// parseOrigins reads a comma-separated list of origins. Each must be exactly scheme://host[:port]
+// (a trailing slash is tolerated): a path, a query, credentials or a wildcard is a mistake that
+// would otherwise silently match nothing, or too much.
+func parseOrigins(raw string) ([]string, error) {
+	var out []string
+	for _, item := range strings.Split(raw, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.Contains(item, "*") {
+			return nil, fmt.Errorf("%q: wildcards are not allowed, list each origin", item)
+		}
+		u, err := url.Parse(strings.TrimSuffix(item, "/"))
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" ||
+			u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+			return nil, fmt.Errorf("%q: want an origin like https://app.example.com (scheme and host, no path)", item)
+		}
+		out = append(out, strings.ToLower(u.Scheme+"://"+u.Host))
+	}
+	return out, nil
 }
 
 func getenv(key, fallback string) string {
