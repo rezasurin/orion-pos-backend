@@ -54,6 +54,13 @@ it up apart from the database) and `ORION_JWT_OPERATOR_KEYS`. Create the first o
 There is no email provider yet. `ORION_EMAIL_PROVIDER=log` writes each message, including
 verification links, to the log, so `orion worker` refuses it when `ORION_ENV=production`.
 
+## Device health alerts
+
+`orion worker` runs a monitor every five minutes that emails a business's owners when a tablet holds
+unsynced sales for more than `ORION_ALERT_UNSYNCED_AFTER` (default 30 minutes) or goes quiet for
+`ORION_ALERT_SILENT_AFTER` (default 3 hours) with a shift open. `ORION_ALERT_OPERATOR_EMAIL` gets a
+copy. With `ORION_EMAIL_PROVIDER=log` the emails only appear in the worker's log.
+
 ## Not decided yet
 
 Hosting, backups and the deploy pipeline are task B0.13 in `docs/BACKEND_PLAN.md` and wait on the

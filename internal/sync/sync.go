@@ -89,9 +89,35 @@ type Result struct {
 
 // PushRequest is a batch of events from one device.
 type PushRequest struct {
-	Events     []Event
+	Events []Event
+	Health DeviceHealth
+}
+
+// DeviceHealth is what a device volunteers about itself on a push or a pull, for the support view
+// and the monitor that alerts when events stay unsynced (BACKEND_PLAN.md section 4.11). All of it is
+// optional, and a bad value is ignored rather than failing the sync it came with.
+type DeviceHealth struct {
 	ClientTime *time.Time // the device's clock now, to measure skew
 	AppVersion *string
+	// Unsynced is how many events remain in the device's outbox after this call, and
+	// OldestUnsynced the device time of the oldest; nil means the device did not say.
+	Unsynced       *int
+	OldestUnsynced *time.Time
+}
+
+// maxReportedUnsynced is the largest outbox count taken at face value.
+const maxReportedUnsynced = 1_000_000
+
+func (h DeviceHealth) stamp(log *slog.Logger) identity.SyncStamp {
+	st := identity.SyncStamp{ClientTime: h.ClientTime, AppVersion: h.AppVersion}
+	switch {
+	case h.Unsynced == nil:
+	case *h.Unsynced < 0 || *h.Unsynced > maxReportedUnsynced || (*h.Unsynced > 0 && h.OldestUnsynced == nil):
+		log.Warn("sync: ignoring an outbox report that does not make sense")
+	default:
+		st.Outbox = &identity.Outbox{Unsynced: *h.Unsynced, Oldest: h.OldestUnsynced}
+	}
+	return st
 }
 
 // PushResponse has one result per event, in order.
@@ -215,7 +241,7 @@ func (s *Service) Push(ctx context.Context, p identity.Principal, req PushReques
 
 	// Bookkeeping for the support view; it must not turn a successful push into a failure.
 	if err := kernel.TenantTx(ctx, s.pool, p.TenantID, func(tx pgx.Tx) error {
-		return s.ids.RecordSync(ctx, tx, p.TenantID, p.DeviceID, req.ClientTime, req.AppVersion)
+		return s.ids.RecordSync(ctx, tx, p.TenantID, p.DeviceID, req.Health.stamp(s.log))
 	}); err != nil {
 		s.log.WarnContext(ctx, "sync: could not record the push on the device", slog.Any("error", err))
 	}

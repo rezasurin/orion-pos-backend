@@ -12,6 +12,118 @@ import (
 	"github.com/google/uuid"
 )
 
+const findSilentOpenShiftDevices = `-- name: FindSilentOpenShiftDevices :many
+SELECT d.id, d.tenant_id, d.name, o.name AS outlet_name, sh.id AS shift_id, sh.opened_at,
+       coalesce(greatest(d.last_seen_at, d.last_sync_at), d.paired_at) AS last_contact
+FROM device d
+JOIN tenant t ON t.id = d.tenant_id
+JOIN outlet o ON o.tenant_id = d.tenant_id AND o.id = d.outlet_id
+JOIN shift sh ON sh.device_id = d.id AND sh.tenant_id = d.tenant_id AND sh.closed_at IS NULL AND sh.received_at > $1
+WHERE d.revoked_at IS NULL AND t.suspended_at IS NULL
+  AND coalesce(greatest(d.last_seen_at, d.last_sync_at), d.paired_at) < $2
+`
+
+type FindSilentOpenShiftDevicesParams struct {
+	OpenedAfter  time.Time
+	SilentBefore *time.Time
+}
+
+type FindSilentOpenShiftDevicesRow struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	Name        string
+	OutletName  string
+	ShiftID     uuid.UUID
+	OpenedAt    time.Time
+	LastContact time.Time
+}
+
+// Devices with a shift still open that have not been heard from since the threshold.
+func (q *Queries) FindSilentOpenShiftDevices(ctx context.Context, arg FindSilentOpenShiftDevicesParams) ([]FindSilentOpenShiftDevicesRow, error) {
+	rows, err := q.db.Query(ctx, findSilentOpenShiftDevices, arg.OpenedAfter, arg.SilentBefore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FindSilentOpenShiftDevicesRow
+	for rows.Next() {
+		var i FindSilentOpenShiftDevicesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.OutletName,
+			&i.ShiftID,
+			&i.OpenedAt,
+			&i.LastContact,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const findUnsyncedDevices = `-- name: FindUnsyncedDevices :many
+
+SELECT d.id, d.tenant_id, d.name, d.unsynced_events, d.oldest_unsynced_at, d.last_sync_at, o.name AS outlet_name
+FROM device d
+JOIN tenant t ON t.id = d.tenant_id
+JOIN outlet o ON o.tenant_id = d.tenant_id AND o.id = d.outlet_id
+WHERE d.revoked_at IS NULL AND t.suspended_at IS NULL
+  AND d.unsynced_events > 0 AND d.oldest_unsynced_at < $1
+  AND d.last_seen_at > $2
+`
+
+type FindUnsyncedDevicesParams struct {
+	UnsyncedBefore *time.Time
+	ActiveAfter    *time.Time
+}
+
+type FindUnsyncedDevicesRow struct {
+	ID               uuid.UUID
+	TenantID         uuid.UUID
+	Name             string
+	UnsyncedEvents   int32
+	OldestUnsyncedAt *time.Time
+	LastSyncAt       *time.Time
+	OutletName       string
+}
+
+// Device health monitor (health.go). These run as orion_platform, across tenants, and read the device
+// and shift tables read-only.
+// Devices that said they hold events older than the threshold, among those seen recently.
+func (q *Queries) FindUnsyncedDevices(ctx context.Context, arg FindUnsyncedDevicesParams) ([]FindUnsyncedDevicesRow, error) {
+	rows, err := q.db.Query(ctx, findUnsyncedDevices, arg.UnsyncedBefore, arg.ActiveAfter)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FindUnsyncedDevicesRow
+	for rows.Next() {
+		var i FindUnsyncedDevicesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.UnsyncedEvents,
+			&i.OldestUnsyncedAt,
+			&i.LastSyncAt,
+			&i.OutletName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getInboxByKey = `-- name: GetInboxByKey :one
 SELECT tenant_id, device_id, idempotency_key, id, outlet_id, staff_id, event_type, schema_version, device_time, payload_hash, payload, status, code, detail, depends_on, received_at, applied_at FROM sync_inbox WHERE tenant_id = $1 AND device_id = $2 AND idempotency_key = $3
 `
@@ -82,6 +194,37 @@ func (q *Queries) GetInboxForUpdate(ctx context.Context, arg GetInboxForUpdatePa
 	return i, err
 }
 
+const insertAlert = `-- name: InsertAlert :execrows
+INSERT INTO device_alert (id, tenant_id, device_id, kind, opened_at, detail)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT DO NOTHING
+`
+
+type InsertAlertParams struct {
+	ID       uuid.UUID
+	TenantID uuid.UUID
+	DeviceID uuid.UUID
+	Kind     string
+	OpenedAt time.Time
+	Detail   []byte
+}
+
+// Does nothing when an incident of this kind is already open for the device.
+func (q *Queries) InsertAlert(ctx context.Context, arg InsertAlertParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertAlert,
+		arg.ID,
+		arg.TenantID,
+		arg.DeviceID,
+		arg.Kind,
+		arg.OpenedAt,
+		arg.Detail,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertInbox = `-- name: InsertInbox :execrows
 INSERT INTO sync_inbox (tenant_id, device_id, idempotency_key, id, outlet_id, staff_id, event_type, schema_version,
                         device_time, payload_hash, payload, status, received_at)
@@ -126,6 +269,90 @@ func (q *Queries) InsertInbox(ctx context.Context, arg InsertInboxParams) (int64
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const listOpenAlerts = `-- name: ListOpenAlerts :many
+SELECT a.id, a.tenant_id, a.device_id, a.kind, a.opened_at, a.detail, a.notified_at, d.name AS device_name, o.name AS outlet_name
+FROM device_alert a
+JOIN device d ON d.tenant_id = a.tenant_id AND d.id = a.device_id
+JOIN outlet o ON o.tenant_id = d.tenant_id AND o.id = d.outlet_id
+WHERE a.resolved_at IS NULL
+ORDER BY a.opened_at, a.id
+`
+
+type ListOpenAlertsRow struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	DeviceID   uuid.UUID
+	Kind       string
+	OpenedAt   time.Time
+	Detail     []byte
+	NotifiedAt *time.Time
+	DeviceName string
+	OutletName string
+}
+
+func (q *Queries) ListOpenAlerts(ctx context.Context) ([]ListOpenAlertsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenAlerts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOpenAlertsRow
+	for rows.Next() {
+		var i ListOpenAlertsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.DeviceID,
+			&i.Kind,
+			&i.OpenedAt,
+			&i.Detail,
+			&i.NotifiedAt,
+			&i.DeviceName,
+			&i.OutletName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOwnerContacts = `-- name: ListOwnerContacts :many
+SELECT u.email, u.locale
+FROM tenant_member m JOIN user_account u ON u.id = m.user_id
+WHERE m.tenant_id = $1 AND m.is_owner AND u.email_verified_at IS NOT NULL
+ORDER BY u.email
+`
+
+type ListOwnerContactsRow struct {
+	Email  string
+	Locale string
+}
+
+// Who to tell: the business's owners with a verified email address.
+func (q *Queries) ListOwnerContacts(ctx context.Context, tenantID uuid.UUID) ([]ListOwnerContactsRow, error) {
+	rows, err := q.db.Query(ctx, listOwnerContacts, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListOwnerContactsRow
+	for rows.Next() {
+		var i ListOwnerContactsRow
+		if err := rows.Scan(&i.Email, &i.Locale); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listParkedOn = `-- name: ListParkedOn :many
@@ -178,6 +405,36 @@ func (q *Queries) ListParkedOn(ctx context.Context, arg ListParkedOnParams) ([]S
 		return nil, err
 	}
 	return items, nil
+}
+
+const markAlertNotified = `-- name: MarkAlertNotified :exec
+UPDATE device_alert SET notified_at = $1 WHERE tenant_id = $2 AND id = $3
+`
+
+type MarkAlertNotifiedParams struct {
+	NotifiedAt *time.Time
+	TenantID   uuid.UUID
+	ID         uuid.UUID
+}
+
+func (q *Queries) MarkAlertNotified(ctx context.Context, arg MarkAlertNotifiedParams) error {
+	_, err := q.db.Exec(ctx, markAlertNotified, arg.NotifiedAt, arg.TenantID, arg.ID)
+	return err
+}
+
+const resolveAlert = `-- name: ResolveAlert :exec
+UPDATE device_alert SET resolved_at = $1 WHERE tenant_id = $2 AND id = $3 AND resolved_at IS NULL
+`
+
+type ResolveAlertParams struct {
+	ResolvedAt *time.Time
+	TenantID   uuid.UUID
+	ID         uuid.UUID
+}
+
+func (q *Queries) ResolveAlert(ctx context.Context, arg ResolveAlertParams) error {
+	_, err := q.db.Exec(ctx, resolveAlert, arg.ResolvedAt, arg.TenantID, arg.ID)
+	return err
 }
 
 const setInboxOutcome = `-- name: SetInboxOutcome :exec

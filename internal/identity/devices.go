@@ -33,6 +33,11 @@ type Device struct {
 	LastSyncAt  *time.Time
 	AppVersion  *string
 	ClockSkewMs *int // server time minus device time; positive means the device is behind
+	// UnsyncedEvents is how many events the device said, at HealthReportedAt, were still waiting in
+	// its outbox, and OldestUnsyncedAt the device time of the oldest of them.
+	UnsyncedEvents   int
+	OldestUnsyncedAt *time.Time
+	HealthReportedAt *time.Time
 }
 
 // NewDevice describes a device to pair.
@@ -332,6 +337,6 @@ func toDevice(d db.Device) Device {
 	return Device{
 		ID: d.ID, OutletID: d.OutletID, Code: int(d.DeviceCode), Name: d.Name, PairedBy: d.PairedBy,
 		PairedAt: d.PairedAt, RevokedAt: d.RevokedAt, LastSeenAt: d.LastSeenAt, LastSyncAt: d.LastSyncAt,
-		AppVersion: d.AppVersion, ClockSkewMs: skew,
+		AppVersion: d.AppVersion, ClockSkewMs: skew, UnsyncedEvents: int(d.UnsyncedEvents), OldestUnsyncedAt: d.OldestUnsyncedAt, HealthReportedAt: d.HealthReportedAt,
 	}
 }

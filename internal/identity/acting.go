@@ -70,13 +70,27 @@ func (s *Service) LockDeviceActive(ctx context.Context, tx pgx.Tx, tenantID, dev
 	return nil
 }
 
-// RecordSync stamps a push on the device for the support view: when it last synced, its app
-// version, and how far its clock is off (server time minus the device's clientTime, in ms).
-func (s *Service) RecordSync(ctx context.Context, tx pgx.Tx, tenantID, deviceID uuid.UUID, clientTime *time.Time, appVersion *string) error {
+// Outbox is what a device reports about the events it has not delivered yet.
+type Outbox struct {
+	Unsynced int        // how many events are still waiting on the device
+	Oldest   *time.Time // device time of the oldest of them; required when Unsynced is above zero
+}
+
+// SyncStamp is what a device tells the server about itself on a push or pull.
+type SyncStamp struct {
+	ClientTime *time.Time // its clock now, to measure skew
+	AppVersion *string
+	Outbox     *Outbox // nil when the device did not say
+}
+
+// RecordSync stamps a push or pull on the device for the support view: when it last synced, its app
+// version, how far its clock is off (server time minus the device's ClientTime, in ms) and what is
+// still waiting in its outbox.
+func (s *Service) RecordSync(ctx context.Context, tx pgx.Tx, tenantID, deviceID uuid.UUID, st SyncStamp) error {
 	now := s.Clock.Now()
-	var skew *int32
-	if clientTime != nil {
-		ms := now.Sub(*clientTime).Milliseconds()
+	p := db.RecordDeviceSyncParams{TenantID: tenantID, ID: deviceID, Now: &now, AppVersion: st.AppVersion}
+	if st.ClientTime != nil {
+		ms := now.Sub(*st.ClientTime).Milliseconds()
 		const lim = 1 << 30 // about 12 days; beyond that the number is noise anyway
 		if ms > lim {
 			ms = lim
@@ -84,11 +98,16 @@ func (s *Service) RecordSync(ctx context.Context, tx pgx.Tx, tenantID, deviceID 
 			ms = -lim
 		}
 		v := int32(ms) //nolint:gosec // clamped above
-		skew = &v
+		p.ClockSkewMs = &v
 	}
-	return db.New(tx).RecordDeviceSync(ctx, db.RecordDeviceSyncParams{
-		TenantID: tenantID, ID: deviceID, Now: &now, AppVersion: appVersion, ClockSkewMs: skew,
-	})
+	if st.Outbox != nil {
+		n := int32(st.Outbox.Unsynced) //nolint:gosec // validated by the caller
+		p.UnsyncedEvents = &n
+		if st.Outbox.Unsynced > 0 {
+			p.OldestUnsyncedAt = st.Outbox.Oldest
+		}
+	}
+	return db.New(tx).RecordDeviceSync(ctx, p)
 }
 
 // DeviceInTx returns a device in the caller's transaction, for projectors that need its code (the

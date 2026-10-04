@@ -601,7 +601,7 @@ func TestClockSkewIsRecordedAndDeviceTimeKept(t *testing.T) {
 	behind.DeviceTime, ahead.DeviceTime = t0.Add(-5*time.Hour), t0.Add(2*time.Hour)
 	clientNow := t0.Add(-3 * time.Hour)
 	ver := "1.4.2"
-	res, err := w.svc.Push(context.Background(), dev, syncsrv.PushRequest{Events: []syncsrv.Event{behind, ahead}, ClientTime: &clientNow, AppVersion: &ver})
+	res, err := w.svc.Push(context.Background(), dev, syncsrv.PushRequest{Events: []syncsrv.Event{behind, ahead}, Health: syncsrv.DeviceHealth{ClientTime: &clientNow, AppVersion: &ver}})
 	if err != nil {
 		t.Fatal(err)
 	}

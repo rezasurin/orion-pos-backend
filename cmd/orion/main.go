@@ -312,12 +312,17 @@ func worker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		PublicURL: cfg.PublicURL,
 	})
 	idJobs.AddWorkers(workers)
+	health := sync.NewHealthJobs(sync.HealthDeps{
+		Platform: pool, Sender: notify.LogSender{Logger: logger}, Clock: kernel.SystemClock{}, Logger: logger,
+		UnsyncedAfter: cfg.AlertUnsyncedAfter, SilentAfter: cfg.AlertSilentAfter, OperatorEmail: cfg.AlertOperatorEmail,
+	})
+	health.AddWorkers(workers)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Logger:       logger,
 		Queues:       map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
 		Workers:      workers,
-		PeriodicJobs: idJobs.PeriodicJobs(),
+		PeriodicJobs: append(idJobs.PeriodicJobs(), health.PeriodicJobs()...),
 	})
 	if err != nil {
 		return fmt.Errorf("river: %w", err)

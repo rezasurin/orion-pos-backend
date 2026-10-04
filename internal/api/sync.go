@@ -20,7 +20,10 @@ func (s *Server) PushEvents(ctx context.Context, req openapi.PushEventsRequestOb
 	if b.DeviceId != p.DeviceID {
 		return nil, fmt.Errorf("%w: device_id is not the device this token belongs to", kernel.ErrValidation)
 	}
-	in := sync.PushRequest{Events: make([]sync.Event, len(b.Events)), ClientTime: b.ClientTime, AppVersion: b.AppVersion}
+	in := sync.PushRequest{
+		Events: make([]sync.Event, len(b.Events)),
+		Health: sync.DeviceHealth{ClientTime: b.ClientTime, AppVersion: b.AppVersion, Unsynced: b.UnsyncedEvents, OldestUnsynced: b.OldestUnsyncedAt},
+	}
 	for i, e := range b.Events {
 		in.Events[i] = sync.Event{
 			ID: e.Id, IdempotencyKey: e.IdempotencyKey, Type: e.Type, StaffID: e.StaffId,
@@ -47,7 +50,10 @@ func (s *Server) PushEvents(ctx context.Context, req openapi.PushEventsRequestOb
 }
 
 func (s *Server) PullChanges(ctx context.Context, req openapi.PullChangesRequestObject) (openapi.PullChangesResponseObject, error) {
-	in := sync.PullRequest{}
+	in := sync.PullRequest{Health: sync.DeviceHealth{
+		ClientTime: req.Params.ClientTime, AppVersion: req.Params.AppVersion,
+		Unsynced: req.Params.UnsyncedEvents, OldestUnsynced: req.Params.OldestUnsyncedAt,
+	}}
 	if req.Params.Cursor != nil {
 		in.Cursor = *req.Params.Cursor
 	}

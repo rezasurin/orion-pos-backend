@@ -711,6 +711,21 @@ paths:
           in: query
           description: At most this many changes are turned into entities per response.
           schema: {type: integer, minimum: 1, maximum: 1000, default: 500}
+        - name: client_time
+          in: query
+          description: The device's clock now, so the server can record how far off it is.
+          schema: {type: string, format: date-time}
+        - name: app_version
+          in: query
+          schema: {type: string, maxLength: 40}
+        - name: unsynced_events
+          in: query
+          description: How many events are in the device's outbox, as on a push.
+          schema: {type: integer, minimum: 0}
+        - name: oldest_unsynced_at
+          in: query
+          description: Device time of the oldest of them; needed when `unsynced_events` is above 0.
+          schema: {type: string, format: date-time}
       responses:
         '200':
           description: The changes
@@ -1607,7 +1622,7 @@ components:
 
     Device:
       type: object
-      required: [id, outlet_id, device_code, name, paired_by, paired_at]
+      required: [id, outlet_id, device_code, name, paired_by, paired_at, unsynced_events]
       properties:
         id: {type: string, format: uuid}
         outlet_id: {type: string, format: uuid}
@@ -1626,6 +1641,11 @@ components:
           type: integer
           nullable: true
           description: Server time minus device time. Positive means the device clock is behind.
+        unsynced_events:
+          type: integer
+          description: How many events the device said were still in its outbox when it last reported.
+        oldest_unsynced_at: {type: string, format: date-time, nullable: true}
+        health_reported_at: {type: string, format: date-time, nullable: true}
 
     DevicePage:
       type: object
@@ -2039,6 +2059,14 @@ components:
           format: date-time
           description: The device's clock when it sent this, so the server can record how far off it is.
         app_version: {type: string, maxLength: 40}
+        unsynced_events:
+          type: integer
+          minimum: 0
+          description: How many events are still in the device's outbox after this push. The server alerts the owner when events stay unsynced for too long.
+        oldest_unsynced_at:
+          type: string
+          format: date-time
+          description: Device time of the oldest event still in the outbox; needed when `unsynced_events` is above 0.
         events:
           type: array
           minItems: 1

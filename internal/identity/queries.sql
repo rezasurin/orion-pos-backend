@@ -231,11 +231,17 @@ WHERE sor.tenant_id = @tenant_id AND sor.staff_id = @staff_id AND sor.outlet_id 
 ORDER BY rp.permission;
 
 -- name: RecordDeviceSync :exec
--- Stamps a push: when the device last synced, its app version and how far its clock is off.
+-- Stamps a push or pull: when the device last synced, its app version, how far its clock is off and,
+-- when it reported its outbox, how much is still waiting there.
 UPDATE device
 SET last_sync_at = @now, last_seen_at = @now,
     app_version = coalesce(sqlc.narg(app_version), app_version),
-    clock_skew_ms = coalesce(sqlc.narg(clock_skew_ms), clock_skew_ms)
+    clock_skew_ms = coalesce(sqlc.narg(clock_skew_ms), clock_skew_ms),
+    unsynced_events = CASE WHEN sqlc.narg(unsynced_events)::integer IS NULL THEN unsynced_events ELSE sqlc.narg(unsynced_events)::integer END,
+    oldest_unsynced_at = CASE WHEN sqlc.narg(unsynced_events)::integer IS NULL THEN oldest_unsynced_at
+                              WHEN sqlc.narg(unsynced_events)::integer = 0 THEN NULL
+                              ELSE sqlc.narg(oldest_unsynced_at)::timestamptz END,
+    health_reported_at = CASE WHEN sqlc.narg(unsynced_events)::integer IS NULL THEN health_reported_at ELSE @now END
 WHERE tenant_id = @tenant_id AND id = @id;
 
 -- The POS pull: roster entries for the staff whose records changed.

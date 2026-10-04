@@ -37,6 +37,7 @@ type PullRequest struct {
 	// server (a restored database) all mean "send everything".
 	Cursor string
 	Limit  int
+	Health DeviceHealth
 }
 
 // PullResponse is everything the device needs to bring its local copy up to date.
@@ -138,6 +139,13 @@ func (s *Service) Pull(ctx context.Context, p identity.Principal, req PullReques
 	})
 	if err != nil {
 		return PullResponse{}, err
+	}
+
+	// Bookkeeping for the support view; it must not turn a successful pull into a failure.
+	if err := kernel.TenantTx(ctx, s.pool, p.TenantID, func(tx pgx.Tx) error {
+		return s.ids.RecordSync(ctx, tx, p.TenantID, p.DeviceID, req.Health.stamp(s.log))
+	}); err != nil {
+		s.log.WarnContext(ctx, "sync: could not record the pull on the device", slog.Any("error", err))
 	}
 
 	// Entitlements ride on every pull: they can change without the change log (an operator sets an

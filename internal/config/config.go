@@ -39,6 +39,12 @@ type Config struct {
 	// EmailProvider names how email is sent. Only "log" exists so far, which writes messages to
 	// the log and is refused in production.
 	EmailProvider string
+	// AlertUnsyncedAfter is how old the oldest event a device still holds may be before the owner is
+	// emailed; AlertSilentAfter how long a device with an open shift may go unheard. Zero takes the
+	// defaults (30 minutes and 3 hours). AlertOperatorEmail, if set, gets a copy of every alert.
+	AlertUnsyncedAfter time.Duration
+	AlertSilentAfter   time.Duration
+	AlertOperatorEmail string
 	// TrustProxy says a proxy in front of the service appends the caller's address to
 	// X-Forwarded-For. Enable it only behind exactly one such proxy.
 	TrustProxy bool
@@ -69,6 +75,7 @@ func Load() (Config, error) {
 		HTTPAddr:            getenv("ORION_HTTP_ADDR", ":8080"),
 		LogFormat:           getenv("ORION_LOG_FORMAT", "json"),
 		SentryDSN:           os.Getenv("ORION_SENTRY_DSN"),
+		AlertOperatorEmail:  os.Getenv("ORION_ALERT_OPERATOR_EMAIL"),
 	}
 
 	var errs []error
@@ -88,6 +95,19 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORION_SHUTDOWN_TIMEOUT: %w", err))
 	}
 	c.ShutdownTimeout = d
+	for _, v := range []struct {
+		key string
+		dst *time.Duration
+	}{{"ORION_ALERT_UNSYNCED_AFTER", &c.AlertUnsyncedAfter}, {"ORION_ALERT_SILENT_AFTER", &c.AlertSilentAfter}} {
+		if raw := os.Getenv(v.key); raw != "" {
+			dur, err := time.ParseDuration(raw)
+			if err != nil || dur <= 0 {
+				errs = append(errs, fmt.Errorf("%s: want a positive duration like 30m, got %q", v.key, raw))
+				continue
+			}
+			*v.dst = dur
+		}
+	}
 
 	tp, err := parseBool("ORION_TRUST_PROXY")
 	if err != nil {

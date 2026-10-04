@@ -528,3 +528,63 @@ func TestSalesListAndDetailOverHTTP(t *testing.T) {
 	e.do(t, "GET", "/v1/sales/"+saleIDs[1], cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
 	e.do(t, "GET", "/v1/sales/"+uuid.NewString(), owner, nil).problem(t, http.StatusNotFound, "not_found")
 }
+
+func TestDeviceHealthShowsInTheDeviceList(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	p := e.pusher(t, f, owner, "Kasir 1")
+	oldest := time.Now().UTC().Add(-45 * time.Minute).Format(time.RFC3339)
+
+	r := e.do(t, "POST", "/v1/sync/push", p.token, map[string]any{
+		"device_id": p.deviceID, "app_version": "2.1.0", "client_time": time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339),
+		"unsynced_events": 4, "oldest_unsynced_at": oldest,
+		"events": []map[string]any{p.event("test.created", map[string]any{"label": "x"})},
+	})
+	if r.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", r.Code, r.Body.String())
+	}
+
+	var devs struct {
+		Items []struct {
+			ID               string  `json:"id"`
+			LastSyncAt       *string `json:"last_sync_at"`
+			AppVersion       *string `json:"app_version"`
+			ClockSkewMs      *int64  `json:"clock_skew_ms"`
+			UnsyncedEvents   int     `json:"unsynced_events"`
+			OldestUnsyncedAt *string `json:"oldest_unsynced_at"`
+			HealthReportedAt *string `json:"health_reported_at"`
+		} `json:"items"`
+	}
+	e.do(t, "GET", "/v1/devices", owner, nil).decode(t, &devs)
+	var got *struct {
+		ID               string  `json:"id"`
+		LastSyncAt       *string `json:"last_sync_at"`
+		AppVersion       *string `json:"app_version"`
+		ClockSkewMs      *int64  `json:"clock_skew_ms"`
+		UnsyncedEvents   int     `json:"unsynced_events"`
+		OldestUnsyncedAt *string `json:"oldest_unsynced_at"`
+		HealthReportedAt *string `json:"health_reported_at"`
+	}
+	for i := range devs.Items {
+		if devs.Items[i].ID == p.deviceID {
+			got = &devs.Items[i]
+		}
+	}
+	if got == nil || got.LastSyncAt == nil || got.AppVersion == nil || *got.AppVersion != "2.1.0" || got.ClockSkewMs == nil ||
+		*got.ClockSkewMs < 100_000 || *got.ClockSkewMs > 140_000 || got.UnsyncedEvents != 4 || got.OldestUnsyncedAt == nil || got.HealthReportedAt == nil {
+		t.Errorf("device = %+v", got)
+	}
+
+	// A pull can carry the same report, and a bad one does not fail it.
+	if r := e.do(t, "GET", "/v1/sync/pull?unsynced_events=0&app_version=2.1.1", p.token, nil); r.Code != http.StatusOK {
+		t.Errorf("pull with a report: %d %s", r.Code, r.Body.String())
+	}
+	if r := e.do(t, "GET", "/v1/sync/pull?unsynced_events=9", p.token, nil); r.Code != http.StatusOK {
+		t.Errorf("pull with an incomplete report: %d", r.Code)
+	}
+	if r := e.do(t, "GET", "/v1/sync/pull?unsynced_events=-1", p.token, nil); r.Code != http.StatusOK {
+		t.Errorf("pull with a nonsense report: %d", r.Code)
+	}
+	e.do(t, "GET", "/v1/sync/pull?unsynced_events=lots", p.token, nil).problem(t, http.StatusBadRequest, "validation_failed")
+}

@@ -507,6 +507,34 @@ trigger that raises on update or delete as a backstop.
 - Per-device `last_seen_at`, `last_sync_at`, `app_version`, `clock_skew_ms` for support and the
   admin "stopped syncing" view.
 
+#### 4.11.1 Device health as built (B1.10)
+
+- **What the server knows.** Every push and pull stamps the device row: `last_sync_at` and
+  `last_seen_at`, `app_version`, `clock_skew_ms` (server minus the device's `client_time`), and the
+  outbox the device reports: `unsynced_events` and `oldest_unsynced_at` (device time of the oldest),
+  with `health_reported_at`. `GET /v1/devices` returns all of it. A report that makes no sense (a
+  negative count, a count without an oldest time) is ignored and never fails the sync it came with.
+  The server cannot see a tablet's outbox, so this is how it learns that events are stuck; the POS
+  must send `unsynced_events` (0 when the outbox is empty) on each call.
+- **The monitor** is a river periodic job in `orion worker` (every 5 minutes, as `orion_platform`,
+  `sync.HealthJobs`). It opens an incident (`device_alert`, at most one open per device and kind)
+  for each device that is not revoked, whose business is not suspended, and that has been seen in
+  the last 7 days, when:
+  - `unsynced_events`: the device reported events whose oldest is older than
+    `ORION_ALERT_UNSYNCED_AFTER` (default 30 minutes); or
+  - `silent_open_shift`: it has a shift that arrived in the last 24 hours and is still open, and
+    has not been heard from for `ORION_ALERT_SILENT_AFTER` (default 3 hours).
+  A device that goes offline holding old events stays flagged, which is the case the alert exists for.
+- **Telling people.** Each incident emails the business's owners with a verified address, once, in
+  their language (Indonesian by default), saying what is wrong and what to do; a copy goes to
+  `ORION_ALERT_OPERATOR_EMAIL` when set, naming the business. An email that fails is retried on the
+  next run; an incident with nobody to tell is logged and marked handled. Incidents resolve
+  themselves when the device delivers, speaks up, is revoked, or closes its shift, with no
+  message. Until a real email provider exists (ORION_EMAIL_PROVIDER is only `log`), the worker
+  writes these emails to its log.
+- **Shape.** The monitor reads the `device` and `shift` tables read-only (with `device_alert`, its
+  own table); migration 00013 adds the columns, the table, and a partial index of open shifts.
+
 ### 4.12 Database conventions: indexes, N+1 queries and deadlocks
 
 **Indexes are added when a query needs one**, not for every column or foreign key. Each index is
@@ -1168,7 +1196,7 @@ backup has been restored into a scratch database.
 | B1.7 | ✅ Outlet settings for tax, service charge, rounding, timezone, cutoff (`PATCH /v1/outlets/{outletId}/settings`); `business_date` derivation (`kernel.BusinessDate`, see 4.9.1). Done ahead of B1.5, which needs it | 1d |
 | B1.8 | ✅ Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers match the POS's own totals (see 6.4.2) | 4d |
 | B1.9 | ✅ Sales list and detail for the back office (read-only; see 6.4.3) | 2d |
-| B1.10 | Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long | 1d |
+| B1.10 | ✅ Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long (see 4.11.1) | 1d |
 | B1.11 | Load sanity check: one week of a busy cafe (for example 600 sales/day, 3 devices) pushed in bursts, p95 push latency under 300 ms | 1d |
 | B1.12 | Pilot runbook: how to read flags, fix a stuck device, rebuild a report | 1d |
 

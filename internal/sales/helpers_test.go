@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/rezasurin/orion-pos-backend/internal/catalog"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/pricing"
@@ -64,7 +65,7 @@ func newFx(t *testing.T) *fx {
 	}
 	ten, cat := tenancy.NewService(d.App), catalog.NewService(d.App)
 	svc, err := syncsrv.NewService(syncsrv.Deps{
-		Pool: d.App, Identity: ids,
+		Pool: d.App, Identity: ids, Catalog: cat, Tenancy: ten, Entitlements: entitlements.NewResolver(d.App, nil),
 		Projectors: []syncsrv.Projector{sales.NewProjector(sales.Deps{Identity: ids, Tenancy: ten, Catalog: cat})},
 	})
 	if err != nil {
