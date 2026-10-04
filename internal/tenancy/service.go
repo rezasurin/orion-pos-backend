@@ -302,3 +302,13 @@ func toOutlet(o db.Outlet, s db.OutletSetting) Outlet {
 		},
 	}
 }
+
+// OutletInTx returns an outlet with its settings inside the caller's transaction, for projectors
+// that need the outlet's code and time settings while applying an event.
+func (s *Service) OutletInTx(ctx context.Context, tx pgx.Tx, tenantID, outletID uuid.UUID) (Outlet, error) {
+	r, err := db.New(tx).GetOutletWithSettings(ctx, db.GetOutletWithSettingsParams{TenantID: tenantID, ID: outletID})
+	if err != nil {
+		return Outlet{}, mapErr(err)
+	}
+	return toOutlet(r.Outlet, r.OutletSetting), nil
+}

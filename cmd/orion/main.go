@@ -32,6 +32,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/notify"
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
+	"github.com/rezasurin/orion-pos-backend/internal/sales"
 	"github.com/rezasurin/orion-pos-backend/internal/sync"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
@@ -165,7 +166,11 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	syncSvc, err := sync.NewService(sync.Deps{Pool: pool, Identity: ids, Clock: kernel.SystemClock{}, Logger: logger})
+	catalogSvc := catalog.NewService(pool)
+	syncSvc, err := sync.NewService(sync.Deps{
+		Pool: pool, Identity: ids, Clock: kernel.SystemClock{}, Logger: logger,
+		Projectors: []sync.Projector{sales.NewProjector(sales.Deps{Identity: ids, Tenancy: tenants, Catalog: catalogSvc})},
+	})
 	if err != nil {
 		return err
 	}
@@ -185,7 +190,7 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		logger.Warn("ORION_PLATFORM_DATABASE_URL is not set: the operator console (/admin) is disabled")
 	}
-	apiServer, err := api.New(api.Deps{Catalog: catalog.NewService(pool), Sync: syncSvc, Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: logger})
+	apiServer, err := api.New(api.Deps{Catalog: catalogSvc, Sync: syncSvc, Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: logger})
 	if err != nil {
 		return err
 	}

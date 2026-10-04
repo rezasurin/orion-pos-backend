@@ -866,6 +866,60 @@ both run them in CI. Start with about 40 vectors covering inclusive and exclusiv
 charge on and off, line and bill discounts, rounding at each unit, and rupiah amounts that do not
 divide evenly.
 
+#### 6.4.1 Sales projectors as built (B1.5)
+
+`internal/sales` implements `sync.Projector` for the five Phase 1 event types (schema version 1) and
+is registered in `cmd/orion`. Migration 00011 holds the tables. Payloads are JSON objects; unknown
+fields are ignored so a newer app may add fields within a version.
+
+| Event | Payload | Notes |
+|---|---|---|
+| `shift.opened` | `{opening_cash}` | The event id is the shift id. `opened_at` is `device_time`. |
+| `shift.closed` | `{shift_id, counted_cash}` | Own event id. Waits for the shift. A shift closes once (`already_closed`). |
+| `cash.movement` | `{shift_id, kind: pay_in \| pay_out \| no_sale, amount, reason}` | `no_sale` has no amount; `pay_out` needs a reason. |
+| `sale.completed` | `{shift_id, receipt_number, catalog_seq, pricing{version, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode}, lines[{variant_id, name, unit_price, quantity, modifiers[{modifier_id, name, price_delta}], discount, allocated_bill_discount, total}], discounts[{line, kind, value, amount, reason, approved_by}], totals{subtotal, discount_total, service_charge, tax, rounding_amount, total}, payments[{method, amount, tendered, change, reference}]}` | The event id is the sale id. |
+| `sale.voided` | `{sale_id, reason, approved_by?, shift_id?}` | Own event id. Waits for the sale. `shift_id` is the shift the void happened in (default: the sale's). |
+
+- **Recorded as rung up.** A sale stores the amounts the device sent, never the server's own
+  numbers. The server recomputes it with `internal/pricing` using the settings the device says it
+  used (so a later settings change cannot make old sales look wrong) and compares every line,
+  discount and total; a difference is a `total_mismatch` flag listing the fields, an unknown
+  `pricing.version` a `pricing_version` flag, a bill the algorithm cannot price (two discounts on a
+  line, a discount larger than its line) a `pricing_invalid` flag. Payments are checked against what
+  was due (`payment_mismatch`). Tender (all cash, none, mixed) is derived from the payments.
+- **Flags** are a table, `flag`, for every event type, a generalisation of the plan's `sale_flag`
+  (`target_type`: sale, void, shift, cash_movement). Codes: `total_mismatch`, `pricing_invalid`,
+  `pricing_version`, `payment_mismatch`, `permission_missing`, `stale_price`, `sale_outside_shift`,
+  `shift_other_device`, `device_time_ahead` (more than 10 minutes ahead of the server; behind is
+  just a late sync), `after_shift_close`. None of them blocks the event.
+- **Permissions** are checked against the person's role *now* (4.4): `sale.create` for a sale,
+  `discount.apply_manual` for each discount (from `approved_by` if named, else the cashier),
+  `sale.void` from the voider or the approver, `shift.open`, `shift.close`, and
+  `drawer.open_no_sale` for every cash movement (there is no separate cash permission). An
+  `approved_by` who is not part of the business is rejected (`unknown_staff`).
+- **Stale price** means the line's unit price differs from the variant's current price at the outlet
+  *and* the variant (or its outlet price) changed after the device's `catalog_seq` but before the
+  sale's `device_time`: an update the device could have had and did not. A sale made before a price
+  change, or by a device that had pulled it, is not flagged.
+- **Order.** A shift close or cash movement waits for its shift; a sale waits for its shift; a void
+  waits for its sale (and for the shift it names); a chain released by one arrival runs in that
+  arrival's transaction. `sale_outside_shift` flags a sale whose `device_time` is before its shift
+  opened or after it closed, so the flag is the same whichever order the events arrived in.
+- **Rejections** specific to sales: `invalid_payload` (field named in `detail`),
+  `invalid_receipt_number` (not `{outlet code}-{device code}-{counter}`, or not this outlet and
+  device), `duplicate_receipt_number`, `unknown_reference` (a variant or modifier that is not in the
+  business's catalog), `wrong_outlet`, `already_voided`, `already_closed`, `unknown_staff`.
+- **Insert-only.** The app role may insert into every sales table and update only `sale.status` and
+  the four shift closing columns; a `CHECK` ties the closing columns together. There is no delete.
+- **Expected cash is not stored** on the shift (the plan listed `expected_cash`). It is derived in
+  the end-of-shift report (B1.8) from the opening cash, cash payments net of change, pay ins and
+  outs, and refunds of voids made in that shift, so a late event can never leave a stale number.
+- **Tests** run the real push path with the real projectors: all 45 priceable golden vectors
+  project with no flag at all; tampered totals, permissions, prices, the chain of a void before its
+  sale before its shift, 12 random orderings of a real day converging to identical sales, shifts,
+  cash and flags, receipt numbers, concurrent voids and concurrent devices, business dates under a
+  04:00 cutoff, and the app role being unable to rewrite anything.
+
 ### 6.5 Payments (Phase 1 manual, Phase 2 gateway)
 
 - Phase 1: payments arrive inside `sale.completed`. Manual QRIS stores the static QR reference and
@@ -1025,7 +1079,7 @@ backup has been restored into a scratch database.
 | B1.2 | ✅ Pricing algorithm in Go + golden vectors (51, six of them invalid bills); the format and rules for the TS implementation are in `testdata/pricing-vectors/README.md` (see 4.8.1) | 3d |
 | B1.3 | ✅ **Sync tests first** (section 5.3) against a stub projector (`internal/sync/sync_test.go`, `internal/sync/syncstub`); the end-of-day reconciliation test waits for the real projectors (B1.5) | 3d |
 | B1.4 | ✅ `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` (see 5.1.1) | 4d |
-| B1.5 | Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check) | 5d |
+| B1.5 | ✅ Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check); event payloads and rules in 6.4.1 | 5d |
 | B1.6 | Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling | 3d |
 | B1.7 | ✅ Outlet settings for tax, service charge, rounding, timezone, cutoff (`PATCH /v1/outlets/{outletId}/settings`); `business_date` derivation (`kernel.BusinessDate`, see 4.9.1). Done ahead of B1.5, which needs it | 1d |
 | B1.8 | Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers must match the POS's own totals | 4d |

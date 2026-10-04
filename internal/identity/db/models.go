@@ -152,6 +152,20 @@ func (ns NullSubscriptionStatus) Value() (driver.Value, error) {
 	return string(ns.SubscriptionStatus), nil
 }
 
+type CashMovement struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	OutletID     uuid.UUID
+	ShiftID      uuid.UUID
+	Kind         string
+	Amount       int64
+	Reason       string
+	StaffID      uuid.UUID
+	DeviceTime   time.Time
+	ReceivedAt   time.Time
+	BusinessDate pgtype.Date
+}
+
 type Category struct {
 	ID         uuid.UUID
 	TenantID   uuid.UUID
@@ -216,6 +230,19 @@ type EntitlementKey struct {
 	IsTemporary  bool
 	DefaultValue int64
 	CreatedAt    time.Time
+}
+
+type Flag struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	OutletID   uuid.UUID
+	DeviceID   uuid.UUID
+	EventID    uuid.UUID
+	TargetType string
+	TargetID   uuid.UUID
+	Code       string
+	Detail     []byte
+	CreatedAt  time.Time
 }
 
 type Item struct {
@@ -321,6 +348,18 @@ type OutletVariant struct {
 	UpdatedAt     time.Time
 }
 
+type Payment struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	SaleID    uuid.UUID
+	Method    string
+	Amount    int64
+	Tendered  *int64
+	Change    *int64
+	Reference string
+	Status    string
+}
+
 type Plan struct {
 	ID        uuid.UUID
 	Code      string
@@ -418,6 +457,83 @@ type RolePermission struct {
 	TenantID   uuid.UUID
 	RoleID     uuid.UUID
 	Permission string
+}
+
+type Sale struct {
+	ID                uuid.UUID
+	TenantID          uuid.UUID
+	OutletID          uuid.UUID
+	DeviceID          uuid.UUID
+	ShiftID           uuid.UUID
+	StaffID           uuid.UUID
+	ReceiptNumber     string
+	ReceiptDeviceCode int32
+	ReceiptCounter    int64
+	DeviceTime        time.Time
+	ReceivedAt        time.Time
+	BusinessDate      pgtype.Date
+	PricingVersion    int32
+	Pricing           []byte
+	CatalogSeq        int64
+	Subtotal          int64
+	DiscountTotal     int64
+	ServiceCharge     int64
+	Tax               int64
+	TaxIncluded       bool
+	RoundingAmount    int64
+	Total             int64
+	Status            string
+}
+
+type SaleDiscount struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	SaleID     uuid.UUID
+	SaleLineID *uuid.UUID
+	Kind       string
+	Value      int64
+	Amount     int64
+	Reason     string
+	ApprovedBy *uuid.UUID
+}
+
+type SaleLine struct {
+	ID                    uuid.UUID
+	TenantID              uuid.UUID
+	SaleID                uuid.UUID
+	LineNo                int32
+	VariantID             uuid.UUID
+	NameSnapshot          string
+	UnitPrice             int64
+	Quantity              int32
+	LineDiscount          int64
+	AllocatedBillDiscount int64
+	LineTotal             int64
+}
+
+type SaleLineModifier struct {
+	TenantID     uuid.UUID
+	SaleLineID   uuid.UUID
+	Position     int32
+	ModifierID   uuid.UUID
+	NameSnapshot string
+	PriceDelta   int64
+}
+
+type Shift struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	OutletID     uuid.UUID
+	DeviceID     uuid.UUID
+	OpenedBy     uuid.UUID
+	OpenedAt     time.Time
+	OpeningCash  int64
+	BusinessDate pgtype.Date
+	ReceivedAt   time.Time
+	ClosedBy     *uuid.UUID
+	ClosedAt     *time.Time
+	CountedCash  *int64
+	CloseEventID *uuid.UUID
 }
 
 type Staff struct {
@@ -528,4 +644,18 @@ type Variant struct {
 	ArchivedAt *time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+type Void struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	OutletID     uuid.UUID
+	SaleID       uuid.UUID
+	ShiftID      uuid.UUID
+	StaffID      uuid.UUID
+	ApprovedBy   *uuid.UUID
+	Reason       string
+	DeviceTime   time.Time
+	ReceivedAt   time.Time
+	BusinessDate pgtype.Date
 }

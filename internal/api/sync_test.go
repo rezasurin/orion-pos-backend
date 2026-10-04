@@ -153,3 +153,51 @@ func TestRevokedDevicePushIsForbidden(t *testing.T) {
 		t.Errorf("a revoked device wrote %d records", n)
 	}
 }
+
+// A real day over HTTP: a shift, a sale priced by the device, and the sale voided.
+func TestPushingRealEvents(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	p := e.pusher(t, f, owner, "Kasir 1")
+
+	var item itemBody
+	e.create(t, "/v1/items", owner, map[string]any{"name": "Espresso", "variants": []map[string]any{{"base_price": 18000}}}, &item)
+
+	shift := p.event("shift.opened", map[string]any{"opening_cash": 100000})
+	sale := p.event("sale.completed", map[string]any{
+		"shift_id": shift["id"], "receipt_number": "JKT1-01-000001", "catalog_seq": 1000,
+		"pricing": map[string]any{
+			"version": 1, "price_includes_tax": false, "tax_rate_bp": 0, "service_charge_rate_bp": 0,
+			"service_charge_taxable": true, "cash_rounding_unit": 0, "cash_rounding_mode": "nearest",
+		},
+		"lines": []map[string]any{{
+			"variant_id": item.Variants[0].ID, "name": "Espresso", "unit_price": 18000, "quantity": 1,
+			"discount": 0, "allocated_bill_discount": 0, "total": 18000,
+		}},
+		"totals":   map[string]any{"subtotal": 18000, "discount_total": 0, "service_charge": 0, "tax": 0, "rounding_amount": 0, "total": 18000},
+		"payments": []map[string]any{{"method": "cash", "amount": 18000, "tendered": 20000, "change": 2000}},
+	})
+	void := p.event("sale.voided", map[string]any{"sale_id": sale["id"], "reason": "wrong order"})
+
+	r := p.push(t, void, sale, shift) // backwards: everything waits for the shift
+	var res pushBody
+	r.decode(t, &res)
+	for i, got := range res.Results {
+		if got.Status != "accepted" {
+			t.Fatalf("event %d: %+v", i, got)
+		}
+	}
+	var status, flagCode string
+	var total int64
+	if err := e.d.Owner.QueryRow(t.Context(), `SELECT status, total FROM sale WHERE id = $1`, sale["id"]).Scan(&status, &total); err != nil {
+		t.Fatal(err)
+	}
+	if status != "voided" || total != 18000 {
+		t.Errorf("sale: status %s total %d", status, total)
+	}
+	// The cashier (not a manager) voided it, so there is a flag for review.
+	if err := e.d.Owner.QueryRow(t.Context(), `SELECT code FROM flag WHERE target_type = 'void'`).Scan(&flagCode); err != nil || flagCode != "permission_missing" {
+		t.Errorf("void flag = %q (%v)", flagCode, err)
+	}
+}

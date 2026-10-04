@@ -174,3 +174,20 @@ SELECT count(*) FROM variant WHERE tenant_id = @tenant_id AND item_id = @item_id
 
 -- name: ListModifierGroupsByIDs :many
 SELECT * FROM modifier_group WHERE tenant_id = @tenant_id AND id = ANY(@ids::uuid[]) ORDER BY id;
+
+-- Price checks for the sales projector (internal/sales), inside the event's transaction.
+
+-- name: EffectivePrices :many
+-- What each variant costs at an outlet now: its override there, or its base price.
+SELECT v.id, v.item_id, coalesce(ov.price_override, v.base_price)::bigint AS price
+FROM variant v
+LEFT JOIN outlet_variant ov ON ov.tenant_id = v.tenant_id AND ov.variant_id = v.id AND ov.outlet_id = @outlet_id
+WHERE v.tenant_id = @tenant_id AND v.id = ANY(@variant_ids::uuid[]);
+
+-- name: CatalogChangesBefore :many
+-- Changes to these items, or to these variants at this outlet, that were made after the device's
+-- catalog cursor but before the sale happened: updates the device could have had and did not.
+SELECT DISTINCT entity_type, entity_id FROM change_log
+WHERE tenant_id = @tenant_id AND seq > @after_seq AND created_at <= @at
+  AND ((entity_type = 'item' AND entity_id = ANY(@item_ids::uuid[]))
+    OR (entity_type = 'outlet_variant' AND outlet_id = @outlet_id AND entity_id = ANY(@variant_ids::uuid[])));

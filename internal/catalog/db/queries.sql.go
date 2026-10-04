@@ -12,6 +12,56 @@ import (
 	"github.com/google/uuid"
 )
 
+const catalogChangesBefore = `-- name: CatalogChangesBefore :many
+SELECT DISTINCT entity_type, entity_id FROM change_log
+WHERE tenant_id = $1 AND seq > $2 AND created_at <= $3
+  AND ((entity_type = 'item' AND entity_id = ANY($4::uuid[]))
+    OR (entity_type = 'outlet_variant' AND outlet_id = $5 AND entity_id = ANY($6::uuid[])))
+`
+
+type CatalogChangesBeforeParams struct {
+	TenantID   uuid.UUID
+	AfterSeq   int64
+	At         time.Time
+	ItemIds    []uuid.UUID
+	OutletID   *uuid.UUID
+	VariantIds []uuid.UUID
+}
+
+type CatalogChangesBeforeRow struct {
+	EntityType string
+	EntityID   uuid.UUID
+}
+
+// Changes to these items, or to these variants at this outlet, that were made after the device's
+// catalog cursor but before the sale happened: updates the device could have had and did not.
+func (q *Queries) CatalogChangesBefore(ctx context.Context, arg CatalogChangesBeforeParams) ([]CatalogChangesBeforeRow, error) {
+	rows, err := q.db.Query(ctx, catalogChangesBefore,
+		arg.TenantID,
+		arg.AfterSeq,
+		arg.At,
+		arg.ItemIds,
+		arg.OutletID,
+		arg.VariantIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CatalogChangesBeforeRow
+	for rows.Next() {
+		var i CatalogChangesBeforeRow
+		if err := rows.Scan(&i.EntityType, &i.EntityID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countVariants = `-- name: CountVariants :one
 SELECT count(*) FROM variant WHERE tenant_id = $1 AND item_id = $2
 `
@@ -40,6 +90,48 @@ type DeleteItemModifierGroupsParams struct {
 func (q *Queries) DeleteItemModifierGroups(ctx context.Context, arg DeleteItemModifierGroupsParams) error {
 	_, err := q.db.Exec(ctx, deleteItemModifierGroups, arg.TenantID, arg.ItemID)
 	return err
+}
+
+const effectivePrices = `-- name: EffectivePrices :many
+
+SELECT v.id, v.item_id, coalesce(ov.price_override, v.base_price)::bigint AS price
+FROM variant v
+LEFT JOIN outlet_variant ov ON ov.tenant_id = v.tenant_id AND ov.variant_id = v.id AND ov.outlet_id = $1
+WHERE v.tenant_id = $2 AND v.id = ANY($3::uuid[])
+`
+
+type EffectivePricesParams struct {
+	OutletID   uuid.UUID
+	TenantID   uuid.UUID
+	VariantIds []uuid.UUID
+}
+
+type EffectivePricesRow struct {
+	ID     uuid.UUID
+	ItemID uuid.UUID
+	Price  int64
+}
+
+// Price checks for the sales projector (internal/sales), inside the event's transaction.
+// What each variant costs at an outlet now: its override there, or its base price.
+func (q *Queries) EffectivePrices(ctx context.Context, arg EffectivePricesParams) ([]EffectivePricesRow, error) {
+	rows, err := q.db.Query(ctx, effectivePrices, arg.OutletID, arg.TenantID, arg.VariantIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []EffectivePricesRow
+	for rows.Next() {
+		var i EffectivePricesRow
+		if err := rows.Scan(&i.ID, &i.ItemID, &i.Price); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getCategoryForUpdate = `-- name: GetCategoryForUpdate :one
