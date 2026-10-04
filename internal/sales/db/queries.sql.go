@@ -42,6 +42,46 @@ func (q *Queries) CloseShift(ctx context.Context, arg CloseShiftParams) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const getSale = `-- name: GetSale :one
+SELECT id, tenant_id, outlet_id, device_id, shift_id, staff_id, receipt_number, receipt_device_code, receipt_counter, device_time, received_at, business_date, pricing_version, pricing, catalog_seq, subtotal, discount_total, service_charge, tax, tax_included, rounding_amount, total, status FROM sale WHERE tenant_id = $1 AND id = $2
+`
+
+type GetSaleParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) GetSale(ctx context.Context, arg GetSaleParams) (Sale, error) {
+	row := q.db.QueryRow(ctx, getSale, arg.TenantID, arg.ID)
+	var i Sale
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.DeviceID,
+		&i.ShiftID,
+		&i.StaffID,
+		&i.ReceiptNumber,
+		&i.ReceiptDeviceCode,
+		&i.ReceiptCounter,
+		&i.DeviceTime,
+		&i.ReceivedAt,
+		&i.BusinessDate,
+		&i.PricingVersion,
+		&i.Pricing,
+		&i.CatalogSeq,
+		&i.Subtotal,
+		&i.DiscountTotal,
+		&i.ServiceCharge,
+		&i.Tax,
+		&i.TaxIncluded,
+		&i.RoundingAmount,
+		&i.Total,
+		&i.Status,
+	)
+	return i, err
+}
+
 const getSaleForVoid = `-- name: GetSaleForVoid :one
 
 SELECT id, outlet_id, shift_id, status FROM sale WHERE tenant_id = $1 AND id = $2 FOR UPDATE
@@ -128,6 +168,34 @@ func (q *Queries) GetShiftForUpdate(ctx context.Context, arg GetShiftForUpdatePa
 		&i.ClosedAt,
 		&i.CountedCash,
 		&i.CloseEventID,
+	)
+	return i, err
+}
+
+const getVoidOfSale = `-- name: GetVoidOfSale :one
+SELECT id, tenant_id, outlet_id, sale_id, shift_id, staff_id, approved_by, reason, device_time, received_at, business_date FROM void WHERE tenant_id = $1 AND sale_id = $2
+`
+
+type GetVoidOfSaleParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+func (q *Queries) GetVoidOfSale(ctx context.Context, arg GetVoidOfSaleParams) (Void, error) {
+	row := q.db.QueryRow(ctx, getVoidOfSale, arg.TenantID, arg.SaleID)
+	var i Void
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.SaleID,
+		&i.ShiftID,
+		&i.StaffID,
+		&i.ApprovedBy,
+		&i.Reason,
+		&i.DeviceTime,
+		&i.ReceivedAt,
+		&i.BusinessDate,
 	)
 	return i, err
 }
@@ -300,6 +368,353 @@ func (q *Queries) InsertVoid(ctx context.Context, arg InsertVoidParams) error {
 		arg.BusinessDate,
 	)
 	return err
+}
+
+const listFlagsBySales = `-- name: ListFlagsBySales :many
+SELECT f.id, f.code, f.target_type, f.target_id, f.detail, f.created_at, coalesce(v.sale_id, f.target_id)::uuid AS sale_id
+FROM flag f
+LEFT JOIN void v ON v.tenant_id = f.tenant_id AND v.id = f.target_id AND f.target_type = 'void'
+WHERE f.tenant_id = $1 AND (f.target_id = ANY($2::uuid[]) OR v.sale_id = ANY($2::uuid[]))
+ORDER BY f.created_at, f.id
+`
+
+type ListFlagsBySalesParams struct {
+	TenantID uuid.UUID
+	SaleIds  []uuid.UUID
+}
+
+type ListFlagsBySalesRow struct {
+	ID         uuid.UUID
+	Code       string
+	TargetType string
+	TargetID   uuid.UUID
+	Detail     []byte
+	CreatedAt  time.Time
+	SaleID     uuid.UUID
+}
+
+// The flags about each sale and about its void, in one query.
+func (q *Queries) ListFlagsBySales(ctx context.Context, arg ListFlagsBySalesParams) ([]ListFlagsBySalesRow, error) {
+	rows, err := q.db.Query(ctx, listFlagsBySales, arg.TenantID, arg.SaleIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListFlagsBySalesRow
+	for rows.Next() {
+		var i ListFlagsBySalesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.TargetType,
+			&i.TargetID,
+			&i.Detail,
+			&i.CreatedAt,
+			&i.SaleID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPaymentsBySales = `-- name: ListPaymentsBySales :many
+SELECT id, sale_id, method, amount, tendered, change, reference, status FROM payment
+WHERE tenant_id = $1 AND sale_id = ANY($2::uuid[])
+ORDER BY sale_id, id
+`
+
+type ListPaymentsBySalesParams struct {
+	TenantID uuid.UUID
+	SaleIds  []uuid.UUID
+}
+
+type ListPaymentsBySalesRow struct {
+	ID        uuid.UUID
+	SaleID    uuid.UUID
+	Method    string
+	Amount    int64
+	Tendered  *int64
+	Change    *int64
+	Reference string
+	Status    string
+}
+
+func (q *Queries) ListPaymentsBySales(ctx context.Context, arg ListPaymentsBySalesParams) ([]ListPaymentsBySalesRow, error) {
+	rows, err := q.db.Query(ctx, listPaymentsBySales, arg.TenantID, arg.SaleIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPaymentsBySalesRow
+	for rows.Next() {
+		var i ListPaymentsBySalesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SaleID,
+			&i.Method,
+			&i.Amount,
+			&i.Tendered,
+			&i.Change,
+			&i.Reference,
+			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSaleDiscounts = `-- name: ListSaleDiscounts :many
+SELECT d.id, d.sale_line_id, l.line_no AS line_no, d.kind, d.value, d.amount, d.reason, d.approved_by
+FROM sale_discount d
+LEFT JOIN sale_line l ON l.tenant_id = d.tenant_id AND l.id = d.sale_line_id
+WHERE d.tenant_id = $1 AND d.sale_id = $2
+ORDER BY d.id
+`
+
+type ListSaleDiscountsParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+type ListSaleDiscountsRow struct {
+	ID         uuid.UUID
+	SaleLineID *uuid.UUID
+	LineNo     *int32
+	Kind       string
+	Value      int64
+	Amount     int64
+	Reason     string
+	ApprovedBy *uuid.UUID
+}
+
+func (q *Queries) ListSaleDiscounts(ctx context.Context, arg ListSaleDiscountsParams) ([]ListSaleDiscountsRow, error) {
+	rows, err := q.db.Query(ctx, listSaleDiscounts, arg.TenantID, arg.SaleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSaleDiscountsRow
+	for rows.Next() {
+		var i ListSaleDiscountsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SaleLineID,
+			&i.LineNo,
+			&i.Kind,
+			&i.Value,
+			&i.Amount,
+			&i.Reason,
+			&i.ApprovedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSaleLineModifiers = `-- name: ListSaleLineModifiers :many
+SELECT m.tenant_id, m.sale_line_id, m.position, m.modifier_id, m.name_snapshot, m.price_delta FROM sale_line_modifier m
+JOIN sale_line l ON l.tenant_id = m.tenant_id AND l.id = m.sale_line_id
+WHERE l.tenant_id = $1 AND l.sale_id = $2
+ORDER BY l.line_no, m.position
+`
+
+type ListSaleLineModifiersParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+func (q *Queries) ListSaleLineModifiers(ctx context.Context, arg ListSaleLineModifiersParams) ([]SaleLineModifier, error) {
+	rows, err := q.db.Query(ctx, listSaleLineModifiers, arg.TenantID, arg.SaleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SaleLineModifier
+	for rows.Next() {
+		var i SaleLineModifier
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.SaleLineID,
+			&i.Position,
+			&i.ModifierID,
+			&i.NameSnapshot,
+			&i.PriceDelta,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSaleLines = `-- name: ListSaleLines :many
+SELECT id, tenant_id, sale_id, line_no, variant_id, name_snapshot, unit_price, quantity, line_discount, allocated_bill_discount, line_total FROM sale_line WHERE tenant_id = $1 AND sale_id = $2 ORDER BY line_no
+`
+
+type ListSaleLinesParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+func (q *Queries) ListSaleLines(ctx context.Context, arg ListSaleLinesParams) ([]SaleLine, error) {
+	rows, err := q.db.Query(ctx, listSaleLines, arg.TenantID, arg.SaleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SaleLine
+	for rows.Next() {
+		var i SaleLine
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.SaleID,
+			&i.LineNo,
+			&i.VariantID,
+			&i.NameSnapshot,
+			&i.UnitPrice,
+			&i.Quantity,
+			&i.LineDiscount,
+			&i.AllocatedBillDiscount,
+			&i.LineTotal,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSales = `-- name: ListSales :many
+
+SELECT s.id, s.outlet_id, s.device_id, s.shift_id, s.staff_id, s.receipt_number, s.device_time, s.received_at, s.business_date,
+       s.status, s.subtotal, s.discount_total, s.service_charge, s.tax, s.tax_included, s.rounding_amount, s.total
+FROM sale s
+WHERE s.tenant_id = $1
+  AND ($2::uuid[] IS NULL OR s.outlet_id = ANY($2::uuid[]))
+  AND ($3::date IS NULL OR s.business_date >= $3::date)
+  AND ($4::date IS NULL OR s.business_date <= $4::date)
+  AND ($5::text IS NULL OR s.status = $5::text)
+  AND ($6::text IS NULL OR s.receipt_number = $6::text)
+  AND ($7::uuid IS NULL OR s.staff_id = $7::uuid)
+  AND (NOT $8::boolean OR EXISTS (
+        SELECT 1 FROM flag f WHERE f.tenant_id = s.tenant_id AND f.target_id = s.id
+        UNION ALL
+        SELECT 1 FROM flag f JOIN void v ON v.tenant_id = f.tenant_id AND v.id = f.target_id
+        WHERE f.tenant_id = s.tenant_id AND v.sale_id = s.id))
+  AND ($9::date IS NULL OR (s.business_date, s.device_time, s.id) < ($9::date, $10::timestamptz, $11::uuid))
+ORDER BY s.business_date DESC, s.device_time DESC, s.id DESC
+LIMIT $12
+`
+
+type ListSalesParams struct {
+	TenantID      uuid.UUID
+	OutletIds     []uuid.UUID
+	FromDate      pgtype.Date
+	ToDate        pgtype.Date
+	Status        *string
+	ReceiptNumber *string
+	StaffID       *uuid.UUID
+	FlaggedOnly   bool
+	AfterDate     pgtype.Date
+	AfterTime     *time.Time
+	AfterID       *uuid.UUID
+	PageSize      int32
+}
+
+type ListSalesRow struct {
+	ID             uuid.UUID
+	OutletID       uuid.UUID
+	DeviceID       uuid.UUID
+	ShiftID        uuid.UUID
+	StaffID        uuid.UUID
+	ReceiptNumber  string
+	DeviceTime     time.Time
+	ReceivedAt     time.Time
+	BusinessDate   pgtype.Date
+	Status         string
+	Subtotal       int64
+	DiscountTotal  int64
+	ServiceCharge  int64
+	Tax            int64
+	TaxIncluded    bool
+	RoundingAmount int64
+	Total          int64
+}
+
+// The back-office sales list and detail (read-only).
+// Newest business day first, then newest sale by the device's clock, keyset-paged by
+// (business_date, device_time, id). outlet_ids NULL means every outlet.
+func (q *Queries) ListSales(ctx context.Context, arg ListSalesParams) ([]ListSalesRow, error) {
+	rows, err := q.db.Query(ctx, listSales,
+		arg.TenantID,
+		arg.OutletIds,
+		arg.FromDate,
+		arg.ToDate,
+		arg.Status,
+		arg.ReceiptNumber,
+		arg.StaffID,
+		arg.FlaggedOnly,
+		arg.AfterDate,
+		arg.AfterTime,
+		arg.AfterID,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSalesRow
+	for rows.Next() {
+		var i ListSalesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OutletID,
+			&i.DeviceID,
+			&i.ShiftID,
+			&i.StaffID,
+			&i.ReceiptNumber,
+			&i.DeviceTime,
+			&i.ReceivedAt,
+			&i.BusinessDate,
+			&i.Status,
+			&i.Subtotal,
+			&i.DiscountTotal,
+			&i.ServiceCharge,
+			&i.Tax,
+			&i.TaxIncluded,
+			&i.RoundingAmount,
+			&i.Total,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const markSaleVoided = `-- name: MarkSaleVoided :exec

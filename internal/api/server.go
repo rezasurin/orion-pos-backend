@@ -19,6 +19,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/reporting"
+	"github.com/rezasurin/orion-pos-backend/internal/sales"
 	"github.com/rezasurin/orion-pos-backend/internal/sync"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
@@ -33,6 +34,7 @@ type Deps struct {
 	Platform  *platform.Service
 	Sync      *sync.Service
 	Reporting *reporting.Service
+	Sales     *sales.Service
 	Tenancy   *tenancy.Service
 	Logger    *slog.Logger
 }

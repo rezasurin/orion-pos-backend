@@ -399,3 +399,132 @@ func TestReportsOverHTTP(t *testing.T) {
 		t.Errorf("an empty day: %d %s", empty.Code, empty.Body.String())
 	}
 }
+
+func TestSalesListAndDetailOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	manager := e.member(t, f, "mgr@kopi.test", "Manager")
+	cashier := e.member(t, f, "cash@kopi.test", "Cashier")
+	p := e.pusher(t, f, owner, "Kasir 1")
+
+	var item itemBody
+	e.create(t, "/v1/items", owner, map[string]any{"name": "Espresso", "variants": []map[string]any{{"base_price": 18000}}}, &item)
+	at := time.Now().UTC().Add(-time.Hour)
+	shift := p.event("shift.opened", map[string]any{"opening_cash": 0})
+	shift["device_time"] = at.Add(-time.Hour).Format(time.RFC3339)
+	events := []map[string]any{shift}
+	var saleIDs []string
+	for i := 0; i < 5; i++ {
+		sale := p.event("sale.completed", map[string]any{
+			"shift_id": shift["id"], "receipt_number": fmt.Sprintf("JKT1-01-%06d", i+1), "catalog_seq": 1000,
+			"pricing": map[string]any{
+				"version": 1, "price_includes_tax": false, "tax_rate_bp": 0, "service_charge_rate_bp": 0,
+				"service_charge_taxable": true, "cash_rounding_unit": 0, "cash_rounding_mode": "nearest",
+			},
+			"lines": []map[string]any{{
+				"variant_id": item.Variants[0].ID, "name": "Espresso", "unit_price": 18000, "quantity": i + 1,
+				"discount": 0, "allocated_bill_discount": 0, "total": 18000 * (i + 1),
+			}},
+			"totals":   map[string]any{"subtotal": 18000 * (i + 1), "discount_total": 0, "service_charge": 0, "tax": 0, "rounding_amount": 0, "total": 18000 * (i + 1)},
+			"payments": []map[string]any{{"method": "qris_manual", "amount": 18000 * (i + 1), "reference": "QR"}},
+		})
+		sale["device_time"] = at.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
+		events = append(events, sale)
+		saleIDs = append(saleIDs, sale["id"].(string))
+	}
+	r := p.push(t, events...)
+	var pushed pushBody
+	r.decode(t, &pushed)
+	for _, got := range pushed.Results {
+		if got.Status != "accepted" || got.Code != "" {
+			t.Fatalf("push: %+v", got)
+		}
+	}
+
+	type summary struct {
+		ID            string `json:"id"`
+		ReceiptNumber string `json:"receipt_number"`
+		Total         int64  `json:"total"`
+		Status        string `json:"status"`
+		Payments      []struct {
+			Method string `json:"method"`
+			Amount int64  `json:"amount"`
+		} `json:"payments"`
+		FlagCodes []string `json:"flag_codes"`
+	}
+	var page struct {
+		Items      []summary `json:"items"`
+		NextCursor *string   `json:"next_cursor"`
+	}
+
+	// Newest first by the device's clock, in pages.
+	r = e.do(t, "GET", "/v1/sales?limit=2", owner, nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", r.Code, r.Body.String())
+	}
+	r.decode(t, &page)
+	if len(page.Items) != 2 || page.NextCursor == nil || page.Items[0].ID != saleIDs[4] || page.Items[1].ID != saleIDs[3] {
+		t.Fatalf("first page: %+v", page)
+	}
+	if page.Items[0].Total != 90000 || len(page.Items[0].Payments) != 1 || page.Items[0].Payments[0].Method != "qris_manual" || page.Items[0].FlagCodes == nil {
+		t.Errorf("summary: %+v", page.Items[0])
+	}
+	var second struct {
+		Items      []summary `json:"items"`
+		NextCursor *string   `json:"next_cursor"`
+	}
+	e.do(t, "GET", "/v1/sales?limit=2&cursor="+*page.NextCursor, owner, nil).decode(t, &second)
+	if len(second.Items) != 2 || second.Items[0].ID != saleIDs[2] || second.NextCursor == nil {
+		t.Errorf("second page: %+v", second)
+	}
+
+	// Filters and what a person may see.
+	var filtered struct {
+		Items []summary `json:"items"`
+	}
+	e.do(t, "GET", "/v1/sales?receipt_number=JKT1-01-000003", owner, nil).decode(t, &filtered)
+	if len(filtered.Items) != 1 || filtered.Items[0].ID != saleIDs[2] {
+		t.Errorf("by receipt: %+v", filtered)
+	}
+	filtered.Items = nil
+	e.do(t, "GET", "/v1/sales?status=voided", owner, nil).decode(t, &filtered)
+	if len(filtered.Items) != 0 {
+		t.Errorf("voided: %+v", filtered)
+	}
+	if r := e.do(t, "GET", "/v1/sales?outlet_id="+f.outlet.ID.String(), manager.AccessToken, nil); r.Code != http.StatusOK {
+		t.Errorf("a manager lists sales: %d", r.Code)
+	}
+	e.do(t, "GET", "/v1/sales", cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
+	e.do(t, "GET", "/v1/sales", p.token, nil).problem(t, http.StatusUnauthorized, "invalid_token")
+	e.do(t, "GET", "/v1/sales?outlet_id="+uuid.NewString(), owner, nil).problem(t, http.StatusNotFound, "not_found")
+	e.do(t, "GET", "/v1/sales?cursor=junk", owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+	e.do(t, "GET", "/v1/sales?status=bogus", owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+	e.do(t, "GET", "/v1/sales?limit=0", owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+	e.do(t, "GET", "/v1/sales?from=yesterday", owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+
+	// One sale in full.
+	var detail struct {
+		summary
+		Lines []struct {
+			Name      string `json:"name"`
+			Quantity  int    `json:"quantity"`
+			Modifiers []any  `json:"modifiers"`
+		} `json:"lines"`
+		Discounts []any          `json:"discounts"`
+		Void      map[string]any `json:"void"`
+		Flags     []any          `json:"flags"`
+		Pricing   map[string]any `json:"pricing"`
+	}
+	r = e.do(t, "GET", "/v1/sales/"+saleIDs[1], owner, nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("detail: %d %s", r.Code, r.Body.String())
+	}
+	r.decode(t, &detail)
+	if detail.ID != saleIDs[1] || detail.ReceiptNumber != "JKT1-01-000002" || len(detail.Lines) != 1 || detail.Lines[0].Quantity != 2 ||
+		detail.Lines[0].Modifiers == nil || detail.Void != nil || detail.Flags == nil || detail.Discounts == nil || detail.Pricing["version"] != float64(1) {
+		t.Errorf("detail = %+v", detail)
+	}
+	e.do(t, "GET", "/v1/sales/"+saleIDs[1], cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
+	e.do(t, "GET", "/v1/sales/"+uuid.NewString(), owner, nil).problem(t, http.StatusNotFound, "not_found")
+}

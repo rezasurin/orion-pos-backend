@@ -315,6 +315,85 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /v1/sales:
+    get:
+      operationId: listSales
+      tags: [reports]
+      summary: Sales, newest first
+      description: |
+        Sales as the devices recorded them, newest business day first and newest sale first within a
+        day, a page at a time. Each carries its payments and the codes of its review flags. Without
+        `outlet_id` the list covers every outlet where the caller has `report.view`. Read-only.
+      x-permission: report.view
+      parameters:
+        - name: outlet_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: from
+          in: query
+          description: First business date, inclusive.
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          description: Last business date, inclusive.
+          schema: {type: string, format: date}
+        - name: status
+          in: query
+          schema: {type: string, enum: [completed, voided]}
+        - name: receipt_number
+          in: query
+          description: Exact receipt number.
+          schema: {type: string, maxLength: 40}
+        - name: staff_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: flagged
+          in: query
+          description: Only sales with review flags, on the sale or its void.
+          schema: {type: boolean, default: false}
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page. Opaque.
+          schema: {type: string, maxLength: 100}
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of sales
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalePage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/sales/{saleId}:
+    get:
+      operationId: getSale
+      tags: [reports]
+      summary: One sale with everything recorded about it
+      description: |
+        The lines with their modifiers, discounts, payments, the void if there is one, the review flags
+        with their detail, and the calculation settings the device used. Needs `report.view` at the
+        sale's outlet.
+      x-permission: report.view
+      parameters:
+        - name: saleId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: The sale
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleDetail'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /v1/roles:
     get:
       operationId: listRoles
@@ -2154,6 +2233,127 @@ components:
           type: object
           description: Review flags raised by the day's events, by code.
           additionalProperties: {type: integer, format: int64}
+
+    SalePayment:
+      type: object
+      required: [method, amount, status]
+      properties:
+        method: {type: string, enum: [cash, qris_manual, qris_dynamic, ewallet, card_manual]}
+        amount: {type: integer, format: int64, description: Applied to the bill, net of change.}
+        tendered: {type: integer, format: int64, nullable: true}
+        change: {type: integer, format: int64, nullable: true}
+        reference: {type: string}
+        status: {type: string, enum: [pending, confirmed, failed]}
+
+    SaleSummary:
+      type: object
+      required: [id, outlet_id, device_id, shift_id, staff_id, receipt_number, device_time, received_at, business_date, status, subtotal, discount_total, service_charge, tax, tax_included, rounding_amount, total, payments, flag_codes]
+      properties:
+        id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        device_id: {type: string, format: uuid}
+        shift_id: {type: string, format: uuid}
+        staff_id: {type: string, format: uuid}
+        receipt_number: {type: string, example: JKT1-03-000482}
+        device_time: {type: string, format: date-time, description: When it was rung up, by the device's clock.}
+        received_at: {type: string, format: date-time, description: When the server first got it.}
+        business_date: {type: string, format: date}
+        status: {type: string, enum: [completed, voided]}
+        subtotal: {type: integer, format: int64}
+        discount_total: {type: integer, format: int64}
+        service_charge: {type: integer, format: int64}
+        tax: {type: integer, format: int64}
+        tax_included: {type: boolean}
+        rounding_amount: {type: integer, format: int64}
+        total: {type: integer, format: int64, description: Before cash rounding.}
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/SalePayment'}
+        flag_codes:
+          type: array
+          items: {type: string}
+
+    SalePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SaleSummary'}
+        next_cursor: {type: string, description: Pass as `cursor` for the next page; absent on the last page.}
+
+    SaleLine:
+      type: object
+      required: [line_no, variant_id, name, unit_price, quantity, modifiers, discount, allocated_bill_discount, total]
+      properties:
+        line_no: {type: integer}
+        variant_id: {type: string, format: uuid}
+        name: {type: string, description: The name as it was on the receipt.}
+        unit_price: {type: integer, format: int64}
+        quantity: {type: integer}
+        modifiers:
+          type: array
+          items:
+            type: object
+            required: [modifier_id, name, price_delta]
+            properties:
+              modifier_id: {type: string, format: uuid}
+              name: {type: string}
+              price_delta: {type: integer, format: int64}
+        discount: {type: integer, format: int64}
+        allocated_bill_discount: {type: integer, format: int64}
+        total: {type: integer, format: int64}
+
+    SaleDetail:
+      allOf:
+        - $ref: '#/components/schemas/SaleSummary'
+        - type: object
+          required: [pricing_version, pricing, catalog_seq, lines, discounts, flags]
+          properties:
+            pricing_version: {type: integer}
+            pricing:
+              type: object
+              additionalProperties: true
+              description: The calculation settings the device used.
+            catalog_seq: {type: integer, format: int64}
+            lines:
+              type: array
+              items: {$ref: '#/components/schemas/SaleLine'}
+            discounts:
+              type: array
+              items:
+                type: object
+                required: [kind, value, amount, reason]
+                properties:
+                  line_no: {type: integer, nullable: true, description: Null for a discount on the whole bill.}
+                  kind: {type: string, enum: [percent, amount]}
+                  value: {type: integer, format: int64}
+                  amount: {type: integer, format: int64}
+                  reason: {type: string}
+                  approved_by: {type: string, format: uuid, nullable: true}
+            void:
+              type: object
+              nullable: true
+              required: [id, shift_id, staff_id, reason, device_time, received_at, business_date]
+              properties:
+                id: {type: string, format: uuid}
+                shift_id: {type: string, format: uuid}
+                staff_id: {type: string, format: uuid}
+                approved_by: {type: string, format: uuid, nullable: true}
+                reason: {type: string}
+                device_time: {type: string, format: date-time}
+                received_at: {type: string, format: date-time}
+                business_date: {type: string, format: date}
+            flags:
+              type: array
+              items:
+                type: object
+                required: [code, target_type, detail, created_at]
+                properties:
+                  code: {type: string}
+                  target_type: {type: string, enum: [sale, void]}
+                  detail: {type: object, additionalProperties: true}
+                  created_at: {type: string, format: date-time}
 
     OperatorChallenge:
       type: object

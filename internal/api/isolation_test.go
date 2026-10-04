@@ -198,6 +198,14 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 				problem(t, http.StatusBadRequest, "validation_failed")
 		},
 
+		"ListSales": func(t *testing.T) {
+			w.noLeak(t, "ListSales", e.do(t, "GET", "/v1/sales?limit=200", ub, nil))
+			w.gone(t, "ListSales/A's outlet", e.do(t, "GET", "/v1/sales?outlet_id="+aOutlet, ub, nil), http.StatusNotFound, "not_found")
+		},
+		"GetSale": func(t *testing.T) {
+			// The id of a sale of A's, which does not exist for B (A's world has none yet, so use a shift id: any A id is unknown to B).
+			w.gone(t, "GetSale", e.do(t, "GET", "/v1/sales/"+w.shiftA, ub, nil), http.StatusNotFound, "not_found")
+		},
 		"GetShiftReport": func(t *testing.T) {
 			w.gone(t, "GetShiftReport", e.do(t, "GET", "/v1/reports/shifts/"+w.shiftA, ub, nil), http.StatusNotFound, "not_found")
 		},
@@ -328,7 +336,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "ListSales", "GetSale",
 	} {
 		covered[op] = true
 	}

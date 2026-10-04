@@ -985,6 +985,25 @@ fields are ignored so a newer app may add fields within a version.
   of a foreign key, so each is justified in the file. B1.11 runs `EXPLAIN` on each report against a
   busy week.
 
+#### 6.4.3 Sales list and detail as built (B1.9)
+
+- `GET /v1/sales` and `GET /v1/sales/{saleId}`, read-only, needing `report.view` at the outlet(s).
+  Without `outlet_id` the list covers the outlets where the caller holds `report.view` (all of them
+  for an owner); with it, an outlet of another business is `404` and one the caller may not see is
+  `403`. A sale id of another business is `404`.
+- **Order and paging.** Newest business day first, then newest by the device's clock, then id,
+  keyset-paged by `(business_date, device_time, id)` with an opaque `next_cursor`. Ordering by the
+  device clock (not the id) keeps the list chronological even for a client that does not send
+  UUIDv7 ids. Filters: `from` and `to` (business dates, inclusive), `status`, exact
+  `receipt_number`, `staff_id`, and `flagged` (a flag on the sale or on its void).
+- **List items** carry the amounts as recorded, the payments and the codes of the review flags,
+  from two extra queries however many sales are on the page (tested at 2 and 60). **Detail** adds the
+  lines with their modifiers (names and prices as on the receipt), the discounts (null `line_no`
+  for a bill discount), the void with its reason and approver, the flags with their detail, the
+  calculation settings the device used and the catalog change number it priced against.
+- The sales list and the reports use indexes from migration 00012; B1.11 checks the plans with
+  `EXPLAIN` on a busy week.
+
 ### 6.5 Payments (Phase 1 manual, Phase 2 gateway)
 
 - Phase 1: payments arrive inside `sale.completed`. Manual QRIS stores the static QR reference and
@@ -1148,7 +1167,7 @@ backup has been restored into a scratch database.
 | B1.6 | ✅ Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling (see 5.2.1) | 3d |
 | B1.7 | ✅ Outlet settings for tax, service charge, rounding, timezone, cutoff (`PATCH /v1/outlets/{outletId}/settings`); `business_date` derivation (`kernel.BusinessDate`, see 4.9.1). Done ahead of B1.5, which needs it | 1d |
 | B1.8 | ✅ Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers match the POS's own totals (see 6.4.2) | 4d |
-| B1.9 | Sales list and detail for the back office (read-only) | 2d |
+| B1.9 | ✅ Sales list and detail for the back office (read-only; see 6.4.3) | 2d |
 | B1.10 | Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long | 1d |
 | B1.11 | Load sanity check: one week of a busy cafe (for example 600 sales/day, 3 devices) pushed in bursts, p95 push latency under 300 ms | 1d |
 | B1.12 | Pilot runbook: how to read flags, fix a stuck device, rebuild a report | 1d |
