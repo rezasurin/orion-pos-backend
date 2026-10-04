@@ -59,3 +59,48 @@ func accountExistsEmail(locale, loginURL string) (subject, text string) {
 			"Jika ini bukan Anda, abaikan email ini.",
 		}, "\n")
 }
+
+// passwordResetEmail carries the reset link. It works once and expires in an hour.
+func passwordResetEmail(locale, link string) (subject, text string) {
+	if locale == "en" {
+		return "Reset your Orion POS password",
+			strings.Join([]string{
+				"Someone, hopefully you, asked to reset the password of your Orion POS account.",
+				"",
+				"Open this link to choose a new password. It works once and expires in one hour:",
+				link,
+				"",
+				"If you did not ask for this, ignore this email: your password has not changed.",
+			}, "\n")
+	}
+	return "Atur ulang kata sandi Orion POS Anda",
+		strings.Join([]string{
+			"Seseorang, semoga Anda, meminta pengaturan ulang kata sandi akun Orion POS Anda.",
+			"",
+			"Buka tautan ini untuk memilih kata sandi baru. Tautan hanya berlaku sekali dan kedaluwarsa dalam satu jam:",
+			link,
+			"",
+			"Jika Anda tidak memintanya, abaikan email ini: kata sandi Anda tidak berubah.",
+		}, "\n")
+}
+
+// passwordChangedEmail tells the user their password changed. The link is the way back in if it
+// was not them.
+func passwordChangedEmail(locale, resetURL string) (subject, text string) {
+	if locale == "en" {
+		return "Your Orion POS password was changed",
+			strings.Join([]string{
+				"The password of your Orion POS account was just changed, and every device signed in with the old one was signed out.",
+				"",
+				"If this was you, there is nothing to do. If it was not, reset your password now:",
+				resetURL,
+			}, "\n")
+	}
+	return "Kata sandi Orion POS Anda telah diubah",
+		strings.Join([]string{
+			"Kata sandi akun Orion POS Anda baru saja diubah, dan semua perangkat yang masuk dengan kata sandi lama telah dikeluarkan.",
+			"",
+			"Jika ini Anda, tidak ada yang perlu dilakukan. Jika bukan, atur ulang kata sandi Anda sekarang:",
+			resetURL,
+		}, "\n")
+}

@@ -43,6 +43,16 @@ UPDATE email_verification SET used_at = @now WHERE id = @id;
 -- name: MarkEmailVerified :exec
 UPDATE user_account SET email_verified_at = @now WHERE id = @id AND email_verified_at IS NULL;
 
+-- name: InsertPasswordReset :exec
+INSERT INTO password_reset (id, tenant_id, user_id, token_hash, expires_at)
+VALUES (@id, @tenant_id, @user_id, @token_hash, @expires_at);
+
+-- name: GetPasswordChangedAt :one
+SELECT password_changed_at FROM user_account WHERE id = @id;
+
+-- name: PurgePasswordResets :execrows
+DELETE FROM password_reset WHERE expires_at < @before;
+
 -- name: GetMemberAccess :many
 -- One member's role permissions per outlet, in one query. Zero rows means the user is not a
 -- member. Inactive staff hold no roles.

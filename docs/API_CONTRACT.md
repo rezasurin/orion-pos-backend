@@ -115,6 +115,8 @@ list for one outlet.
 | `POST /v1/auth/refresh` `{refresh_token}` | Public. Returns a new `Session`. **Every refresh token works once**: store the new pair before using it, and serialise refreshes (two tabs refreshing at once will trip `token_reused` and sign the user out). Refresh when the access token is about to expire or on the first `401 invalid_token`. |
 | `POST /v1/auth/logout` `{refresh_token}` | Public, idempotent (always `204`). |
 | `POST /v1/auth/verify-email` `{token}` | Public. The token comes in the email link. |
+| `POST /v1/auth/forgot-password` `{email}` | Public. Always `202` with no body, whether or not the address has an account. The owner is emailed a link `{front end}/reset-password?token=<token>` that works once and expires in **one hour**. Repeats within five minutes are dropped; three per address then a wait (`429`). |
+| `POST /v1/auth/reset-password` `{token, password}` | Public. `204` on success; it does **not** sign the user in (send them to the login screen). `401 invalid_token` for an unknown, used or expired link (show "this link has expired, ask for a new one"), `400 validation_failed` for a weak password (10 to 128 characters; the link is not spent). |
 | `POST /v1/auth/resend-verification` `{email}` | Public. Always `202`, whether or not the address exists. Repeats within five minutes are dropped. |
 | `GET /v1/me` | The user, the business (`subscription_status`), `is_owner`, `permissions[]`. Call after login to build the menu. |
 | `GET /v1/entitlements` | `items[]` of `{key, kind, category, value, source}`: modules on/off, limits (`-1` = unlimited), flags. Hide a module when its key is `0`. |
@@ -142,7 +144,18 @@ email", and the flow is: sign up, open the link, `POST /v1/auth/verify-email {to
   then one every ten (`429 rate_limited` with `Retry-After`); invalid forms count too.
 * The business `slug` is generated (`kopi-senja-x7k2`); there is nothing to choose.
 * **Not yet**: accepting the terms of service (`terms_acceptance`, B2.10; a required field will be
-  added then), a CAPTCHA, and password reset (so "forgot password" has no endpoint yet).
+  added then), and a CAPTCHA.
+
+**Forgot password flow.** "Forgot password?" on the login screen asks for the email and posts to
+`/v1/auth/forgot-password`; whatever the address, the screen says "if there is an account, we sent a
+link". The front end must serve `/reset-password?token=...` (a new-password form that posts the token
+and the password) and `/forgot-password` (the "was this not you?" link in the notice email points
+there). After a successful reset **every existing session of that user ends**: the next
+`/v1/auth/refresh` with an older refresh token answers `401 invalid_token`, in every business the
+person belongs to, so treat that as "sign in again"; access tokens already issued keep working until
+they expire, at most 15 minutes. A reset also verifies the email address, since the link proved the
+inbox, so someone who never verified can use it to get in. The account owner is emailed that the
+password changed.
 
 Email delivery in this environment only writes to the server log (no real provider yet), so in
 development take the verification link from the worker's log. The seeded demo business

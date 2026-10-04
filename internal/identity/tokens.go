@@ -138,6 +138,7 @@ type accessClaims struct {
 const (
 	prefixRefresh      = "rt1"
 	prefixVerification = "vt1"
+	prefixReset        = "pr1"
 	prefixDeviceSecret = "dk1"
 )
 
@@ -158,6 +159,17 @@ func mintOpaque(prefix string, ids ...uuid.UUID) (token string, hash []byte) {
 }
 
 func parseOpaque(prefix string, idCount int, token string) (ids []uuid.UUID, hash []byte, err error) {
+	ids, secret, err := parseOpaqueSecret(prefix, idCount, token)
+	if err != nil {
+		return nil, nil, err
+	}
+	sum := sha256.Sum256(secret)
+	return ids, sum[:], nil
+}
+
+// parseOpaqueSecret is parseOpaque for a caller that hands the secret itself, not its hash, to the
+// database.
+func parseOpaqueSecret(prefix string, idCount int, token string) (ids []uuid.UUID, secret []byte, err error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != idCount+2 || parts[0] != prefix {
 		return nil, nil, ErrInvalidToken
@@ -169,10 +181,9 @@ func parseOpaque(prefix string, idCount int, token string) (ids []uuid.UUID, has
 		}
 		ids = append(ids, id)
 	}
-	secret, err := b64.DecodeString(parts[len(parts)-1])
+	secret, err = b64.DecodeString(parts[len(parts)-1])
 	if err != nil || len(secret) != opaqueSecretSz {
 		return nil, nil, ErrInvalidToken
 	}
-	sum := sha256.Sum256(secret)
-	return ids, sum[:], nil
+	return ids, secret, nil
 }

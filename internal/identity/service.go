@@ -37,6 +37,7 @@ type Config struct {
 	AccessTTL       time.Duration // user access tokens
 	RefreshTTL      time.Duration // user refresh tokens
 	VerificationTTL time.Duration // email verification links
+	ResetTTL        time.Duration // password reset links
 	DeviceAccessTTL time.Duration // device access tokens
 }
 
@@ -46,6 +47,7 @@ func DefaultConfig() Config {
 		AccessTTL:       15 * time.Minute,
 		RefreshTTL:      30 * 24 * time.Hour,
 		VerificationTTL: 24 * time.Hour,
+		ResetTTL:        time.Hour,
 		DeviceAccessTTL: 30 * time.Minute,
 	}
 }
@@ -294,6 +296,14 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (Session, er
 				return q.RevokeRefreshFamily(ctx, db.RevokeRefreshFamilyParams{TenantID: tenantID, FamilyID: rt.FamilyID, Now: &now})
 			}
 			return err
+		}
+		// A password reset signs out everyone who had the old password: its refresh tokens predate
+		// the change.
+		if changed, err := q.GetPasswordChangedAt(ctx, rt.UserID); err != nil {
+			return err
+		} else if changed != nil && !rt.CreatedAt.After(*changed) {
+			failure = ErrInvalidToken
+			return q.RevokeRefreshFamily(ctx, db.RevokeRefreshFamilyParams{TenantID: tenantID, FamilyID: rt.FamilyID, Now: &now})
 		}
 		if err := q.MarkRefreshTokenUsed(ctx, db.MarkRefreshTokenUsedParams{ID: rt.ID, Now: &now}); err != nil {
 			return err
@@ -568,6 +578,66 @@ func (s *Service) enqueueVerification(ctx context.Context, tx pgx.Tx, tenantID, 
 		UniqueOpts: river.UniqueOpts{ByArgs: true, ByPeriod: 5 * time.Minute},
 	})
 	return err
+}
+
+// RequestPasswordReset queues a reset email for the account with this address. It says nothing
+// about whether there is one, and a repeat within five minutes is dropped. The token is minted by
+// the worker, which names the user's first business in it (the password is the user's, so the
+// business only decides where the lookup runs).
+func (s *Service) RequestPasswordReset(ctx context.Context, email string) error {
+	u, found, err := s.findUserForLogin(ctx, normalizeEmail(email))
+	if err != nil || !found || len(u.TenantIDs) == 0 {
+		return err
+	}
+	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
+		_, err := s.Jobs.InsertTx(ctx, tx, PasswordResetArgs{TenantID: u.TenantIDs[0], UserID: u.ID}, &river.InsertOpts{
+			UniqueOpts: river.UniqueOpts{ByArgs: true, ByPeriod: 5 * time.Minute},
+		})
+		return err
+	})
+}
+
+// ResetPassword sets a new password with the token from a reset email. The token works once and
+// expires; using it retires the user's other reset links, signs out every session that predates
+// the change (in every business), and counts as proof of the address, so it verifies it. The user
+// is told by email. An unusable token is ErrInvalidToken whatever the reason.
+func (s *Service) ResetPassword(ctx context.Context, token, newPassword string) error {
+	ids, secret, err := parseOpaqueSecret(prefixReset, 1, token)
+	if err != nil {
+		return err
+	}
+	if n := utf8.RuneCountInString(newPassword); n < minPasswordLen || n > maxPasswordLen {
+		return fmt.Errorf("%w: password must be %d to %d characters", kernel.ErrValidation, minPasswordLen, maxPasswordLen)
+	}
+	// Hash before the transaction: it is slow and needs no database.
+	hash, err := s.Hasher.Hash(ctx, newPassword, s.PasswordCost)
+	if err != nil {
+		return err
+	}
+	tenantID := ids[0]
+	return kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		now := s.Clock.Now()
+		// The database function checks the link (it takes the secret, not its hash), retires the
+		// user's open links and sets the password; see migration 00014.
+		var userID *uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT auth_reset_password($1, $2, $3, $4)`, tenantID, secret, hash, now).Scan(&userID); err != nil {
+			return err
+		}
+		if userID == nil {
+			return ErrInvalidToken
+		}
+		if err := q.MarkEmailVerified(ctx, db.MarkEmailVerifiedParams{ID: *userID, Now: &now}); err != nil {
+			return err
+		}
+		if err := kernel.RecordAudit(ctx, tx, kernel.AuditEntry{
+			Action: "user.password_reset", TargetType: "user", TargetID: *userID,
+		}); err != nil {
+			return err
+		}
+		_, err := s.Jobs.InsertTx(ctx, tx, PasswordChangedArgs{UserID: *userID}, nil)
+		return err
+	})
 }
 
 // VerifyEmail consumes the token from a verification email.

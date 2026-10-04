@@ -88,6 +88,37 @@ func (s *Server) ResendVerification(ctx context.Context, req openapi.ResendVerif
 	return openapi.ResendVerification202Response{}, nil
 }
 
+// ForgotPassword always answers 202: nothing in the response, the status or the time it takes
+// (beyond one queued job) says whether the address has an account.
+func (s *Server) ForgotPassword(ctx context.Context, req openapi.ForgotPasswordRequestObject) (openapi.ForgotPasswordResponseObject, error) {
+	if req.Body == nil || req.Body.Email == "" {
+		return nil, fmt.Errorf("%w: email is required", kernel.ErrValidation)
+	}
+	if err := allow(s.forgotByIP, httpserver.ClientIP(ctx)); err != nil {
+		return nil, err
+	}
+	if err := allow(s.forgotByEmail, strings.ToLower(strings.TrimSpace(req.Body.Email))); err != nil {
+		return nil, err
+	}
+	if err := s.Identity.RequestPasswordReset(ctx, req.Body.Email); err != nil {
+		return nil, err
+	}
+	return openapi.ForgotPassword202Response{}, nil
+}
+
+func (s *Server) ResetPassword(ctx context.Context, req openapi.ResetPasswordRequestObject) (openapi.ResetPasswordResponseObject, error) {
+	if req.Body == nil || req.Body.Token == "" || req.Body.Password == "" {
+		return nil, fmt.Errorf("%w: token and password are required", kernel.ErrValidation)
+	}
+	if err := allow(s.resetByIP, httpserver.ClientIP(ctx)); err != nil {
+		return nil, err
+	}
+	if err := s.Identity.ResetPassword(ctx, req.Body.Token, req.Body.Password); err != nil {
+		return nil, err
+	}
+	return openapi.ResetPassword204Response{}, nil
+}
+
 // SignUp is the public sign-up form. It answers 202 whether the business was created or the
 // address already had an account (see signup.Service), and a filled honeypot is accepted and
 // ignored: neither lets the caller learn anything.

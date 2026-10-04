@@ -892,10 +892,45 @@ failure leaves nothing behind (tested by forcing the owner step to fail after th
   (`deploy/README.md`).
 - **Not built, on purpose:** Turnstile or another CAPTCHA (the honeypot and the limits come first;
   add a verifier behind the same handler if abuse appears), cleanup of businesses whose owner never
-  verified (a job that removes tenants unverified after N days is B2.1b: deleting a tenant touches
-  every table), accepting the terms (B2.10), password reset (no endpoint exists; the account-exists
-  email has nothing better to point at than sign-in), and adding a second business to an existing
+  verified (a job that removes tenants unverified after N days is B2.13: deleting a tenant touches
+  every table), accepting the terms (B2.10), password reset (built next, B2.12, 6.1.2), and adding a second business to an existing
   account.
+
+#### 6.1.2 Password reset as built (B2.12)
+
+- `POST /v1/auth/forgot-password {email}` always answers 202 with no body. For an existing account
+  it queues a job (ids only; deduplicated per five minutes) and the worker mints the token, stores
+  its hash in `password_reset` and emails `{front end}/reset-password?token=...`. An unknown address
+  queues nothing. Limited per caller address and per email address.
+- `POST /v1/auth/reset-password {token, password}` answers 204. The token works once, expires after
+  an hour (`identity.Config.ResetTTL`) and, like a verification link, names one of the user's
+  businesses so the lookup runs inside that tenant's row-level security; the password itself is the
+  user's, so one reset covers every business. In one transaction it marks the token and all of the
+  user's other open links used, sets the new hash, verifies the email address (the link proves the
+  inbox), writes a `user.password_reset` audit entry and queues a "your password was changed" email.
+  Any unusable token (unknown, used, expired, or for a business the user has left) is
+  `401 invalid_token`; a weak password is `400` and does not spend the link.
+- **Sessions end everywhere.** `user_account.password_changed_at` (database clock, set in the same
+  statement as the hash) is compared with `refresh_token.created_at` at every refresh: a token
+  issued before the change is revoked with its family and answers `invalid_token`, in every business
+  the user belongs to, without touching any of those businesses' rows. Access tokens already issued
+  last until they expire (15 minutes). Device tokens and staff PINs are not affected.
+- **The database does the consuming.** `orion_app` still cannot write `password_hash`; the only way
+  to change a password is the `SECURITY DEFINER` function `auth_reset_password(tenant, secret,
+  new hash, now)` (migration 00014). It takes the **secret** from the emailed link, not its hash,
+  and hashes it itself, because the app role can read the stored hashes: even arbitrary SQL as the
+  app role cannot take over an account without a link that was emailed to its owner. It also checks
+  that the link names the tenant the caller is working in, that the user is still a member, that
+  the link is unused and unexpired (`now` is the caller's clock), retires the user's other open
+  links, and returns the user id or NULL. Concurrent uses of one link are serialised by `FOR UPDATE`
+  (six at once in the test: exactly one wins).
+- Tests (each checked with a mutation that fails it, in Go or in the SQL function): the whole flow,
+  single use, retiring older links, expiry, bad tokens and weak passwords, the stored hash and
+  another business's context being refused by the database, concurrent use, no enumeration,
+  deduplication, verifying the address, sessions of two businesses ended, a user who left the
+  business, the purge, and the HTTP layer including both rate limits.
+- **Not built:** changing the password while signed in (needs the old password; a small addition),
+  and an "all devices" sign-out for other reasons.
 
 ### 6.2 Platform (Phase 0)
 
@@ -1283,6 +1318,8 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.9 | `tenant_daily_metrics` aggregates, "stopped syncing" query | 1d |
 | B2.10 | Legal plumbing: `terms_acceptance(user_id, version, accepted_at)`; signup requires the current version | 0.5d |
 | B2.11 | Security pass: rate limits, headers, dependency audit (`govulncheck` in CI), secret rotation runbook, operator account review | 2d |
+| B2.12 | ✅ (see 6.1.2) Password reset: `POST /v1/auth/forgot-password` and `/v1/auth/reset-password`, one-hour single-use links, every older session ended, owner notified | 2d |
+| B2.13 | Clean up businesses whose owner never verified their email (a job that removes them after N days, with everything they own), and a CAPTCHA behind the signup handler if the honeypot and rate limits are not enough | 1d |
 
 **Done when** a stranger can sign up, import a menu, pair a tablet and sell with dynamic QRIS, and
 the operator can see them in the console, all without the developer touching the database.

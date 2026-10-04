@@ -60,6 +60,11 @@ type Server struct {
 	// every two minutes; three for one email address, then one every ten.
 	signupByIP    *httpserver.Limiter
 	signupByEmail *httpserver.Limiter
+	// Password reset: emails are limited like sign-up ones; consuming a token is limited by
+	// address (the tokens are 256 random bits, so this is about load, not guessing).
+	forgotByIP    *httpserver.Limiter
+	forgotByEmail *httpserver.Limiter
+	resetByIP     *httpserver.Limiter
 
 	adminByIP        *httpserver.Limiter
 	adminByAccount   *httpserver.Limiter
@@ -90,6 +95,9 @@ func New(d Deps) (*Server, error) {
 		pairByUser:     httpserver.NewLimiter(12*time.Second, 5),
 		signupByIP:     httpserver.NewLimiter(2*time.Minute, 5),
 		signupByEmail:  httpserver.NewLimiter(10*time.Minute, 3),
+		forgotByIP:     httpserver.NewLimiter(12*time.Second, 5),
+		forgotByEmail:  httpserver.NewLimiter(5*time.Minute, 3),
+		resetByIP:      httpserver.NewLimiter(3*time.Second, 10),
 
 		adminByIP:        httpserver.NewLimiter(6*time.Second, 10),
 		adminByAccount:   httpserver.NewLimiter(time.Minute, 5),

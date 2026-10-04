@@ -327,7 +327,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 	exempt := map[string]string{
 		"Login": "public: no tenant until sign-in", "RefreshSession": "public: the token names its tenant",
 		"Logout": "public: the token names its tenant", "VerifyEmail": "public: the token names its tenant",
-		"ResendVerification": "public: acts on an email address", "SignUp": "public: creates a new tenant, touches no existing one", "ExchangeDeviceToken": "public: the secret names its tenant",
+		"ResendVerification": "public: acts on an email address", "ForgotPassword": "public: acts on an email address", "ResetPassword": "public: the token names its tenant", "SignUp": "public: creates a new tenant, touches no existing one", "ExchangeDeviceToken": "public: the secret names its tenant",
 		"AdminLogin": "operator", "AdminVerifyTotp": "operator", "AdminListAuditLog": "operator",
 	}
 	covered := map[string]bool{}

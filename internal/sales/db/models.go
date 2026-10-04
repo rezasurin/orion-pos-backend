@@ -362,6 +362,16 @@ type OutletVariant struct {
 	UpdatedAt     time.Time
 }
 
+type PasswordReset struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	CreatedAt time.Time
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+}
+
 type Payment struct {
 	ID        uuid.UUID
 	TenantID  uuid.UUID
@@ -637,13 +647,14 @@ type TenantMember struct {
 }
 
 type UserAccount struct {
-	ID              uuid.UUID
-	Email           string
-	PasswordHash    string
-	EmailVerifiedAt *time.Time
-	Locale          string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                uuid.UUID
+	Email             string
+	PasswordHash      string
+	EmailVerifiedAt   *time.Time
+	Locale            string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	PasswordChangedAt *time.Time
 }
 
 type Variant struct {

@@ -60,7 +60,8 @@ verification links, to the log, so `orion worker` refuses it when `ORION_ENV=pro
 address is the real one only when `ORION_TRUST_PROXY` matches your setup (exactly one proxy that
 appends to `X-Forwarded-For`); get it wrong and either every visitor shares one limit or the limit
 can be dodged. The verification and "account exists" emails link to `ORION_PUBLIC_URL`
-(`/verify-email?token=...` and `/login`).
+(`/verify-email?token=...` and `/login`). Password reset emails link to `/reset-password?token=...` and
+`/forgot-password`.
 
 ## CORS
 

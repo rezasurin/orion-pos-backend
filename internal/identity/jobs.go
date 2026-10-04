@@ -33,6 +33,22 @@ type AccountExistsArgs struct {
 
 func (AccountExistsArgs) Kind() string { return "account_exists_notice" }
 
+// PasswordResetArgs asks the worker to email a password reset link. Like VerifyEmailArgs it carries
+// ids only; the worker mints the token.
+type PasswordResetArgs struct {
+	TenantID uuid.UUID `json:"tenant_id"`
+	UserID   uuid.UUID `json:"user_id"`
+}
+
+func (PasswordResetArgs) Kind() string { return "password_reset_email" }
+
+// PasswordChangedArgs asks the worker to tell a user their password was changed.
+type PasswordChangedArgs struct {
+	UserID uuid.UUID `json:"user_id"`
+}
+
+func (PasswordChangedArgs) Kind() string { return "password_changed_notice" }
+
 // PurgeTokensArgs deletes expired refresh tokens and verification links.
 type PurgeTokensArgs struct{}
 
@@ -50,6 +66,7 @@ type JobsDeps struct {
 	// PublicURL is the front end's base URL, for links in emails.
 	PublicURL       string
 	VerificationTTL time.Duration
+	ResetTTL        time.Duration
 }
 
 // Jobs runs identity's background jobs. It belongs to `orion worker`.
@@ -66,6 +83,9 @@ func NewJobs(d JobsDeps) *Jobs {
 	if d.VerificationTTL == 0 {
 		d.VerificationTTL = DefaultConfig().VerificationTTL
 	}
+	if d.ResetTTL == 0 {
+		d.ResetTTL = DefaultConfig().ResetTTL
+	}
 	return &Jobs{d}
 }
 
@@ -73,6 +93,8 @@ func NewJobs(d JobsDeps) *Jobs {
 func (j *Jobs) AddWorkers(w *river.Workers) {
 	river.AddWorker(w, &verifyEmailWorker{j: j})
 	river.AddWorker(w, &accountExistsWorker{j: j})
+	river.AddWorker(w, &passwordResetWorker{j: j})
+	river.AddWorker(w, &passwordChangedWorker{j: j})
 	river.AddWorker(w, &purgeTokensWorker{j: j})
 }
 
@@ -118,6 +140,58 @@ func (j *Jobs) SendVerificationEmail(ctx context.Context, args VerifyEmailArgs) 
 	subject, text := verificationEmail(u.Locale, verificationLink(j.PublicURL, token))
 	if err := j.Sender.Send(ctx, notify.Message{To: u.Email, Subject: subject, Text: text}); err != nil {
 		return fmt.Errorf("send verification email: %w", err)
+	}
+	return nil
+}
+
+type passwordResetWorker struct {
+	river.WorkerDefaults[PasswordResetArgs]
+	j *Jobs
+}
+
+func (w *passwordResetWorker) Work(ctx context.Context, job *river.Job[PasswordResetArgs]) error {
+	return w.j.SendPasswordResetEmail(ctx, job.Args)
+}
+
+// SendPasswordResetEmail mints a reset link for the user and emails it.
+func (j *Jobs) SendPasswordResetEmail(ctx context.Context, args PasswordResetArgs) error {
+	q := db.New(j.Platform)
+	u, err := q.GetUserForEmail(ctx, args.UserID)
+	if err != nil {
+		return mapNoRowsCancel(err)
+	}
+	token, hash := mintOpaque(prefixReset, args.TenantID)
+	if err := q.InsertPasswordReset(ctx, db.InsertPasswordResetParams{
+		ID: kernel.NewID(), TenantID: args.TenantID, UserID: u.ID, TokenHash: hash, ExpiresAt: j.Clock.Now().Add(j.ResetTTL),
+	}); err != nil {
+		return err
+	}
+	subject, text := passwordResetEmail(u.Locale, fmt.Sprintf("%s/reset-password?token=%s", strings.TrimRight(j.PublicURL, "/"), token))
+	if err := j.Sender.Send(ctx, notify.Message{To: u.Email, Subject: subject, Text: text}); err != nil {
+		return fmt.Errorf("send password reset email: %w", err)
+	}
+	return nil
+}
+
+type passwordChangedWorker struct {
+	river.WorkerDefaults[PasswordChangedArgs]
+	j *Jobs
+}
+
+func (w *passwordChangedWorker) Work(ctx context.Context, job *river.Job[PasswordChangedArgs]) error {
+	return w.j.SendPasswordChangedEmail(ctx, job.Args)
+}
+
+// SendPasswordChangedEmail tells the user their password was changed, so a reset they did not ask
+// for does not go unnoticed.
+func (j *Jobs) SendPasswordChangedEmail(ctx context.Context, args PasswordChangedArgs) error {
+	u, err := db.New(j.Platform).GetUserForEmail(ctx, args.UserID)
+	if err != nil {
+		return mapNoRowsCancel(err)
+	}
+	subject, text := passwordChangedEmail(u.Locale, strings.TrimRight(j.PublicURL, "/")+"/forgot-password")
+	if err := j.Sender.Send(ctx, notify.Message{To: u.Email, Subject: subject, Text: text}); err != nil {
+		return fmt.Errorf("send password changed email: %w", err)
 	}
 	return nil
 }
@@ -168,7 +242,11 @@ func (j *Jobs) PurgeExpiredTokens(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	j.Logger.InfoContext(ctx, "purged expired tokens", "refresh_tokens", tokens, "verification_links", links)
+	resets, err := q.PurgePasswordResets(ctx, before)
+	if err != nil {
+		return err
+	}
+	j.Logger.InfoContext(ctx, "purged expired tokens", "refresh_tokens", tokens, "verification_links", links, "password_resets", resets)
 	return nil
 }
 

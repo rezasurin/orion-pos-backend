@@ -177,6 +177,55 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /v1/auth/forgot-password:
+    post:
+      operationId: forgotPassword
+      tags: [auth]
+      summary: Email a link to choose a new password
+      description: |
+        Always answers 202, whether or not the address has an account, so it cannot be used to find
+        out who is registered. If it does, the account's owner is emailed a link
+        (`{front end}/reset-password?token=...`) that works once and expires in one hour. Repeats
+        within five minutes are dropped. Limited by caller address and by email address.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+      responses:
+        '202':
+          description: Accepted. If the address has an account, an email is on its way.
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/reset-password:
+    post:
+      operationId: resetPassword
+      tags: [auth]
+      summary: Choose a new password with the token from the reset email
+      description: |
+        Sets the password for every business the account belongs to. The token works once; using it
+        also retires the account's other reset links, **signs out every session that predates the
+        change** (refresh tokens fail with `invalid_token`; access tokens already issued last until
+        they expire, at most 15 minutes), verifies the email address if it was not yet, and emails
+        the owner that the password changed. Signing in is a separate call: this does not return a
+        session. An unknown, used or expired token is `401 invalid_token`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '204':
+          description: The password was changed
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /v1/auth/resend-verification:
     post:
       operationId: resendVerification
@@ -1477,6 +1526,19 @@ components:
       required: [token]
       properties:
         token: {type: string, maxLength: 512}
+
+    ForgotPasswordRequest:
+      type: object
+      required: [email]
+      properties:
+        email: {type: string, maxLength: 254}
+
+    ResetPasswordRequest:
+      type: object
+      required: [token, password]
+      properties:
+        token: {type: string, maxLength: 512, description: The `token` in the link of the reset email.}
+        password: {type: string, minLength: 10, maxLength: 128}
 
     SignupRequest:
       type: object

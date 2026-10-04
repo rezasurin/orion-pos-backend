@@ -254,6 +254,17 @@ func (q *Queries) GetMemberAccess(ctx context.Context, arg GetMemberAccessParams
 	return items, nil
 }
 
+const getPasswordChangedAt = `-- name: GetPasswordChangedAt :one
+SELECT password_changed_at FROM user_account WHERE id = $1
+`
+
+func (q *Queries) GetPasswordChangedAt(ctx context.Context, id uuid.UUID) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, getPasswordChangedAt, id)
+	var password_changed_at *time.Time
+	err := row.Scan(&password_changed_at)
+	return password_changed_at, err
+}
+
 const getRefreshTokenForUpdate = `-- name: GetRefreshTokenForUpdate :one
 SELECT id, tenant_id, user_id, family_id, token_hash, created_at, expires_at, used_at, revoked_at FROM refresh_token WHERE tenant_id = $1 AND token_hash = $2 FOR UPDATE
 `
@@ -500,6 +511,30 @@ type InsertMemberParams struct {
 
 func (q *Queries) InsertMember(ctx context.Context, arg InsertMemberParams) error {
 	_, err := q.db.Exec(ctx, insertMember, arg.TenantID, arg.UserID, arg.IsOwner)
+	return err
+}
+
+const insertPasswordReset = `-- name: InsertPasswordReset :exec
+INSERT INTO password_reset (id, tenant_id, user_id, token_hash, expires_at)
+VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertPasswordResetParams struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	UserID    uuid.UUID
+	TokenHash []byte
+	ExpiresAt time.Time
+}
+
+func (q *Queries) InsertPasswordReset(ctx context.Context, arg InsertPasswordResetParams) error {
+	_, err := q.db.Exec(ctx, insertPasswordReset,
+		arg.ID,
+		arg.TenantID,
+		arg.UserID,
+		arg.TokenHash,
+		arg.ExpiresAt,
+	)
 	return err
 }
 
@@ -1171,6 +1206,18 @@ DELETE FROM email_verification WHERE expires_at < $1
 
 func (q *Queries) PurgeEmailVerifications(ctx context.Context, before time.Time) (int64, error) {
 	result, err := q.db.Exec(ctx, purgeEmailVerifications, before)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgePasswordResets = `-- name: PurgePasswordResets :execrows
+DELETE FROM password_reset WHERE expires_at < $1
+`
+
+func (q *Queries) PurgePasswordResets(ctx context.Context, before time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, purgePasswordResets, before)
 	if err != nil {
 		return 0, err
 	}

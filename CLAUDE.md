@@ -3,7 +3,7 @@
 Go modular monolith on PostgreSQL for a point-of-sale system (cafes and restaurants, Indonesia).
 Read `README.md` for the layout and `docs/BACKEND_PLAN.md` for the plan, phases and "as built"
 sections. Phase 0 and Phase 1 (B1.1 to B1.12) are done; Phase 2 (early access) is under way: CORS and
-self-serve signup (B2.1) are built, the rest of the Phase 2 table is open.
+self-serve signup (B2.1) and password reset (B2.12) are built, the rest of the Phase 2 table is open.
 
 ## Standing rules
 
@@ -59,8 +59,8 @@ Tests use a real Postgres (testcontainers, or `ORION_TEST_DATABASE_URL`). Never 
   carry out: `docs/guides/hosting-and-restore.md` (B0.13 is marked done as a guide; the host, the
   deploy workflow and the first restore drill, with `docs/runbooks/restore.md`, are still to do before
   the pilot) and `docs/guides/email-provider.md` (email still goes to the log).
-- Phase 2 gaps from B2.1: no CAPTCHA, no cleanup of never-verified businesses (B2.1b), no terms
-  acceptance (B2.10), no password reset.
+- Phase 2 gaps from B2.1: no CAPTCHA, no cleanup of never-verified businesses or CAPTCHA (B2.13), no terms
+  acceptance (B2.10), no change-password-while-signed-in.
 - Publishing the TypeScript client package (B0.3), and the
   accountant's sign-off on per-bill half-up rounding before the pilot.
 - The pilot runbook is `docs/runbooks/pilot.md`.
