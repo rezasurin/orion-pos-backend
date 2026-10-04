@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -38,7 +39,7 @@ func (s *Service) SetOutletVariant(ctx context.Context, tenantID, outletID, vari
 		q := db.New(tx)
 		before, err := q.GetOutletVariantForUpdate(ctx, db.GetOutletVariantForUpdateParams{TenantID: tenantID, OutletID: outletID, VariantID: variantID})
 		hadRow := err == nil
-		if err != nil && mapErr(err) != kernel.ErrNotFound {
+		if err != nil && !errors.Is(mapErr(err), kernel.ErrNotFound) {
 			return err
 		}
 		row, err := q.UpsertOutletVariant(ctx, db.UpsertOutletVariantParams{

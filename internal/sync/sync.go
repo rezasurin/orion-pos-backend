@@ -522,7 +522,7 @@ func envelopeHash(ev Event) ([]byte, error) {
 		return nil, err
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "%s\n%s\n%d\n%s\n", ev.Type, ev.StaffID, ev.SchemaVersion, ev.DeviceTime.UTC().Format(time.RFC3339Nano))
+	_, _ = fmt.Fprintf(h, "%s\n%s\n%d\n%s\n", ev.Type, ev.StaffID, ev.SchemaVersion, ev.DeviceTime.UTC().Format(time.RFC3339Nano))
 	h.Write(canon)
 	return h.Sum(nil), nil
 }

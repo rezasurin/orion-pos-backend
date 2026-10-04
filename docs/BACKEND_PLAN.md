@@ -777,6 +777,13 @@ Implementation:
 - Each sale records the `catalog_seq` it was priced against, so a sale against a stale price is
   explainable.
 
+
+**In CI** the latency bar is enforced by a separate job (`load`, running `make load` without
+`-race`). The main `test` job runs under the race detector, which slows the code several times, so
+there the same test still runs every correctness check (nothing lost, duplicated or flagged; the
+report timings) but only logs the p95 instead of failing on it. The first CI run showed why: 430 ms
+under `-race` on a shared runner against 121 ms without it on a laptop.
+
 #### 5.2.1 Pull as built (B1.6)
 
 - `GET /v1/sync/pull?cursor=&limit=` (device token). The response lists the **current state** of

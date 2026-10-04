@@ -258,7 +258,7 @@ func (f *fx) salePayload(s saleSpec) map[string]any {
 	f.counter++
 	number := s.Number
 	if number == "" {
-		code := 1
+		var code int
 		if s.Dev.DeviceID != uuid.Nil {
 			code = f.deviceCode(s.Dev)
 		} else {

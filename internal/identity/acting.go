@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,7 +42,7 @@ func (s *Service) LoadActing(ctx context.Context, tx pgx.Tx, tenantID, staffID, 
 	q := db.New(tx)
 	st, err := q.GetStaff(ctx, db.GetStaffParams{TenantID: tenantID, ID: staffID})
 	if err != nil {
-		if mapNoRows(err, kernel.ErrNotFound) == kernel.ErrNotFound {
+		if errors.Is(mapNoRows(err, kernel.ErrNotFound), kernel.ErrNotFound) {
 			return Acting{StaffID: staffID}, nil
 		}
 		return Acting{}, err

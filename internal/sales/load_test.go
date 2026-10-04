@@ -138,7 +138,14 @@ func TestAWeekOfABusyCafeStaysFast(t *testing.T) {
 		events, len(lat), elapsed.Round(time.Millisecond), float64(events)/elapsed.Seconds(),
 		pct(0.50).Round(time.Millisecond), pct(0.95).Round(time.Millisecond), pct(0.99).Round(time.Millisecond), lat[len(lat)-1].Round(time.Millisecond))
 	if p95 := pct(0.95); p95 > loadP95 {
-		t.Errorf("p95 push latency %v is over %v", p95, loadP95)
+		if raceEnabled {
+			// The race detector multiplies run time, so the bar means nothing here. Everything below
+			// still runs; the bar itself is enforced by the CI job that runs this test without
+			// -race (make load).
+			t.Logf("p95 push latency %v is over %v; not enforced under the race detector", p95, loadP95)
+		} else {
+			t.Errorf("p95 push latency %v is over %v", p95, loadP95)
+		}
 	}
 
 	// Nothing lost, nothing duplicated, nothing flagged.

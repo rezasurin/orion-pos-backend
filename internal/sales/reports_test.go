@@ -356,7 +356,7 @@ func TestReportsOfAnOpenShiftAndAnEmptyDay(t *testing.T) {
 	// A shift still open has its expected cash but nothing counted yet.
 	eq(t, "open shift counted", got.Cash.Counted == nil && got.Cash.Difference == nil, true)
 	eq(t, "opening", got.Cash.OpeningCash, int64(80000))
-	eq(t, "cash received", got.Cash.Received, int64(got.Sales.Total+got.Sales.Rounding))
+	eq(t, "cash received", got.Cash.Received, got.Sales.Total+got.Sales.Rounding)
 	eq(t, "expected", got.Cash.Expected, 80000+got.Sales.Total+got.Sales.Rounding)
 	eq(t, "sales", got.Sales.Count, int64(1))
 
