@@ -30,6 +30,7 @@ type world struct {
 	roleA             string
 	catA              catalogIDs
 	syncA             string   // an event record of tenant A, pushed by its device
+	shiftA            string   // a shift of tenant A, opened by its device
 	secrets           []string // every identifier belonging to A
 }
 
@@ -67,6 +68,14 @@ func newWorld(t *testing.T) *world {
 		t.Fatalf("A's push: %d %s", r.Code, r.Body.String())
 	}
 	w.syncA = evA
+	shiftA := uuid.NewString()
+	if r := e.do(t, "POST", "/v1/sync/push", w.deviceA, map[string]any{"device_id": pa.Device.ID, "events": []map[string]any{{
+		"id": shiftA, "idempotency_key": shiftA, "type": "shift.opened", "staff_id": w.staffA,
+		"device_time": time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), "schema_version": 1, "payload": map[string]any{"opening_cash": 777000},
+	}}}); r.Code != http.StatusOK {
+		t.Fatalf("A's shift: %d %s", r.Code, r.Body.String())
+	}
+	w.shiftA = shiftA
 
 	var cat categoryBody
 	e.create(t, "/v1/categories", w.userA, map[string]any{"name": "Secret category"}, &cat)
@@ -81,7 +90,7 @@ func newWorld(t *testing.T) *world {
 	}, &it)
 	w.catA = catalogIDs{category: cat.ID, item: it.ID, variant: it.Variants[0].ID, group: grp.ID, modifier: grp.Modifiers[0].ID}
 
-	w.secrets = []string{w.syncA, "A's secret sale", w.catA.category, w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
+	w.secrets = []string{w.syncA, w.shiftA, "777000", "A's secret sale", w.catA.category, w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
 		"Secret category", "Secret group", "Secret modifier", "Secret blend", "Secret size", "SECRET-SKU", "SECRET-BARCODE", "77777",
 		w.a.tenant.ID.String(), w.a.outlet.ID.String(), w.a.owner.ID.String(), w.staffA, w.deviceIDA, "owner@kopi.test", "Sari of A", "Kasir A", "JKT1"}
 	for _, r := range roles {
@@ -189,6 +198,15 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 				problem(t, http.StatusBadRequest, "validation_failed")
 		},
 
+		"GetShiftReport": func(t *testing.T) {
+			w.gone(t, "GetShiftReport", e.do(t, "GET", "/v1/reports/shifts/"+w.shiftA, ub, nil), http.StatusNotFound, "not_found")
+		},
+		"GetDayReport": func(t *testing.T) {
+			today := time.Now().UTC().Format(time.DateOnly)
+			w.gone(t, "GetDayReport", e.do(t, "GET", "/v1/reports/days/"+today+"?outlet_id="+aOutlet, ub, nil), http.StatusNotFound, "not_found")
+			// B's own report for the same day holds nothing of A's.
+			w.noLeak(t, "GetDayReport/own", e.do(t, "GET", "/v1/reports/days/"+today+"?outlet_id="+w.b.outlet.ID.String(), ub, nil))
+		},
 		"PullChanges": func(t *testing.T) {
 			// B's tablet pulls everything it can: nothing of A's, from a snapshot or from cursor zero.
 			w.noLeak(t, "PullChanges", e.do(t, "GET", "/v1/sync/pull", db, nil))
@@ -310,7 +328,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "PullChanges", "UpdateOutletSettings",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport",
 	} {
 		covered[op] = true
 	}

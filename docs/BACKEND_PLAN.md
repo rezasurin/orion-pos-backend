@@ -955,6 +955,36 @@ fields are ignored so a newer app may add fields within a version.
   cash and flags, receipt numbers, concurrent voids and concurrent devices, business dates under a
   04:00 cutoff, and the app role being unable to rewrite anything.
 
+#### 6.4.2 Reports as built (B1.8)
+
+- `GET /v1/reports/shifts/{shiftId}` and `GET /v1/reports/days/{date}?outlet_id=`, both needing
+  `report.view` **at the outlet** (an id of another business is `404`). `internal/reporting` reads
+  the sales tables in its own read-only queries, checked against the migrations by `sqlc`, and
+  computes live in one transaction, so a report can be rebuilt at any time and nothing stored goes
+  stale. This is the one place a module reads another module's tables.
+- **Sales** are the completed ones by the business date they were rung up on, with the amounts the
+  device charged: subtotal, discounts, net, service charge, tax, total (before cash rounding) and
+  rounding. A void recorded later removes the sale from its day, as on any POS, so a past day can
+  change after the fact; voids are reported next to it (`voided_sales`).
+- **Expected cash** = opening cash + cash applied to the bills of the shift's sales (net of change,
+  whatever became of the sale) - cash refunded for voids made *in this shift* (of any shift's
+  sales) + pay ins - pay outs. A refund therefore leaves the drawer of the shift that paid it, and a
+  closed shift's expected cash never changes when a later shift voids one of its sales.
+  `difference` is counted minus expected (negative: short); both are absent while the shift is open.
+- **The day** lists the shifts opened on that business date, in order, with their reconciliation, the
+  cash of the closed ones added up, payment methods, manual discounts, pay ins and outs, drawer
+  openings, and the day's review flags by code. A shift that spans midnight belongs to the day it
+  opened on, and a sale rung up after midnight but before the cutoff belongs to the previous day.
+- **The reconciliation test** (`internal/sales/reports_test.go`) pushes a simulated week (about 300
+  sales over seven days on two devices, discounts, cash and QRIS and split payments, voids of the
+  same day's and of earlier days' sales, pay ins and outs, drawer openings, a 03:00 cutoff with
+  sales after midnight, shifts closed with the drawer short or over) and requires every figure in
+  every day and shift report to equal the test's own bookkeeping, which never reads the database.
+  This is the Phase 1 exit test in miniature, and it fails when the refund rule above is changed.
+- Migration 00012 adds the indexes the reports need: PostgreSQL does not index the referencing side
+  of a foreign key, so each is justified in the file. B1.11 runs `EXPLAIN` on each report against a
+  busy week.
+
 ### 6.5 Payments (Phase 1 manual, Phase 2 gateway)
 
 - Phase 1: payments arrive inside `sale.completed`. Manual QRIS stores the static QR reference and
@@ -1117,7 +1147,7 @@ backup has been restored into a scratch database.
 | B1.5 | ✅ Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check); event payloads and rules in 6.4.1 | 5d |
 | B1.6 | ✅ Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling (see 5.2.1) | 3d |
 | B1.7 | ✅ Outlet settings for tax, service charge, rounding, timezone, cutoff (`PATCH /v1/outlets/{outletId}/settings`); `business_date` derivation (`kernel.BusinessDate`, see 4.9.1). Done ahead of B1.5, which needs it | 1d |
-| B1.8 | Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers must match the POS's own totals | 4d |
+| B1.8 | ✅ Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers match the POS's own totals (see 6.4.2) | 4d |
 | B1.9 | Sales list and detail for the back office (read-only) | 2d |
 | B1.10 | Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long | 1d |
 | B1.11 | Load sanity check: one week of a busy cafe (for example 600 sales/day, 3 devices) pushed in bursts, p95 push latency under 300 ms | 1d |

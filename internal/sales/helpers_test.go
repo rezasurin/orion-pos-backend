@@ -41,8 +41,9 @@ type fx struct {
 	oatMilk, sugarNormal          uuid.UUID // modifier ids
 	latteItem                     uuid.UUID
 
-	counter int64     // receipt counter
-	t0      time.Time // device time of the events, an hour ago
+	counter int64          // receipt counter
+	lastRes pricing.Result // what the pricing algorithm gave for the last payload built
+	t0      time.Time      // device time of the events, an hour ago
 }
 
 // defaultSettings are the outlet's, and so what a well-behaved device prices with.
@@ -252,6 +253,7 @@ func (f *fx) salePayload(s saleSpec) map[string]any {
 		f.t.Fatalf("pricing the test sale: %v", err)
 	}
 
+	f.lastRes = res
 	f.counter++
 	number := s.Number
 	if number == "" {

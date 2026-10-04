@@ -39,6 +39,8 @@ tags:
     description: Pairing POS tablets and what they download
   - name: catalog
     description: What the business sells - categories, items, variants, modifiers and per-outlet prices
+  - name: reports
+    description: End-of-shift and end-of-day reports
   - name: sync
     description: The device's offline-first sync with the server
   - name: entitlements
@@ -244,6 +246,70 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Outlet'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/reports/shifts/{shiftId}:
+    get:
+      operationId: getShiftReport
+      tags: [reports]
+      summary: End-of-shift report
+      description: |
+        What one shift took and how its drawer reconciles. Computed live from the recorded sales, so
+        it is always current; a void made later of one of the shift's sales removes it from the
+        totals.
+
+        **Expected cash** is the opening cash, plus the cash applied to the bills of the shift's
+        sales (net of change, whatever became of the sale later), minus the cash refunded for voids
+        made *in this shift* (of any shift's sales), plus pay ins, minus pay outs. `difference` is
+        `counted - expected`: negative means the drawer is short. Both are absent while the shift is
+        open.
+
+        Needs `report.view` at the shift's outlet.
+      x-permission: report.view
+      parameters:
+        - $ref: '#/components/parameters/ShiftId'
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShiftReport'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/reports/days/{date}:
+    get:
+      operationId: getDayReport
+      tags: [reports]
+      summary: End-of-day report for an outlet
+      description: |
+        The business day `date` (in the outlet's time zone and day cutoff) at one outlet: completed
+        sales by the business date they were rung up on, what each payment method took, voids, manual
+        discounts, cash movements, the shifts opened that day with their cash reconciliation, and the
+        review flags raised by that day's events. The numbers are those on the receipts: a sale is
+        stored as the device charged it. Needs `report.view` at the outlet.
+      x-permission: report.view
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema: {type: string, format: date}
+        - name: outlet_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DayReport'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1182,6 +1248,11 @@ components:
       in: path
       required: true
       schema: {type: string, format: uuid}
+    ShiftId:
+      name: shiftId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
     IncludeArchived:
       name: include_archived
       in: query
@@ -1969,6 +2040,120 @@ components:
               type: string
               format: date-time
               description: Keep applying these until then if the server cannot be reached.
+
+    ReportCash:
+      type: object
+      required: [opening_cash, received, refunded, pay_in, pay_out, expected]
+      properties:
+        opening_cash: {type: integer, format: int64}
+        received: {type: integer, format: int64, description: Cash applied to the bills of the shift's sales, net of change.}
+        refunded: {type: integer, format: int64, description: Cash returned for voids made in the shift.}
+        pay_in: {type: integer, format: int64}
+        pay_out: {type: integer, format: int64}
+        expected: {type: integer, format: int64, description: opening_cash + received - refunded + pay_in - pay_out}
+        counted: {type: integer, format: int64, nullable: true, description: Absent until the shift is closed.}
+        difference: {type: integer, format: int64, nullable: true, description: counted - expected; negative means short.}
+
+    ReportTotals:
+      type: object
+      required: [count, subtotal, discounts, net, service_charge, tax, total, rounding]
+      properties:
+        count: {type: integer, format: int64, description: Completed sales.}
+        subtotal: {type: integer, format: int64, description: Before discounts.}
+        discounts: {type: integer, format: int64}
+        net: {type: integer, format: int64, description: subtotal - discounts}
+        service_charge: {type: integer, format: int64}
+        tax: {type: integer, format: int64}
+        total: {type: integer, format: int64, description: What the bills came to, before cash rounding.}
+        rounding: {type: integer, format: int64, description: Cash rounding, positive or negative.}
+
+    ReportMethod:
+      type: object
+      required: [method, payments, amount]
+      properties:
+        method: {type: string, enum: [cash, qris_manual, qris_dynamic, ewallet, card_manual]}
+        payments: {type: integer, format: int64}
+        amount: {type: integer, format: int64}
+
+    ReportVoided:
+      type: object
+      required: [count, total]
+      properties:
+        count: {type: integer, format: int64}
+        total: {type: integer, format: int64}
+
+    ReportDiscounts:
+      type: object
+      required: [count, amount]
+      properties:
+        count: {type: integer, format: int64}
+        amount: {type: integer, format: int64}
+
+    ReportShiftInfo:
+      type: object
+      required: [id, outlet_id, device_id, opened_by, opened_at, business_date]
+      properties:
+        id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        device_id: {type: string, format: uuid}
+        opened_by: {type: string, format: uuid}
+        opened_at: {type: string, format: date-time}
+        business_date: {type: string, format: date}
+        closed_by: {type: string, format: uuid, nullable: true}
+        closed_at: {type: string, format: date-time, nullable: true}
+
+    ShiftReport:
+      type: object
+      required: [shift, cash, sales, payment_methods, discounts, voided_sales, voids_recorded, no_sale_openings, flags]
+      properties:
+        shift: {$ref: '#/components/schemas/ReportShiftInfo'}
+        cash: {$ref: '#/components/schemas/ReportCash'}
+        sales: {$ref: '#/components/schemas/ReportTotals'}
+        payment_methods:
+          type: array
+          items: {$ref: '#/components/schemas/ReportMethod'}
+        discounts: {$ref: '#/components/schemas/ReportDiscounts'}
+        voided_sales: {$ref: '#/components/schemas/ReportVoided', description: This shift's sales that were voided, in this shift or later.}
+        voids_recorded: {$ref: '#/components/schemas/ReportVoided', description: Voids made during this shift, of any shift's sales.}
+        no_sale_openings: {type: integer, format: int64}
+        flags: {type: integer, format: int64, description: Review flags raised about the shift and its sales.}
+
+    DayReport:
+      type: object
+      required: [outlet_id, date, sales, payment_methods, discounts, voided_sales, cash_movements, shifts, open_shifts, cash, flags]
+      properties:
+        outlet_id: {type: string, format: uuid}
+        date: {type: string, format: date}
+        sales: {$ref: '#/components/schemas/ReportTotals'}
+        payment_methods:
+          type: array
+          items: {$ref: '#/components/schemas/ReportMethod'}
+        discounts: {$ref: '#/components/schemas/ReportDiscounts'}
+        voided_sales: {$ref: '#/components/schemas/ReportVoided', description: The day's sales that were voided, whenever the void was made.}
+        cash_movements:
+          type: object
+          required: [pay_in, pay_in_count, pay_out, pay_out_count, no_sale_openings]
+          properties:
+            pay_in: {type: integer, format: int64}
+            pay_in_count: {type: integer, format: int64}
+            pay_out: {type: integer, format: int64}
+            pay_out_count: {type: integer, format: int64}
+            no_sale_openings: {type: integer, format: int64}
+        shifts:
+          type: array
+          description: Shifts opened on this business date, in the order they opened.
+          items:
+            type: object
+            required: [shift, cash]
+            properties:
+              shift: {$ref: '#/components/schemas/ReportShiftInfo'}
+              cash: {$ref: '#/components/schemas/ReportCash'}
+        open_shifts: {type: integer}
+        cash: {$ref: '#/components/schemas/ReportCash', description: The reconciliation added up over the closed shifts.}
+        flags:
+          type: object
+          description: Review flags raised by the day's events, by code.
+          additionalProperties: {type: integer, format: int64}
 
     OperatorChallenge:
       type: object

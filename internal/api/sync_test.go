@@ -274,3 +274,128 @@ func TestPullOverHTTP(t *testing.T) {
 	}
 	e.do(t, "GET", "/v1/sync/pull", p.token, nil).problem(t, http.StatusForbidden, "device_revoked")
 }
+
+type reportCashBody struct {
+	OpeningCash int64  `json:"opening_cash"`
+	Received    int64  `json:"received"`
+	Refunded    int64  `json:"refunded"`
+	PayIn       int64  `json:"pay_in"`
+	PayOut      int64  `json:"pay_out"`
+	Expected    int64  `json:"expected"`
+	Counted     *int64 `json:"counted"`
+	Difference  *int64 `json:"difference"`
+}
+
+type totalsBody struct {
+	Count         int64 `json:"count"`
+	Subtotal      int64 `json:"subtotal"`
+	Discounts     int64 `json:"discounts"`
+	Net           int64 `json:"net"`
+	ServiceCharge int64 `json:"service_charge"`
+	Tax           int64 `json:"tax"`
+	Total         int64 `json:"total"`
+	Rounding      int64 `json:"rounding"`
+}
+
+func TestReportsOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	manager := e.member(t, f, "mgr@kopi.test", "Manager")
+	cashier := e.member(t, f, "cash@kopi.test", "Cashier")
+	p := e.pusher(t, f, owner, "Kasir 1")
+
+	var item itemBody
+	e.create(t, "/v1/items", owner, map[string]any{"name": "Espresso", "variants": []map[string]any{{"base_price": 18000}}}, &item)
+	at := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	shift := p.event("shift.opened", map[string]any{"opening_cash": 100000})
+	shift["device_time"] = at
+	sale := p.event("sale.completed", map[string]any{
+		"shift_id": shift["id"], "receipt_number": "JKT1-01-000001", "catalog_seq": 1000,
+		"pricing": map[string]any{
+			"version": 1, "price_includes_tax": false, "tax_rate_bp": 0, "service_charge_rate_bp": 0,
+			"service_charge_taxable": true, "cash_rounding_unit": 0, "cash_rounding_mode": "nearest",
+		},
+		"lines": []map[string]any{{
+			"variant_id": item.Variants[0].ID, "name": "Espresso", "unit_price": 18000, "quantity": 2,
+			"discount": 0, "allocated_bill_discount": 0, "total": 36000,
+		}},
+		"totals":   map[string]any{"subtotal": 36000, "discount_total": 0, "service_charge": 0, "tax": 0, "rounding_amount": 0, "total": 36000},
+		"payments": []map[string]any{{"method": "cash", "amount": 36000, "tendered": 40000, "change": 4000}},
+	})
+	sale["device_time"] = at
+	for _, got := range func() []syncResultBody {
+		var res pushBody
+		p.push(t, shift, sale).decode(t, &res)
+		return res.Results
+	}() {
+		if got.Status != "accepted" || got.Code != "" {
+			t.Fatalf("push: %+v", got)
+		}
+	}
+
+	var sr struct {
+		Shift struct {
+			ID       string  `json:"id"`
+			ClosedAt *string `json:"closed_at"`
+		} `json:"shift"`
+		Cash           reportCashBody `json:"cash"`
+		Sales          totalsBody     `json:"sales"`
+		PaymentMethods []struct {
+			Method string `json:"method"`
+			Amount int64  `json:"amount"`
+		} `json:"payment_methods"`
+	}
+	path := "/v1/reports/shifts/" + shift["id"].(string)
+	r := e.do(t, "GET", path, owner, nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("shift report: %d %s", r.Code, r.Body.String())
+	}
+	r.decode(t, &sr)
+	// 100000 opening + 36000 cash taken for the bill (the 4000 change went back to the customer).
+	if sr.Cash.Expected != 136000 || sr.Cash.Received != 36000 || sr.Cash.Counted != nil || sr.Sales.Count != 1 || sr.Sales.Total != 36000 ||
+		len(sr.PaymentMethods) != 1 || sr.PaymentMethods[0].Method != "cash" || sr.PaymentMethods[0].Amount != 36000 || sr.Shift.ClosedAt != nil {
+		t.Errorf("shift report = %+v", sr)
+	}
+	if r := e.do(t, "GET", path, manager.AccessToken, nil); r.Code != http.StatusOK {
+		t.Errorf("a manager reads reports: %d", r.Code)
+	}
+	e.do(t, "GET", path, cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
+	e.do(t, "GET", path, p.token, nil).problem(t, http.StatusUnauthorized, "invalid_token")
+	e.do(t, "GET", "/v1/reports/shifts/"+uuid.NewString(), owner, nil).problem(t, http.StatusNotFound, "not_found")
+
+	// The day it belongs to, in the outlet's time zone.
+	local := time.Now().UTC().Add(-time.Hour).In(time.FixedZone("WIB", 7*3600)).Format(time.DateOnly)
+	dayPath := "/v1/reports/days/" + local + "?outlet_id=" + f.outlet.ID.String()
+	var dr struct {
+		Date       string     `json:"date"`
+		Sales      totalsBody `json:"sales"`
+		OpenShifts int        `json:"open_shifts"`
+		Shifts     []struct {
+			Cash reportCashBody `json:"cash"`
+		} `json:"shifts"`
+		Flags map[string]int64 `json:"flags"`
+	}
+	r = e.do(t, "GET", dayPath, owner, nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("day report: %d %s", r.Code, r.Body.String())
+	}
+	r.decode(t, &dr)
+	if dr.Date != local || dr.Sales.Count != 1 || dr.Sales.Total != 36000 || dr.OpenShifts != 1 || len(dr.Shifts) != 1 || dr.Shifts[0].Cash.Expected != 136000 {
+		t.Errorf("day report = %+v", dr)
+	}
+	// The cashier who rang it up has no permission to see reports: nothing flagged for the sale
+	// itself, since a cashier may sell and open shifts.
+	if len(dr.Flags) != 0 {
+		t.Errorf("flags = %v", dr.Flags)
+	}
+
+	e.do(t, "GET", dayPath, cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
+	e.do(t, "GET", "/v1/reports/days/"+local, owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+	e.do(t, "GET", "/v1/reports/days/not-a-date?outlet_id="+f.outlet.ID.String(), owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+	e.do(t, "GET", "/v1/reports/days/"+local+"?outlet_id="+uuid.NewString(), owner, nil).problem(t, http.StatusNotFound, "not_found")
+	empty := e.do(t, "GET", "/v1/reports/days/2020-01-01?outlet_id="+f.outlet.ID.String(), owner, nil)
+	if empty.Code != http.StatusOK {
+		t.Errorf("an empty day: %d %s", empty.Code, empty.Body.String())
+	}
+}

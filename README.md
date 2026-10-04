@@ -39,6 +39,7 @@ See [`deploy/README.md`](./deploy/README.md) for database roles and configuratio
 | `internal/identity` | Users, sessions (JWT access tokens, rotating refresh tokens), email verification, roles, staff and PINs, device pairing and the roster; its background jobs |
 | `internal/catalog` | Categories, items with variants, modifier groups, per-outlet prices and availability, with their change log entries |
 | `internal/sales` | Shifts, cash, sales, payments, voids and review flags, written only by projecting pushed events |
+| `internal/reporting` | End-of-shift and end-of-day reports, computed live from the sales tables |
 | `internal/sync` | The device push: inbox, idempotency, projector registry (`syncstub` is a stand-in projector for tests) |
 | `internal/pricing` | The one bill calculation, shared by the sale projector and the receipt preview |
 | `internal/notify` | Sending email behind an interface |
