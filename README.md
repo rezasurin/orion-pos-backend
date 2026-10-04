@@ -26,7 +26,7 @@ make gen     # regenerate sqlc and OpenAPI code after editing migrations, querie
 
 See [`deploy/README.md`](./deploy/README.md) for database roles and configuration.
 
-Building a client? Read [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.md) first. Running the pilot? See [`docs/runbooks/pilot.md`](./docs/runbooks/pilot.md).
+Building a client? Read [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.md) first. Running the pilot? See [`docs/runbooks/pilot.md`](./docs/runbooks/pilot.md). Setting up hosting or email? See [`docs/guides/`](./docs/guides).
 
 ## Layout
 
