@@ -1,0 +1,11 @@
+# Generates gen/openapi from api/openapi.yaml. Run with `make gen`.
+package: openapi
+output: gen/openapi/api.gen.go
+generate:
+  models: true
+  chi-server: true
+  strict-server: true
+  embedded-spec: true
+output-options:
+  # Keep every schema, including ones no operation names directly, so clients get all the types.
+  skip-prune: true

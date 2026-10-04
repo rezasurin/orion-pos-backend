@@ -1,0 +1,1086 @@
+openapi: 3.0.3
+info:
+  title: Orion POS API
+  version: 0.1.0
+  description: |
+    The contract between the Orion backend and its clients (back office, POS, admin console).
+    It is the source of truth: Go types and server stubs are generated from it (`make gen`), and
+    CI fails if the generated code is out of date.
+
+    Conventions (docs/BACKEND_PLAN.md section 4.10):
+
+    - Errors are `application/problem+json` with a stable `code`. Clients switch on `code`, never
+      on `title` or `detail`.
+    - JSON field names are snake_case. Timestamps are RFC 3339 in UTC. Money is integer rupiah.
+    - Ids are UUIDs. List endpoints page with `cursor` and `limit`.
+
+    Extensions used by the server:
+
+    - `x-permission`: the permission a user needs (any outlet) to call the operation. Checked
+      by middleware before the handler runs. Operations that name an outlet check it again
+      for that outlet.
+
+    The spec is OpenAPI 3.0.3 rather than 3.1 because the code generator supports it fully.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+
+servers:
+  - url: /
+
+tags:
+  - name: auth
+    description: Sign in, sessions and email verification
+  - name: tenancy
+    description: The signed-in business and its outlets
+  - name: staff
+    description: People who work in the business, their roles and PINs
+  - name: devices
+    description: Pairing POS tablets and what they download
+  - name: entitlements
+    description: What the business's plan allows
+  - name: admin
+    description: Operator (Orion staff) sign-in and audit log. Needs ORION_PLATFORM_DATABASE_URL on the server.
+
+security:
+  - userAuth: []
+
+paths:
+  /v1/auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Sign in with email and password
+      description: |
+        Returns an access token (15 minutes) and a refresh token (30 days, single use). An account
+        that belongs to several businesses must say which with `tenant_id`; without it the
+        response is `409 tenant_required` listing the choices.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [auth]
+      summary: Exchange a refresh token for a new session
+      description: |
+        Every refresh token works once. Presenting one a second time revokes the whole session
+        (`token_reused`) and the user must sign in again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: A new session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: End a session
+      description: Revokes the session the refresh token belongs to. Always succeeds, so it can be retried.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '204':
+          description: Signed out
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+
+  /v1/auth/verify-email:
+    post:
+      operationId: verifyEmail
+      tags: [auth]
+      summary: Confirm an email address with the token from the verification email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+      responses:
+        '204':
+          description: Verified
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/resend-verification:
+    post:
+      operationId: resendVerification
+      tags: [auth]
+      summary: Send the verification email again
+      description: |
+        Always answers 202, whether or not the address has an account, so it cannot be used to
+        find out who is registered. Repeats within five minutes are dropped.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+      responses:
+        '202':
+          description: Accepted
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/me:
+    get:
+      operationId: getMe
+      tags: [tenancy]
+      summary: The signed-in user and their business
+      responses:
+        '200':
+          description: The caller
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Me'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/outlets:
+    get:
+      operationId: listOutlets
+      tags: [tenancy]
+      summary: The business's outlets with their settings
+      responses:
+        '200':
+          description: Active outlets, ordered by code
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Outlet'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/outlets/{outletId}:
+    get:
+      operationId: getOutlet
+      tags: [tenancy]
+      summary: One outlet with its settings
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+      responses:
+        '200':
+          description: The outlet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Outlet'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/roles:
+    get:
+      operationId: listRoles
+      tags: [staff]
+      summary: The business's roles with their permissions
+      description: Owner, Manager, Cashier and Kitchen exist for every business. They cannot be edited.
+      x-permission: staff.manage
+      responses:
+        '200':
+          description: Roles, system roles first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Role'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/staff:
+    get:
+      operationId: listStaff
+      tags: [staff]
+      summary: Staff, a page at a time
+      x-permission: staff.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of staff ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StaffPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createStaff
+      tags: [staff]
+      summary: Add a staff member
+      description: |
+        The caller needs `staff.manage` at every outlet in `outlet_roles` and can only grant roles
+        whose permissions they hold at that outlet themselves.
+      x-permission: staff.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewStaff'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Staff'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/staff/{staffId}:
+    patch:
+      operationId: updateStaff
+      tags: [staff]
+      summary: Rename, deactivate or reassign a staff member
+      description: |
+        Fields left out stay as they are. `outlet_roles`, when present, replaces the whole
+        assignment. Only an owner can change an owner.
+      x-permission: staff.manage
+      parameters:
+        - $ref: '#/components/parameters/StaffId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StaffUpdate'
+      responses:
+        '200':
+          description: The updated staff member
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Staff'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/staff/{staffId}/pin:
+    put:
+      operationId: setStaffPin
+      tags: [staff]
+      summary: Set or rotate a staff member's PIN
+      description: |
+        4 to 6 digits, not all the same and not a run like 1234. The PIN is stored as an argon2id
+        hash and reaches paired devices at their next sync. A PIN switches who is recorded as
+        acting on a device; it is not a security boundary.
+      x-permission: staff.manage
+      parameters:
+        - $ref: '#/components/parameters/StaffId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPinRequest'
+      responses:
+        '204':
+          description: PIN set
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: Paired devices, a page at a time
+      description: Owners see every device; others only those at outlets where they can manage devices.
+      x-permission: device.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of devices ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DevicePage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/devices/pair:
+    post:
+      operationId: pairDevice
+      tags: [devices]
+      summary: Pair a tablet with an outlet
+      description: |
+        The owner or manager signs in on the tablet, picks an outlet and calls this. The response
+        carries the device secret **once**; the server keeps only a hash, so a lost secret means
+        pairing again. The device code (the middle of receipt numbers) is never reused.
+      x-permission: device.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewDevice'
+      responses:
+        '201':
+          description: Paired
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairedDevice'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/devices/token:
+    post:
+      operationId: exchangeDeviceToken
+      tags: [devices]
+      summary: Trade a device secret for an access token
+      description: |
+        Device access tokens last 30 minutes. A revoked device is refused here with
+        `device_revoked`, which is how revocation reaches a tablet that comes back online.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: A device access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSession'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/devices/{deviceId}:
+    delete:
+      operationId: revokeDevice
+      tags: [devices]
+      summary: Revoke a device
+      description: |
+        Its next token exchange fails and requests with a token it already holds fail at once.
+        Revoking twice is not an error. The device code is not reused.
+      x-permission: device.manage
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '204':
+          description: Revoked
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/pos/roster:
+    get:
+      operationId: getRoster
+      tags: [devices]
+      summary: What a paired device needs to start working
+      description: |
+        The device's own record, its outlet and settings, and the active staff who work there with
+        their PIN hashes and permissions, so the tablet can check PINs and enforce permissions
+        offline. PIN hashes are argon2id PHC strings. This is a convenience switch, not a security
+        boundary (docs/BACKEND_PLAN.md section 4.3).
+      security:
+        - deviceAuth: []
+      responses:
+        '200':
+          description: The roster
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Roster'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/entitlements:
+    get:
+      operationId: getEntitlements
+      tags: [entitlements]
+      summary: Modules, limits and flags that apply to the business
+      description: |
+        Resolved as tenant override (unless expired), then plan, then default. A module that is off
+        answers its endpoints with `403 module_disabled`; a limit that would be exceeded answers
+        creation with `403 limit_reached`. Cached for up to 30 seconds.
+      responses:
+        '200':
+          description: The snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entitlements'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/pos/receipt-test:
+    get:
+      operationId: getReceiptTest
+      tags: [devices]
+      summary: A sample receipt priced with the outlet's real settings
+      description: |
+        For the POS hardware spike: the outlet's header and footer, and a made-up sale priced with
+        its tax, service charge and cash rounding, numbered with the device's code. It is a preview
+        of the bill calculation in docs/BACKEND_PLAN.md section 4.8, without discounts; real sales
+        arrive in Phase 1. Money is integer rupiah.
+      security:
+        - deviceAuth: []
+      responses:
+        '200':
+          description: The sample receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceiptTest'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /admin/auth/login:
+    post:
+      operationId: adminLogin
+      tags: [admin]
+      summary: Operator password step
+      description: |
+        Returns a challenge token valid for 5 minutes. It is not a session: exchange it with a TOTP
+        or recovery code at `/admin/auth/totp/verify`. Unknown operators and wrong passwords look
+        the same.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Password accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorChallenge'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/auth/totp/verify:
+    post:
+      operationId: adminVerifyTotp
+      tags: [admin]
+      summary: Operator second step
+      description: |
+        A TOTP code works once; so does each recovery code. The first successful code confirms
+        enrolment. The session lasts one hour; there is no refresh, sign in again.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorVerifyRequest'
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorSession'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/audit-log:
+    get:
+      operationId: adminListAuditLog
+      tags: [admin]
+      summary: Platform audit log, newest first
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of entries; `next_cursor` leads to older ones
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+components:
+  securitySchemes:
+    userAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token of an owner or manager (audience `tenant`), from `POST /v1/auth/login`.
+    operatorAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Operator session token (audience `operator`), from `/admin/auth/totp/verify`.
+    deviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token of a paired device (audience `device`), from `POST /v1/devices/token`.
+
+  parameters:
+    OutletId:
+      name: outletId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    StaffId:
+      name: staffId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DeviceId:
+      name: deviceId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Cursor:
+      name: cursor
+      in: query
+      description: The `next_cursor` of the previous page. Leave out for the first page.
+      schema:
+        type: string
+        format: uuid
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+
+  responses:
+    ValidationFailed:
+      description: The request is malformed or breaks a rule (`validation_failed`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unauthorized:
+      description: Missing, invalid or expired credentials (`invalid_credentials`, `invalid_token`, `token_reused`).
+      headers:
+        WWW-Authenticate:
+          schema: {type: string}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Forbidden:
+      description: Authenticated but not allowed (`forbidden`, `email_not_verified`, `no_tenant`, `tenant_suspended`, `device_revoked`, `module_disabled`, `limit_reached`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    NotFound:
+      description: No such resource in this business (`not_found`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Conflict:
+      description: The request conflicts with current state (`conflict`, `tenant_required`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Unavailable:
+      description: The operator console is not enabled on this server (`admin_disabled`).
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    TooManyRequests:
+      description: Rate limit hit (`rate_limited`). Retry after the number of seconds in `Retry-After`.
+      headers:
+        Retry-After:
+          schema: {type: integer}
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem details with a stable machine-readable `code`.
+      required: [type, title, status, code]
+      properties:
+        type:
+          type: string
+          description: A URI naming the problem type; `about:blank` when `code` says it all.
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+          description: Stable, language-neutral code. Clients switch on this.
+          example: validation_failed
+        detail:
+          type: string
+          description: Human-readable explanation. Not stable; do not parse it.
+        request_id:
+          type: string
+        tenant_ids:
+          type: array
+          description: With `tenant_required`, the businesses the account can sign in to.
+          items: {type: string, format: uuid}
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, maxLength: 254}
+        password: {type: string, maxLength: 256}
+        tenant_id:
+          type: string
+          format: uuid
+          description: Which business to sign in to, for accounts that belong to several.
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token: {type: string, maxLength: 512}
+
+    VerifyEmailRequest:
+      type: object
+      required: [token]
+      properties:
+        token: {type: string, maxLength: 512}
+
+    ResendVerificationRequest:
+      type: object
+      required: [email]
+      properties:
+        email: {type: string, maxLength: 254}
+
+    Session:
+      type: object
+      required: [token_type, access_token, access_expires_at, refresh_token, refresh_expires_at, tenant_id, user_id]
+      properties:
+        token_type: {type: string, enum: [Bearer]}
+        access_token: {type: string}
+        access_expires_at: {type: string, format: date-time}
+        refresh_token: {type: string}
+        refresh_expires_at: {type: string, format: date-time}
+        tenant_id: {type: string, format: uuid}
+        user_id: {type: string, format: uuid}
+
+    User:
+      type: object
+      required: [id, email, email_verified, locale]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string}
+        email_verified: {type: boolean}
+        locale: {type: string, enum: [id-ID, en]}
+
+    TenantSummary:
+      type: object
+      required: [id, name, slug, subscription_status]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        slug: {type: string}
+        subscription_status:
+          type: string
+          enum: [early_access, trialing, active, past_due, grace, read_only, canceled]
+
+    Me:
+      type: object
+      required: [user, tenant, is_owner, permissions]
+      properties:
+        user: {$ref: '#/components/schemas/User'}
+        tenant: {$ref: '#/components/schemas/TenantSummary'}
+        is_owner: {type: boolean}
+        permissions:
+          type: array
+          description: Every permission the user holds at any outlet. An owner holds all of them.
+          items: {type: string, example: staff.manage}
+
+    Role:
+      type: object
+      required: [id, name, is_system, permissions]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        is_system: {type: boolean}
+        permissions:
+          type: array
+          items: {type: string, example: sale.void}
+
+    OutletRole:
+      type: object
+      required: [outlet_id, role_id]
+      properties:
+        outlet_id: {type: string, format: uuid}
+        role_id: {type: string, format: uuid}
+
+    Staff:
+      type: object
+      required: [id, display_name, active, has_pin, is_owner, outlet_roles, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        user_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Set when the person also signs in by email.
+        display_name: {type: string, maxLength: 60}
+        active: {type: boolean}
+        has_pin: {type: boolean}
+        pin_rotated_at: {type: string, format: date-time, nullable: true}
+        is_owner: {type: boolean}
+        outlet_roles:
+          type: array
+          items: {$ref: '#/components/schemas/OutletRole'}
+        created_at: {type: string, format: date-time}
+
+    StaffPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Staff'}
+        next_cursor:
+          type: string
+          format: uuid
+          description: Pass as `cursor` for the next page; absent on the last page.
+
+    NewStaff:
+      type: object
+      required: [display_name]
+      properties:
+        display_name: {type: string, maxLength: 60}
+        outlet_roles:
+          type: array
+          items: {$ref: '#/components/schemas/OutletRole'}
+        pin:
+          type: string
+          description: Optional; can be set later with `PUT /v1/staff/{staffId}/pin`.
+
+    StaffUpdate:
+      type: object
+      properties:
+        display_name: {type: string, maxLength: 60}
+        active: {type: boolean}
+        outlet_roles:
+          type: array
+          items: {$ref: '#/components/schemas/OutletRole'}
+
+    SetPinRequest:
+      type: object
+      required: [pin]
+      properties:
+        pin: {type: string, minLength: 4, maxLength: 6}
+
+    OutletSettings:
+      type: object
+      required: [timezone, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer]
+      properties:
+        timezone: {type: string, enum: [Asia/Jakarta, Asia/Makassar, Asia/Jayapura]}
+        price_includes_tax: {type: boolean}
+        tax_rate_bp: {type: integer, minimum: 0, maximum: 10000, description: Basis points; 1100 is 11%.}
+        service_charge_rate_bp: {type: integer, minimum: 0, maximum: 10000}
+        service_charge_taxable: {type: boolean}
+        cash_rounding_unit: {type: integer, minimum: 0, description: Rupiah; 0 means no rounding.}
+        cash_rounding_mode: {type: string, enum: [nearest, down, up]}
+        receipt_header: {type: string}
+        receipt_footer: {type: string}
+
+    Outlet:
+      type: object
+      required: [id, code, name, address, settings]
+      properties:
+        id: {type: string, format: uuid}
+        code:
+          type: string
+          description: Two to six uppercase letters or digits; the prefix of receipt numbers.
+        name: {type: string}
+        address: {type: string}
+        settings: {$ref: '#/components/schemas/OutletSettings'}
+
+    Device:
+      type: object
+      required: [id, outlet_id, device_code, name, paired_by, paired_at]
+      properties:
+        id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        device_code:
+          type: integer
+          minimum: 1
+          description: The middle of receipt numbers, `{outlet_code}-{device_code}-{counter}`; shown with at least two digits. Unique per outlet and never reused.
+        name: {type: string}
+        paired_by: {type: string, format: uuid}
+        paired_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time, nullable: true}
+        last_seen_at: {type: string, format: date-time, nullable: true}
+        last_sync_at: {type: string, format: date-time, nullable: true}
+        app_version: {type: string, nullable: true}
+        clock_skew_ms:
+          type: integer
+          nullable: true
+          description: Server time minus device time. Positive means the device clock is behind.
+
+    DevicePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Device'}
+        next_cursor: {type: string, format: uuid}
+
+    NewDevice:
+      type: object
+      required: [outlet_id, name]
+      properties:
+        outlet_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60, example: Kasir 1}
+
+    PairedDevice:
+      type: object
+      required: [device, device_secret]
+      properties:
+        device: {$ref: '#/components/schemas/Device'}
+        device_secret:
+          type: string
+          description: Shown once. Store it on the device; the server keeps only a hash.
+
+    DeviceTokenRequest:
+      type: object
+      required: [device_secret]
+      properties:
+        device_secret: {type: string, maxLength: 512}
+        app_version: {type: string, maxLength: 40}
+        client_time:
+          type: string
+          format: date-time
+          description: The device's clock, so the server can record how far off it is.
+
+    DeviceSession:
+      type: object
+      required: [token_type, access_token, access_expires_at, device_id, outlet_id, tenant_id]
+      properties:
+        token_type: {type: string, enum: [Bearer]}
+        access_token: {type: string}
+        access_expires_at: {type: string, format: date-time}
+        device_id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        tenant_id: {type: string, format: uuid}
+
+    RosterStaff:
+      type: object
+      required: [id, display_name, permissions]
+      properties:
+        id: {type: string, format: uuid}
+        display_name: {type: string}
+        pin_hash:
+          type: string
+          nullable: true
+          description: argon2id in PHC format; null if the person has no PIN yet.
+        permissions:
+          type: array
+          description: What the person may do at this outlet.
+          items: {type: string, example: sale.void}
+
+    Roster:
+      type: object
+      required: [device, outlet, staff, generated_at]
+      properties:
+        device: {$ref: '#/components/schemas/Device'}
+        outlet: {$ref: '#/components/schemas/Outlet'}
+        staff:
+          type: array
+          items: {$ref: '#/components/schemas/RosterStaff'}
+        generated_at: {type: string, format: date-time}
+
+    Entitlement:
+      type: object
+      required: [key, kind, category, value, source]
+      properties:
+        key: {type: string, example: limit.devices}
+        kind: {type: string, enum: [bool, int]}
+        category: {type: string, enum: [module, limit, flag]}
+        value:
+          type: integer
+          format: int64
+          description: 0 or 1 for a bool; a count for a limit, or -1 for unlimited.
+        source: {type: string, enum: [default, plan, override]}
+
+    Entitlements:
+      type: object
+      required: [items, generated_at]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Entitlement'}
+        generated_at: {type: string, format: date-time}
+
+    ReceiptTest:
+      type: object
+      required: [outlet, header, footer, receipt_number, printed_at, lines, subtotal, service_charge, tax, tax_included, total, rounding_amount, cash_total, pricing_version]
+      properties:
+        outlet:
+          type: object
+          required: [code, name, address, timezone]
+          properties:
+            code: {type: string}
+            name: {type: string}
+            address: {type: string}
+            timezone: {type: string}
+        header: {type: string}
+        footer: {type: string}
+        receipt_number:
+          type: string
+          example: JKT1-01-000001
+          description: "`{outlet_code}-{device_code:02d}-{counter:06d}`; the counter is always 1 here."
+        printed_at: {type: string, format: date-time}
+        lines:
+          type: array
+          items:
+            type: object
+            required: [name, quantity, unit_price, amount]
+            properties:
+              name: {type: string}
+              quantity: {type: integer}
+              unit_price: {type: integer, format: int64}
+              amount: {type: integer, format: int64}
+        subtotal: {type: integer, format: int64}
+        service_charge: {type: integer, format: int64}
+        tax: {type: integer, format: int64}
+        tax_included:
+          type: boolean
+          description: True when prices already include the tax, so it is shown but not added to the total.
+        total: {type: integer, format: int64}
+        rounding_amount:
+          type: integer
+          format: int64
+          description: Cash rounding, applied to a cash tender only.
+        cash_total: {type: integer, format: int64, description: total plus rounding_amount}
+        pricing_version: {type: string, example: sample-0}
+
+    OperatorChallenge:
+      type: object
+      required: [challenge_token, challenge_expires_at, totp_enrolled]
+      properties:
+        challenge_token: {type: string}
+        challenge_expires_at: {type: string, format: date-time}
+        totp_enrolled: {type: boolean, description: False until the first successful code.}
+
+    OperatorVerifyRequest:
+      type: object
+      required: [challenge_token]
+      properties:
+        challenge_token: {type: string, maxLength: 1024}
+        code: {type: string, maxLength: 12, description: The 6-digit TOTP code.}
+        recovery_code: {type: string, maxLength: 40}
+
+    OperatorSession:
+      type: object
+      required: [token_type, access_token, access_expires_at, operator_id]
+      properties:
+        token_type: {type: string, enum: [Bearer]}
+        access_token: {type: string}
+        access_expires_at: {type: string, format: date-time}
+        operator_id: {type: string, format: uuid}
+
+    AuditEntry:
+      type: object
+      required: [id, action, target_type, reason, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        operator_id: {type: string, format: uuid, nullable: true}
+        action: {type: string, example: tenant.suspended}
+        target_type: {type: string}
+        target_id: {type: string, format: uuid, nullable: true}
+        tenant_id: {type: string, format: uuid, nullable: true}
+        before: {nullable: true, description: State before the action, as JSON.}
+        after: {nullable: true, description: State after the action, as JSON.}
+        reason: {type: string}
+        ip: {type: string}
+        user_agent: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    AuditLogPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AuditEntry'}
+        next_cursor: {type: string, format: uuid}

@@ -22,7 +22,8 @@ totals.
 These come from the ADRs and are not re-argued here.
 
 1. **One Go binary, one PostgreSQL database** (ADR 0002). Modules have clear boundaries inside one
-   process. There are no microservices, no Redis and no message broker.
+   process. There are no microservices and no message broker, and no Redis until one of the
+   triggers in section 4.13 applies.
 2. **The OpenAPI document is the contract** (ADR 0003). Server stubs and the TypeScript client are
    generated from it, and CI fails when the generated code is stale.
 3. **Every business table has `tenant_id` from the first migration**, and `outlet_id` where the
@@ -56,7 +57,7 @@ The ADRs suggest these as defaults. This plan adopts them so the choices are mad
 | Logging | `log/slog`, JSON | Request id, tenant id and actor on every line |
 | Errors | Sentry SDK (or self-hosted GlitchTip, same SDK) | |
 | Tests | standard `testing` + `testcontainers-go` for Postgres | Real Postgres, no mocks of the DB |
-| Lint | `golangci-lint` | `govet`, `staticcheck`, `errcheck`, `gosec`, `depguard` (module boundaries) |
+| Lint | `golangci-lint` | `govet`, `staticcheck`, `errcheck`, `gosec`, `errorlint`, `sqlclosecheck`; module boundaries by `internal/archtest` |
 | Email | Transactional provider behind an interface (for example Postmark or Resend) | Needed in Phase 0 for owner verification |
 
 ---
@@ -99,7 +100,8 @@ orion-pos-backend/
 
 - Each module exposes a small Go interface (`internal/<module>/service.go`). Other modules import
   only that interface, never another module's `db` package or tables.
-- `depguard` rules in `golangci-lint` enforce this, since the compiler will not (ADR 0002).
+- A test in `internal/archtest` enforces this from `go list`, since the compiler will not
+  (ADR 0002). It is simpler and stricter than `depguard` rules for this shape of rule.
 - Cross-module writes that must be atomic (for example a sale consuming stock) share one
   transaction through `kernel.Tx`, passed in by the caller. The consuming module still writes only
   its own tables.
@@ -175,8 +177,98 @@ Notes:
   pull. This trade-off should be written up as an ADR.
 - Signing keys: one per audience, from environment/secret store, with a `kid` header so they can
   be rotated.
-- Rate limits (in-process token bucket keyed by IP and account, good enough for one instance):
+- Rate limits (in-process token bucket keyed by IP and account, good enough for one instance;
+  see section 4.13 for when they move to Redis):
   login, pairing, PIN-rotation, signup, promo-code redemption.
+
+#### 4.3.1 Sessions as built (B0.6)
+
+- **Tokens carry their tenant.** Refresh tokens, verification links and device secrets are
+  `<prefix>.<tenant id>[.<id>].<256-bit secret>`, and only the SHA-256 of the secret is stored.
+  A lookup therefore runs inside that tenant's row-level security like any other query, with no
+  cross-tenant read to find the row first.
+- **The one pre-tenant lookup is login.** Finding an account by email happens before a tenant is
+  known, so it goes through `auth_find_user(email)`, a `SECURITY DEFINER` function that returns one
+  row. Everything else stays under row-level security: `user_account` is visible to `orion_app`
+  only while the user is a member of the current tenant, and `orion_app` has no `SELECT` on
+  `password_hash` at all. Unknown email and wrong password cost the same (a dummy hash is checked)
+  and give the same error.
+- **Accounts may belong to several tenants.** Login takes an optional `tenant_id`; with several
+  memberships and none given, it answers `409 tenant_required` listing the ids. Names are not
+  listed yet because that would mean reading tenants before one is chosen.
+- **Email must be verified to sign in.** Accounts made by an operator, a seed or a signup that
+  already confirmed the address are created verified.
+- **Rotation and reuse.** A refresh token works once. Presenting a used one revokes its whole
+  family (`token_reused`) and commits that before reporting it. There is no grace window for a
+  lost response, so a client that retries a refresh after a network failure must be prepared to
+  sign in again; add a short grace period if the pilot shows this hurting.
+- **Every request to a user route reloads membership** (one indexed query) and checks the tenant
+  is not suspended (one primary-key read), so removing a member or suspending a business takes
+  effect at once instead of when the access token expires. Both are cache candidates (section
+  4.13) when measured, not before.
+- **Jobs carry ids, never secrets.** The verification job holds `tenant_id` and `user_id`; the
+  worker mints the token, stores its hash and sends the email. `river_job` is readable by
+  `orion_app` (an insert returns the row), so nothing in it may be a credential.
+- **The worker runs as `orion_platform`**, because jobs such as the token purge span tenants.
+- Rate limits, per process: login 20 per address (refill 1 per 3 s) and 5 per account (refill 1
+  per minute); token exchange 30 per address (1 per s); verification email 5 per address and 3
+  per account.
+- Differences from the table in 6.1: emails are stored lowercase with a `CHECK` instead of
+  `citext`; `refresh_token` is tenant-scoped (operators get their own table in B0.10); the OpenAPI
+  document is 3.0.3 because the code generator supports it fully; `POST
+  /v1/auth/resend-verification` was added so an unverified owner is never stuck.
+
+#### 4.3.2 Device pairing as built (B0.8)
+
+- **Pair.** A user with `device.manage` at an outlet calls `POST /v1/devices/pair`. The response
+  carries the secret once, as `dk1.<tenant id>.<device id>.<256-bit secret>`; only its SHA-256 is
+  stored, so a lost secret means pairing again. Pairing, like every limit check, runs after
+  `LockTenant` (the check itself arrives with B0.9).
+- **Device codes** come from a per-outlet counter (`device_code_counter`, an upsert), not
+  `max()+1`, so revoking the newest device never frees its code. Receipts show it with at least two
+  digits, `{outlet}-{code:02d}-{counter}`.
+- **Exchange.** `POST /v1/devices/token` trades the secret for a 30 minute access token
+  (`aud=device`, claims `tid`, `did`, `oid`) signed with the device key. It also records the app
+  version and the clock skew (server minus device) for the "stopped syncing" support view.
+- **Revocation is immediate.** Every request to a device route reloads the device (one primary-key
+  read, with `last_seen_at` refreshed at most once a minute), so a revoked device fails with
+  `device_revoked` while its token is still valid, and cannot get a new one. This is stricter than
+  ADR 0004 requires; the offline tablet itself can still sell until it reconnects.
+- **Roster.** `GET /v1/pos/roster` returns the device, its outlet with settings, and the active
+  staff assigned to that outlet plus owners, each with their PIN hash (null until set) and their
+  permissions at that outlet. Two queries however many people there are. The sync pull (Phase 1)
+  will deliver later changes to the same data; the roster is the first load.
+- Device access tokens cannot call user routes and user tokens cannot call device routes: they use
+  different keys and audiences.
+- Revoking and pairing are written to `tenant_audit_log`; a token exchange is not (too frequent).
+
+#### 4.3.3 Operators as built (B0.10)
+
+- **Separate world.** `operator`, `operator_recovery_code` and `platform_audit_log` are readable only
+  through `orion_platform`; `orion_app` has no privilege on them (a schema test checks every
+  privilege). Operator tokens use `aud=operator` and their own signing keys
+  (`ORION_JWT_OPERATOR_KEYS`), so no tenant or device token can be one.
+- **Two steps, always.** `POST /admin/auth/login` checks the password and returns a 5 minute
+  challenge, which is not a session. `POST /admin/auth/totp/verify` takes a TOTP code or a recovery
+  code and returns a 1 hour session. Unknown operator, wrong password, wrong code and disabled
+  account give the same `invalid_credentials`. There is no refresh token: an operator signs in
+  again each hour, which is acceptable for a handful of people (add one if it hurts).
+- **Codes work once.** The last accepted TOTP time step is stored, under a row lock, so a code
+  cannot be replayed within its window and two simultaneous uses of one code produce one session
+  (tested). Each challenge allows five guesses, and each address and account are limited too.
+- **Enrolment** happens through the CLI: `orion admin create-operator` prints a generated password,
+  the TOTP secret and URI, and ten recovery codes, once. Recovery codes are 80-bit random values
+  stored as SHA-256. The first successful code confirms enrolment. TOTP seeds are encrypted with
+  AES-256-GCM (`kernel.Box`, key `ORION_SECRETS_KEY`, bound to the operator's id) because they must
+  be read back. **Losing that key locks every operator out**, so it is backed up separately from the
+  database, in the secret store.
+- **Audit.** Every operator action writes `platform_audit_log` in the same transaction as the
+  change, with before and after state, the operator, the address, the user agent and a required
+  reason; sign-ins, enrolment and recovery-code use are logged too. The first operator is created
+  with no actor (there is nobody to attribute it to); every later one needs `--operator`.
+  `GET /admin/audit-log` pages newest first.
+- **Console off by default.** `orion serve` mounts `/admin` working only when
+  `ORION_PLATFORM_DATABASE_URL` is set; otherwise those routes answer `503 admin_disabled`.
 
 ### 4.4 Roles and permissions
 
@@ -191,6 +283,36 @@ ADR 0002 requires roles from the start.
 - The device receives the roster with each person's permissions so checks work offline. The server
   **re-checks on push**: a void by someone without `sale.void` at event time is accepted (the money
   already moved) but flagged for review, not silently dropped.
+
+#### 4.4.1 Roles, staff and PINs as built (B0.7)
+
+- Fourteen permissions live in `internal/identity/permissions.go`; the HTTP layer reads each
+  operation's `x-permission` from the OpenAPI document and refuses to start if one is not in that
+  list. System roles are seeded with the tenant: Owner (all), Manager (all but `settings.manage`),
+  Cashier (`sale.create`, `shift.open`, `shift.close`), Kitchen (`kitchen.view`).
+- **Owners are members with `is_owner`, not a role.** They may do anything, so an owner never
+  depends on role rows. Everyone else gets permissions from their staff record's role assignments
+  per outlet (`staff_outlet_role`); an inactive staff record holds none.
+- **No privilege escalation.** To assign a role the caller needs `staff.manage` at that outlet and
+  must hold every permission of the role there; a manager cannot make an Owner. Only an owner
+  can change an owner's record or PIN.
+- **A staff record is for anyone who acts**, signed in by email or not. Members created with
+  `CreateMember` get one automatically; cashiers are created with `POST /v1/staff` and have no
+  email. Removing a membership keeps the staff row (sales will point at it) and clears `user_id`.
+- **PINs.** 4 to 6 digits, no repeats or runs. Stored as argon2id (m=19 MiB, t=2, p=1), cheap on
+  purpose because tablets check them offline, often in WebAssembly. The cashier picks their name
+  and then types the PIN, so PINs need not be unique and the server never has to compare them. As
+  section 4.3 says, a PIN is a convenience switch, not a security boundary: anyone who holds a
+  device's storage can brute-force 10^4 to 10^6 values whatever the cost. What bounds the damage
+  is that hashes go only to paired, non-revoked devices, that permissions are enforced by role on
+  push, and that a manager can rotate a PIN. This is the text for the ADR the plan asks for.
+- Staff changes go to `change_log` with `outlet_id` null (every outlet); the pull will filter by
+  assignment. PIN changes, staff creation and updates, and new members are written to
+  `tenant_audit_log` in the same transaction, with the acting user and address and never the PIN.
+- Bulk inserts use `INSERT ... SELECT unnest(...)`, not `COPY`: Postgres refuses `COPY FROM` into
+  tables with row-level security.
+- Staff lists page by id and load their outlet roles with one extra query, whatever the page
+  size; a test counts queries for 1 and for 50 rows and requires them to be equal.
 
 ### 4.5 Entitlements and feature flags
 
@@ -218,11 +340,31 @@ Rules:
 
 - Turning a module off **hides** it: endpoints return `403 module_disabled`, data stays.
 - Limits are checked at the point of creation (new outlet, pairing a device, adding staff), inside
-  the same transaction, with `SELECT ... FOR UPDATE` on the tenant row to avoid races.
+  the same transaction, after `kernel.LockTenant` (`SELECT ... FOR NO KEY UPDATE` on the tenant
+  row) to avoid races. See section 4.12 for the lock order.
 - The snapshot sent to the POS carries `expires_at` (for example 7 days). The POS applies it at the
   next sync and never mid-shift.
 - In-process cache with a 30-second TTL, invalidated on write. One instance means no distributed
   cache problem.
+
+#### 4.5.1 Entitlements as built (B0.9)
+
+- Values are integers: 0 or 1 for a bool, a count for a limit, `-1` for unlimited. Five keys are
+  seeded (`module.inventory`, `module.restaurant`, `limit.outlets`, `limit.devices`,
+  `limit.staff`); early access turns every module on and every limit off. Adding a key is a
+  migration.
+- Snapshots are cached in process for 30 s. Overrides are written by operator commands in another
+  process, so the TTL, not invalidation, bounds staleness; that is acceptable for modules and flags.
+- **Limits are never read from the cache.** `Resolver.CheckLimit` reads inside the creating
+  transaction, after `LockTenant`, with the current count, so an override applies at once and two
+  requests cannot both take the last slot (a test races ten tablets for three slots).
+  `limit.devices` counts devices that are not revoked, `limit.staff` active staff records;
+  `limit.outlets` is checked when outlet creation arrives with signup (Phase 2).
+- `403 limit_reached` and `403 module_disabled` are the error codes. `RequireModule` is ready for
+  the first module-gated endpoint (Phase 3).
+- The resolver reads the tenant's `plan_id` straight from the `tenant` row, the one place a module
+  reads another module's table: going through tenancy would make an import cycle, and the read is
+  one column.
 
 ### 4.6 Tenant plan fields (Phase 0, first migration)
 
@@ -317,6 +459,89 @@ trigger that raises on update or delete as a backstop.
   makes that simpler.
 - Per-device `last_seen_at`, `last_sync_at`, `app_version`, `clock_skew_ms` for support and the
   admin "stopped syncing" view.
+
+### 4.12 Database conventions: indexes, N+1 queries and deadlocks
+
+**Indexes are added when a query needs one**, not for every column or foreign key. Each index is
+justified by a real access path (a list endpoint, the sync pull, a report, a hot FK check), and
+the reason is written next to it in the migration. In Postgres, primary keys and UNIQUE
+constraints already create indexes, so most tenant-scoped lookups are covered by putting
+`tenant_id` first in those constraints. Before an endpoint that lists or aggregates ships, run
+`EXPLAIN (ANALYZE, BUFFERS)` on it against realistic data (for example the seeded demo tenant
+scaled up) and add an index only if the plan shows a scan that grows with the table. Likely
+candidates later: `sale (tenant_id, outlet_id, business_date)` for reports,
+`stock_movement (tenant_id, outlet_id, ingredient_id, occurred_at)` for movement history,
+partial indexes such as `payment_intent (status) WHERE status = 'pending'` for jobs.
+
+**No N+1 queries.**
+
+- A list endpoint makes a fixed number of queries whatever the page size: one query with JOINs
+  for one-to-one data (outlets with their settings), and one batched query per child collection
+  (`WHERE sale_id = ANY($1::uuid[])`) assembled in Go for one-to-many data (sales with lines).
+- Loops that write many rows (sale lines, ledger rows, imported catalog rows) use
+  `pgx.Batch` or a single `INSERT ... SELECT unnest($1::uuid[], ...)`, not one round trip per
+  row. `COPY` is not an option on tenant tables: Postgres refuses `COPY FROM` into tables with
+  row-level security.
+- The pull endpoint loads each entity type for all changed ids in one query.
+- The check: tests for list endpoints assert the query count stays the same with 1 row and
+  50 rows, using the counting `pgx` tracer in `testdb` (`DB.Queries`). It arrived with the first
+  list that has children, the staff list.
+
+**Deadlocks.**
+
+- **Lock order:** a transaction that records a change (`record_change`) or checks a per-tenant
+  limit calls `kernel.LockTenant` first, before it locks or updates any other row. Every writer
+  for a tenant then queues on the same first lock, so no two transactions can each hold a row the
+  other needs. After that, rows of one table are locked in id order (`ORDER BY id FOR UPDATE`),
+  and tables in a fixed order: tenant, outlet, then the module's own rows.
+- `FOR NO KEY UPDATE` instead of `FOR UPDATE` on the tenant row, so inserts whose foreign keys
+  reference the tenant are never blocked by it.
+- Sync push holds no tenant-wide lock: each event is its own short transaction, and sales are
+  inserts. The stock balance upsert (Phase 3) touches one row per ingredient, so the projector
+  sorts a sale's ingredients by id before writing them.
+- **Short transactions:** no network calls inside a transaction. Gateway calls, emails and
+  other side effects go through jobs inserted in the same transaction.
+- **Bounded waits:** `kernel.TenantTx` sets `lock_timeout = 5s` per transaction, so a stuck
+  lock fails fast instead of exhausting the pool.
+- **Retry:** `kernel.TenantTx` reruns the transaction up to three times on a deadlock (`40P01`) or
+  serialization failure (`40001`), which is why the function it runs must have no side effects
+  outside the database.
+- A test runs 20 concurrent writers on one tenant and checks that change numbers stay gapless
+  with no deadlock (`internal/tenancy`).
+
+### 4.13 Queueing and caching
+
+**Queueing: yes, in PostgreSQL, with `river`** (ADR 0002). Jobs are inserted in the same
+transaction as the business write, so a job exists if and only if the write committed. A
+separate broker (Redis, RabbitMQ, SQS) cannot give that without an outbox table anyway. `river`
+arrives with the first real job, the verification email in B0.6, and `orion worker` starts then.
+Section 8 lists the jobs by phase. The expected load (a few thousand jobs per day per hundred
+tenants) is far inside what a Postgres queue handles.
+
+**Caching: in-process first, Redis only when there is a concrete reason.** With one API
+instance:
+
+| What | Cache | Why it is enough |
+|---|---|---|
+| Entitlements snapshot (4.5) | In-process, 30 s TTL, invalidated on write | Read on most requests, changes rarely |
+| JWT signing keys, plan list | In memory, loaded at start | Tiny and static |
+| Rate limits (4.3) | In-process token buckets | One instance sees every request |
+| Sync pull responses | None | The `change_log` cursor already makes a pull cheap |
+| Reports | None at first; a rollup table (`end_of_day_rollup` job) if `EXPLAIN` shows they are slow | A summary table in Postgres beats a cache that can go stale |
+
+Every cache sits behind a small interface (`Get`, `Set`, `Invalidate`), so switching one to
+Redis is a local change.
+
+**Add Redis when one of these is true:**
+
+- the API runs as **more than one instance**, so rate limits and cache invalidation must be
+  shared (rate limits go first, since per-instance limits multiply);
+- the Phase 4 open-bill fan-out (SSE) spans several instances. Postgres `LISTEN/NOTIFY` should
+  be tried first;
+- profiling shows a hot read that a Postgres index or a summary table cannot fix.
+
+Until then Redis would be one more thing to deploy, secure, back up and monitor for one
+developer, with no measurable gain.
 
 ---
 
@@ -436,7 +661,7 @@ tables), `created_at`, `updated_at` where mutable.
 | Table | Key columns |
 |---|---|
 | `tenant` | `name`, `slug`, plan fields (4.6), `change_seq`, `suspended_at` |
-| `outlet` | `tenant_id`, `name`, `code` (short, for receipts, unique per tenant), `address`, `timezone` |
+| `outlet` | `tenant_id`, `name`, `code` (short, for receipts, unique per tenant), `address` (the timezone lives in `outlet_settings`) |
 | `outlet_settings` | `outlet_id`, tax/service/rounding/time (4.8), `receipt_header`, `receipt_footer` |
 | `user_account` | `email` (citext, unique), `password_hash`, `email_verified_at`, `locale` |
 | `tenant_member` | `tenant_id`, `user_id`, `is_owner` |
@@ -631,20 +856,20 @@ Task ids (`B0.1` ...) are meant to become GitHub issues.
 
 | Id | Task | Size |
 |---|---|---|
-| B0.1 | Repo bootstrap: `go.mod`, Makefile, `golangci-lint` with `depguard`, GitHub Actions (lint, test with Postgres service, `make gen` + `git diff --exit-code`), Dockerfile, `docker compose` for local Postgres | 2d |
-| B0.2 | `cmd/orion` with `serve`, `migrate`, `worker` subcommands; config from env; graceful shutdown; `/healthz`, `/readyz`; slog; Sentry | 1d |
-| B0.3 | OpenAPI pipeline: `api/openapi.yaml`, `oapi-codegen` strict server, problem+json errors, CI staleness check, publish TS types (option A in section 3) | 2d |
-| B0.4 | First migrations: roles `orion_app` / `orion_platform`, `tenant` with plan fields, `outlet`, `outlet_settings`, `plan` seeded with `early_access`, RLS policies, `change_log` | 2d |
-| B0.5 | `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `Tx` helper that sets `app.tenant_id`, tenant context | 1d |
-| B0.6 | Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid` | 3d |
-| B0.7 | Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id) | 2d |
-| B0.8 | Device pairing, device token exchange, revocation, `device_code` allocation | 2d |
-| B0.9 | Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests) | 2d |
-| B0.10 | Platform: `operator`, TOTP enrolment and login, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set flag, override entitlement, suspend tenant), each writing to the audit log | 3d |
-| B0.11 | Tenant isolation test suite (two tenants, every endpoint) | 1d |
-| B0.12 | Receipt test endpoint: returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |
+| B0.1 | ✅ Repo bootstrap: `go.mod`, Makefile, `golangci-lint` (+ `internal/archtest` for module boundaries), GitHub Actions (lint, tests on a testcontainers Postgres, `make gen` + `git diff --exit-code`), Dockerfile, `docker compose` for local Postgres | 2d |
+| B0.2 | ✅ `cmd/orion` with `serve` and `migrate` subcommands (`worker` arrived with `river` in B0.6); config from env; graceful shutdown; `/healthz`, `/readyz`; slog; Sentry | 1d |
+| B0.3 | ◐ OpenAPI pipeline: `api/openapi.yaml`, `oapi-codegen` strict server, problem+json errors, CI staleness check are done; access rules (`security`, `x-permission`) are read from the spec. **Still open:** publishing the TS types (option A in section 3), which waits on the registry decision | 2d |
+| B0.4 | ✅ First migrations: roles `orion_app` / `orion_platform`, `tenant` with plan fields, `outlet`, `outlet_settings`, `plan` seeded with `early_access`, RLS policies, `change_log` | 2d |
+| B0.5 | ✅ `kernel`: UUIDv7, `money` (integer, basis points, allocation), clock interface, `TenantTx` helper that sets `app.tenant_id`, lock timeout and deadlock retry, tenant context | 1d |
+| B0.6 | ✅ Identity: `user_account`, email+password login, email verification, refresh-token rotation with reuse detection, JWT per audience with `kid`; `river` and `orion worker` with the verification email and the token purge (see 4.3.1) | 3d |
+| B0.7 | ✅ Roles and permissions: tables, seeded system roles, permission middleware, `staff`, PIN set/rotate (argon2id), and the tenant audit log it needs (see 4.4.1) | 2d |
+| B0.8 | ✅ Device pairing, device token exchange, revocation, `device_code` allocation, and `GET /v1/pos/roster` (the roster download in the Phase 0 exit; see 4.3.2) | 2d |
+| B0.9 | ✅ Entitlements: tables, resolver, cache, `GET /v1/entitlements`, limit checks helper (always-allow on `early_access` but exercised in tests); enforced for devices and staff. Operator commands to set overrides arrive with B0.10 | 2d |
+| B0.10 | ✅ Platform: `operator`, TOTP sign-in, recovery codes, `platform_audit_log` (append-only enforced), `orion admin` CLI (create operator, set and clear entitlement overrides, suspend and reinstate tenants), each writing to the audit log with a required reason (see 4.3.3). Not built: operator refresh tokens, `set-flag` (flags are overrides) | 3d |
+| B0.11 | ✅ Tenant isolation suite (`internal/api/isolation_test.go`): two tenants, every tenant-side operation, a coverage test that fails when an operation has no case, and a sweep of every table with a `tenant_id` | 1d |
+| B0.12 | ✅ Receipt test endpoint (`GET /v1/pos/receipt-test`, device token; a made-up sale priced with the outlet's tax, service charge and cash rounding, numbered with the device code; a preview of 4.8 without discounts): returns outlet header/footer and a sample sale from real data, for the PWA hardware spike | 0.5d |
 | B0.13 | Ops: deploy target chosen (section 11), repeatable deploy from CI on tag, managed Postgres or pgBackRest with PITR, **restore drill documented in `docs/runbooks/restore.md` and done once** | 3d |
-| B0.14 | Seed command for a demo tenant (`orion admin seed-demo`) for front-end and MSW work | 0.5d |
+| B0.14 | ✅ Seed command for a demo tenant (`orion admin seed-demo`) for front-end and MSW work. `orion admin create-tenant` also exists (the rest of the `orion admin` CLI is B0.10) | 0.5d |
 
 **Done when** (backend side of the roadmap exit): a tablet can pair with an outlet, fetch a device
 token, download the staff roster with PIN hashes, and fetch receipt data from the deployed API;
