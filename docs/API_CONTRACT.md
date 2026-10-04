@@ -1,0 +1,519 @@
+# Orion API contract: the frontend guide
+
+For the people and AI agents building the **back office** (web) and the **POS** (the offline-first
+cashier tablet app). It says how to talk to the backend, what each screen calls, and the rules that
+are easy to get wrong. It describes what is **built today** (Phase 0 and Phase 1).
+
+**Sources of truth, in order:**
+
+1. `api/openapi.yaml`: every endpoint, request, response and error. Generate your client and types
+   from it; never hand-write them. If this guide and the spec disagree, the spec wins; tell us.
+2. `testdata/pricing-vectors/`: 51 golden bills. The POS must reproduce every one (section 7).
+3. This guide: the behaviour the spec cannot express (sync, offline rules, reports).
+4. `docs/BACKEND_PLAN.md`: why it is built this way.
+
+When the backend contract changes, `api/openapi.yaml` changes in the same commit and this guide is
+updated if behaviour changed. Check `git log -- api/openapi.yaml docs/API_CONTRACT.md` for what is
+new since you last looked.
+
+---
+
+## 1. Conventions
+
+| Topic | Rule |
+|---|---|
+| Base URL | `/` on the server (`:8080` locally). Every business endpoint is under `/v1`. Operator endpoints are under `/admin` and are not for the apps. |
+| Format | JSON, `snake_case` field names. Send `Content-Type: application/json`. Request bodies are at most 1 MB. |
+| Money | **Integer rupiah**, always. Never a float, never a string, never cents. Rates are **basis points** (`1100` = 11%). |
+| Time | RFC 3339 in UTC (`2026-10-04T08:30:00Z`). Dates (`business_date`, report `date`) are `YYYY-MM-DD`. Convert to the outlet's time zone only for display. |
+| Ids | UUIDs. The POS creates its own ids for events as **UUIDv7** (section 6). |
+| Paging | `?limit=` (1 to 200, default 50) and `?cursor=` set from the previous response's `next_cursor`. No `next_cursor` means the last page. Cursors are opaque: do not build or parse them. Some are UUIDs today; do not rely on it. |
+| Absent vs null | Optional fields are omitted or `null`; treat both as "not set". In a `PATCH`, a field you leave out is unchanged. |
+| Request id | Error bodies carry `request_id`; quote it when reporting a problem. |
+| Health | `GET /healthz` (alive), `GET /readyz` (database reachable). |
+| CORS | The server sets **no CORS headers yet**. A browser app on another origin needs a reverse proxy on the same origin, or a backend change. Ask before assuming. |
+
+### Errors
+
+Every error is `application/problem+json` (RFC 9457):
+
+```json
+{ "type": "about:blank", "title": "Forbidden", "status": 403, "code": "forbidden",
+  "detail": "you do not have permission: report.view", "request_id": "..." }
+```
+
+**Switch on `code`, never on `title` or `detail`.** `detail` is for logs and may change or be in
+either language. Show your own translated message per `code`.
+
+| Status | `code` | Meaning and what to do |
+|---|---|---|
+| 400 | `validation_failed` | The request is malformed or breaks a rule. `detail` names the field. Fix the input; do not retry as is. |
+| 401 | `invalid_credentials` | Wrong email/password (or operator code). |
+| 401 | `invalid_token` | The access token is missing, wrong, expired or already used. Refresh once, then sign in again. |
+| 401 | `token_reused` | A refresh token was used twice, so the whole session was revoked. Sign in again. |
+| 403 | `forbidden` | Signed in but lacks a permission or outlet. `detail` names the permission. Hide the control instead where you can. |
+| 403 | `email_not_verified` | Verify the email first (section 3.1). |
+| 403 | `no_tenant` | The account belongs to no business. |
+| 403 | `tenant_suspended` | The business is suspended. Show a blocking message. |
+| 403 | `device_revoked` | This tablet was revoked. Stop syncing, keep the outbox, show "ask the owner to pair this device again". |
+| 403 | `module_disabled` | The plan does not include this module. Hide it (see entitlements). |
+| 403 | `limit_reached` | A plan limit (devices, staff, outlets) is full. Say which; `detail` has the number. |
+| 404 | `not_found` | No such thing **in this business**. A resource of another business is also a 404, never a 403. |
+| 409 | `conflict` | The change clashes with current state (duplicate, already done). `detail` explains. |
+| 409 | `tenant_required` | At login: the account belongs to several businesses. `tenant_ids` lists them; ask which and login again with `tenant_id`. |
+| 413 | `payload_too_large` | Body over 1 MB. For a push, send fewer events. |
+| 429 | `rate_limited` | Wait `Retry-After` seconds (header) and retry. Login, token exchange, pairing and email endpoints are limited. |
+| 500 | `internal` | Our fault. Retry with backoff; quote `request_id` if it persists. |
+| 503 | `admin_disabled` | Operator console off. Not for the apps. |
+
+---
+
+## 2. Who calls what: three kinds of token
+
+Every request except the public ones carries `Authorization: Bearer <access_token>`. There are
+three kinds of token and an endpoint accepts only its own kind (using the wrong one is `401`).
+
+| Caller | Gets a token from | Lifetime | Used for |
+|---|---|---|---|
+| **User** (owner or manager, on the back office, or when pairing a tablet) | `POST /v1/auth/login` | access 15 min, refresh 30 days, single use | everything marked "user" below |
+| **Device** (a paired POS tablet) | `POST /v1/devices/token` with the stored device secret | 30 min | `/v1/sync/*`, `/v1/pos/*` |
+| **Operator** (Orion staff) | `/admin/auth/*` | short | `/admin/*`, not for the apps |
+
+Cashiers and baristas **never sign in with email**. They tap a PIN on the tablet, checked locally
+against the roster (section 5). The tablet itself authenticates as a device.
+
+Whether a user may call an endpoint is checked by the server from their role. `GET /v1/me` returns
+the permissions to drive the UI; the server still enforces them, so the UI is only convenience.
+
+### Permissions and the default roles
+
+`sale.create`, `sale.void`, `sale.refund`, `discount.apply_manual`, `drawer.open_no_sale`,
+`shift.open`, `shift.close`, `catalog.manage`, `inventory.manage`, `report.view`, `staff.manage`,
+`device.manage`, `settings.manage`, `kitchen.view`.
+
+| Role | Holds |
+|---|---|
+| Owner | all of them, at every outlet |
+| Manager | all except `settings.manage` |
+| Cashier | `sale.create`, `shift.open`, `shift.close` |
+
+Roles are assigned **per outlet** (`outlet_roles`), so a person can be manager at one outlet and
+cashier at another. `permissions` in `/v1/me` is the union over outlets; the roster gives the
+list for one outlet.
+
+---
+
+## 3. Back office (user token)
+
+### 3.1 Sign in and session
+
+| Call | Notes |
+|---|---|
+| `POST /v1/auth/login` `{email, password, tenant_id?}` | Public. Returns a `Session` (`access_token`, `refresh_token`, expiry times, `tenant_id`, `user_id`). `409 tenant_required` when `tenant_id` is needed. `403 email_not_verified` before verification. |
+| `POST /v1/auth/refresh` `{refresh_token}` | Public. Returns a new `Session`. **Every refresh token works once**: store the new pair before using it, and serialise refreshes (two tabs refreshing at once will trip `token_reused` and sign the user out). Refresh when the access token is about to expire or on the first `401 invalid_token`. |
+| `POST /v1/auth/logout` `{refresh_token}` | Public, idempotent (always `204`). |
+| `POST /v1/auth/verify-email` `{token}` | Public. The token comes in the email link. |
+| `POST /v1/auth/resend-verification` `{email}` | Public. Always `204`, whether or not the address exists. |
+| `GET /v1/me` | The user, the business (`subscription_status`), `is_owner`, `permissions[]`. Call after login to build the menu. |
+| `GET /v1/entitlements` | `items[]` of `{key, kind, category, value, source}`: modules on/off, limits (`-1` = unlimited), flags. Hide a module when its key is `0`. |
+
+Email delivery in this environment only writes to the server log (no real provider yet), so in
+development take the verification link from the worker's log. The seeded demo business
+(`./bin/orion admin seed-demo`) is already verified: `owner@demo.orion.test` / `demo-password-1`.
+
+### 3.2 Business, outlets and settings
+
+| Call | Permission | Notes |
+|---|---|---|
+| `GET /v1/outlets` | any user | Active outlets with settings, ordered by code. |
+| `GET /v1/outlets/{outletId}` | any user | One outlet. |
+| `PATCH /v1/outlets/{outletId}/settings` | `settings.manage` | Partial update. Sales already recorded keep their old amounts and business date. Devices get the change at their next pull. |
+
+Outlet settings (all affect how a bill is calculated, see section 7):
+
+| Field | Values |
+|---|---|
+| `timezone` | `Asia/Jakarta`, `Asia/Makassar`, `Asia/Jayapura` |
+| `business_day_cutoff` | `"HH:MM"`, `00:00` to `11:59`. A sale before it belongs to the previous business day. |
+| `price_includes_tax` | bool |
+| `tax_rate_bp`, `service_charge_rate_bp` | 0 to 10000 |
+| `service_charge_taxable` | bool |
+| `cash_rounding_unit` | rupiah, `0` = none (typically `100` or `500`) |
+| `cash_rounding_mode` | `nearest`, `down`, `up` |
+| `receipt_header`, `receipt_footer` | text, at most 500 characters |
+
+An outlet's `code` (2 to 6 uppercase letters or digits) is the prefix of its receipt numbers and is
+not editable here.
+
+### 3.3 Staff, roles and PINs (`staff.manage`)
+
+| Call | Notes |
+|---|---|
+| `GET /v1/roles` | Roles with their permissions, to fill the role picker. |
+| `GET /v1/staff` | Paged. |
+| `POST /v1/staff` `{display_name, outlet_roles[], pin?}` | `limit_reached` when the plan's staff limit is full. |
+| `PATCH /v1/staff/{staffId}` | `display_name`, `active`, `outlet_roles` (replaces the list). Deactivate instead of deleting. |
+| `PUT /v1/staff/{staffId}/pin` `{pin}` | 4 to 6 digits. The PIN is never readable again; `has_pin` and `pin_rotated_at` tell its state. |
+
+A change reaches tablets at their next pull. A deactivated person holds no permissions, so a new event under their name is accepted but flagged
+`permission_missing`; events they made earlier stay valid.
+
+### 3.4 Devices (`device.manage`)
+
+| Call | Notes |
+|---|---|
+| `GET /v1/devices` | Paged. Each device has health fields (section 9). |
+| `POST /v1/devices/pair` `{outlet_id, name}` | Done on the tablet while an owner or manager is signed in. Returns `{device, device_secret}`. **The secret is shown once**: store it in the device's secure storage; the server keeps only a hash. Losing it means pairing again. `device.device_code` becomes part of receipt numbers and is never reused. |
+| `DELETE /v1/devices/{deviceId}` | Revoke. Idempotent. The tablet's next token exchange fails with `device_revoked`. |
+
+### 3.5 Catalog (`catalog.manage`)
+
+What the business sells. Archived entries stay (old sales refer to them): list with
+`include_archived=true` to see them, and archive or restore with `"archived": true|false`.
+
+| Call | Notes |
+|---|---|
+| `GET/POST /v1/categories`, `PATCH /v1/categories/{categoryId}` | `{name, sort_order}`. |
+| `GET/POST /v1/items`, `GET/PATCH /v1/items/{itemId}` | An item has at least one **variant** (a size or option with its own price). A one-size item has one variant with an empty `name`. An item lists its `modifier_group_ids` in display order; `PATCH` replaces that list. `clear_category: true` removes the category. `sku`/`barcode`/`image_url`: a blank string clears. |
+| `POST /v1/items/{itemId}/variants`, `PATCH /v1/variants/{variantId}` | `base_price` in rupiah, 0 to 1,000,000,000. |
+| `GET/POST /v1/modifier-groups`, `PATCH /v1/modifier-groups/{groupId}` | A group (for example "Sugar") has `min_select`, `max_select` and `required` (a required group needs `min_select` of at least 1). |
+| `POST /v1/modifier-groups/{groupId}/modifiers`, `PATCH /v1/modifiers/{modifierId}` | `price_delta` in rupiah, **may be negative**. |
+| `GET /v1/outlets/{outletId}/variants` | Per-outlet price and availability. |
+| `PUT /v1/outlets/{outletId}/variants/{variantId}` `{price_override?, available}` | `price_override: null` means the base price. A variant with no row is at base price and available. |
+
+The price a sale line uses is `price_override` if set, else `base_price`, plus the chosen
+modifiers' `price_delta`. The POS does this from its pulled copy, offline.
+
+### 3.6 Reports and sales (`report.view`)
+
+All read-only and **computed live**: there is nothing to refresh or rebuild, and a late-arriving
+sale shows up the next time you fetch.
+
+| Call | Notes |
+|---|---|
+| `GET /v1/reports/shifts/{shiftId}` | End of shift: `cash` (opening, received, refunded, pay_in, pay_out, `expected`, and once closed `counted` and `difference`), `sales` totals, `payment_methods[]`, `discounts`, `voided_sales`, `voids_recorded`, `no_sale_openings`, `flags`. |
+| `GET /v1/reports/days/{date}?outlet_id=` | End of day for one outlet by **business date**: the same sections, plus `cash_movements`, `shifts[]` with each one's reconciliation, `open_shifts`, and `flags` by code. |
+| `GET /v1/sales` | Newest first. Filters: `outlet_id`, `from`, `to` (business dates, inclusive), `status` (`completed`, `voided`), `receipt_number` (exact), `staff_id`, `flagged`, plus `cursor`, `limit`. Without `outlet_id` it covers every outlet the caller can see. |
+| `GET /v1/sales/{saleId}` | Everything: lines with modifiers, discounts, payments, the void, flags with their `detail`, and the settings the device priced with. |
+
+How to read the numbers:
+
+* **Expected cash** = opening cash + cash received − cash refunded for voids made in this shift +
+  pay-ins − pay-outs. `difference` = `counted − expected`; **negative means the drawer is short**.
+  Both are absent while the shift is open.
+* Cash `received` is net of change given. A cash sale of 47,000 paid with a 50,000 note counts 47,000.
+* `sales.total` is the bill **before cash rounding**; `sales.rounding` is the cash rounding (positive
+  or negative). What actually went into the drawer for cash is `total + rounding`.
+* A sale belongs to the business date it was **rung up** on; a void made later removes it from
+  that day's totals but the void itself is counted in the shift it happened in (`voids_recorded`).
+* Amounts are as on the receipt: a sale is stored exactly as the device charged it.
+
+**Review flags** (`flag_codes` on a sale, `flags` on reports). A flag asks a person to look; it
+never changes the money or blocks a sale. Show them as a badge and link to the sale detail.
+
+| Code | Plain meaning (for tooltips and the owner) |
+|---|---|
+| `total_mismatch` | The amounts do not recompute from the lines. |
+| `pricing_invalid` | The lines and discounts are not a bill the algorithm can price. |
+| `pricing_version` | Priced by an app version the server does not know. |
+| `payment_mismatch` | Payments do not add up to what was due. |
+| `permission_missing` | The person lacked the permission for this action. |
+| `stale_price` | A price from before an update the tablet could have had. |
+| `sale_outside_shift` | Rung up before the shift opened or after it closed. |
+| `shift_other_device` | On a shift another tablet opened. |
+| `device_time_ahead` | The tablet's clock was more than 10 minutes ahead. |
+| `after_shift_close` | A cash movement after the shift closed. |
+
+The runbook `docs/runbooks/pilot.md` tells the operator what to do about each.
+
+---
+
+## 4. The POS: startup, then the sync loop
+
+The POS works **fully offline**. The server is a place to send what happened and to learn what
+changed; it is never in the way of ringing up a sale.
+
+```
+pair (once)  →  token  →  pull (snapshot)  →  work offline: shift, sales, voids…
+                  ↑                                 │ events go to a local outbox
+                  └──────  push outbox, pull changes, whenever online  ──┘
+```
+
+### 4.1 First run
+
+1. A manager signs in on the tablet (`/v1/auth/login`) and calls `POST /v1/devices/pair`. Store the
+   `device_secret` securely. The manager's own session can then be dropped.
+2. `POST /v1/devices/token` `{device_secret, app_version?, client_time?}` → `DeviceSession`
+   (`access_token`, `device_id`, `outlet_id`, `tenant_id`). Renew when it expires or on `401`; a
+   `403 device_revoked` here means stop for good. Always send `client_time` so the server can warn
+   the owner about a wrong clock.
+3. `GET /v1/sync/pull` with no cursor returns a **snapshot** (section 4.3) that includes the outlet,
+   its settings, the catalog, the roster and the entitlements. The tablet is ready to trade.
+4. `GET /v1/pos/roster` is an alternative way to fetch the device record, outlet and staff; the pull
+   already carries the same information, so normally you only use pull.
+
+### 4.2 Push: sending events
+
+`POST /v1/sync/push`
+
+```json
+{
+  "device_id": "…",
+  "client_time": "2026-10-04T08:30:00Z",
+  "app_version": "1.4.2",
+  "unsynced_events": 0,
+  "oldest_unsynced_at": null,
+  "events": [ { "id": "…", "idempotency_key": "…", "type": "sale.completed",
+                "staff_id": "…", "device_time": "…", "schema_version": 1, "payload": { … } } ]
+}
+```
+
+* Send **oldest first**, at most **500 events and 1 MB** per call; page through the outbox.
+* `unsynced_events` = how many events remain in the outbox **after** this push, and
+  `oldest_unsynced_at` the device time of the oldest (required when the count is above 0). The
+  server emails the owner when events stay stuck too long, so report honestly. Pull accepts the
+  same fields.
+* The response has one result per event, in order: `{id, status, code?, detail?}`.
+
+| `status` | What the POS does |
+|---|---|
+| `accepted` | Done. Delete it from the outbox. With `code: "pending_dependency"` the server parked it until a record it refers to arrives (for example a void that got ahead of its sale); **still delete it**, the server will apply it by itself. |
+| `duplicate` | Already accepted earlier (a lost response). Delete it. Nothing was applied twice. |
+| `rejected` | Malformed, will never be applied. **Do not resend.** Move it to a "problem events" list, keep it for support, and tell the user. Codes: `unknown_type`, `unsupported_schema_version`, `unknown_staff`, `wrong_outlet`, `malformed`, `invalid_payload`, `invalid_receipt_number`, `duplicate_receipt_number`, `unknown_reference`, `invalid_value`, `already_voided`, `already_closed`, `idempotency_conflict`, `id_conflict`, `device_revoked`, `abandoned`. `detail` says which field. |
+| `retry` | A server fault; nothing was recorded. Keep it and send again later with backoff. |
+
+Rules that matter:
+
+* **Pushing the same event again is always safe.** Retry freely after a timeout or a lost response.
+* The same `idempotency_key` with *different content* is `rejected: idempotency_conflict`. Never edit
+  an event after creating it; to correct something, send a new event (for example a void).
+* **Only malformed events are rejected.** A sale with odd totals, a stale price, or by someone
+  without the permission is accepted and flagged, because the customer has already paid. So the POS
+  must never refuse to complete a sale because it thinks the server might object.
+* `403 device_revoked` on the whole push: nothing was accepted; keep the outbox.
+* `400 validation_failed` on the push itself (for example `device_id` not matching the token, or
+  more than 500 events): fix and resend.
+
+### 4.3 Pull: receiving changes
+
+`GET /v1/sync/pull?cursor=…&limit=…&client_time=…&app_version=…&unsynced_events=…&oldest_unsynced_at=…`
+
+The response carries the **current state of every entity that changed** since your cursor, not a
+log of edits, so apply it as an upsert by `id`:
+
+| Field | Apply as |
+|---|---|
+| `outlet` | Present when the outlet or its settings changed (and in a snapshot). Replace the local outlet and settings. |
+| `categories`, `items` (with `variants` and `modifier_group_ids`), `modifier_groups` (with `modifiers`) | Upsert by id. **Archived ones are included, marked with `archived_at`**: keep them (an old sale may need the name), but do not offer them for new sales. |
+| `outlet_variants` | This outlet's price override and availability, upsert by `variant_id`. In a snapshot, a variant not listed is at base price and available. |
+| `staff` | Roster entries that changed (`display_name`, `pin_hash`, `permissions`). Upsert. |
+| `removed_staff_ids` | Remove these from the local roster. |
+| `deleted` | Entities removed outright. Always empty for now (the catalog is archived, not deleted); handle it anyway. |
+| `entitlements` | The plan snapshot with `expires_at`. Apply at the next sync, **never in the middle of a shift**. Until `expires_at`, keep applying it if the server is unreachable. |
+
+Paging and the cursor:
+
+* **Store the returned `cursor` only after you have applied the whole response**, in one local
+  transaction. Send it next time.
+* While `has_more` is true, pull again immediately.
+* `snapshot: true` means "this is the whole state": **replace** the local copy (do not merge). You
+  get one when you have no cursor, or the server could not use yours (unreadable, or ahead of the
+  server, for example after a restore). Never fail on it; just replace. The outbox is unaffected.
+* The cursor is opaque. Never parse or compare it.
+
+The catalog of a different outlet never reaches this device; pulls are filtered to the device's own
+outlet.
+
+**Pull before you push, or push before you pull?** Push first (the money), then pull. Both can run
+whenever the tablet is online: on app start, after each completed sale, on a timer (a minute or two
+while a shift is open), and when connectivity returns.
+
+---
+
+## 5. Offline rules for the POS
+
+* **Staff PIN**: the roster gives each person's `pin_hash` (argon2id, PHC format) and `permissions`
+  at this outlet. Verify the PIN locally and enforce permissions in the UI. This is a convenience
+  switch, not a security boundary: the server re-checks permissions when events arrive and flags
+  violations. A PIN of someone with no hash yet (`pin_hash: null`) cannot sign in.
+* **Permissions to enforce on the tablet**: `sale.create` to ring up, `discount.apply_manual` for a
+  manual discount (or a manager's approval, named in `approved_by`), `sale.void` to void (or approval),
+  `shift.open`, `shift.close`, `drawer.open_no_sale` for pay-ins, pay-outs and no-sale openings.
+* **Rung-up prices come from the local catalog**, the one at your `catalog_seq` (section 6.4). If a
+  price changed on the server after your last pull, the sale is accepted and shows `stale_price`:
+  expected, not an error.
+* **Entitlement limits** are enforced on the server at pairing and staff creation. The tablet only
+  needs to hide modules whose key is `0`.
+* **Clock**: events carry `device_time`. A tablet clock that is wrong moves sales to the wrong
+  business day. Show a warning when the device clock is clearly off (compare `server_time` from
+  responses), and always send `client_time`.
+* **Never lose the outbox.** It lives only on the tablet until accepted. Do not wipe app data or
+  log the device out while it is non-empty.
+
+---
+
+## 6. The events
+
+Five event types, all `schema_version: 1`. Unknown extra fields in a payload are ignored, so a
+newer app can add fields without breaking an older server.
+
+### 6.1 Envelope
+
+| Field | Rule |
+|---|---|
+| `id` | UUIDv7 generated on the device. For a create event (`shift.opened`, `sale.completed`) it **is the id of the record created**: the sale id, the shift id. |
+| `idempotency_key` | A UUID. Equal to `id` for create events. For a repeated operation, generate it once and reuse it on every retry. |
+| `type` | One of the five below. |
+| `staff_id` | Who did it on the tablet (a roster id). Must belong to this business. |
+| `device_time` | When it happened by the device clock, RFC 3339. |
+| `schema_version` | `1`. |
+| `payload` | Object, per type. Kept exactly as sent. |
+
+### 6.2 Payloads
+
+All amounts are integer rupiah (non-negative unless stated).
+
+**`shift.opened`** `{ opening_cash }`. The event id is the shift id.
+
+**`shift.closed`** `{ shift_id, counted_cash }`. A shift closes once (`already_closed`).
+
+**`cash.movement`** `{ shift_id, kind, amount, reason }`: `kind` is `pay_in`, `pay_out` or
+`no_sale`. `no_sale` has no amount. `pay_out` needs a `reason`.
+
+**`sale.completed`**
+
+```json
+{
+  "shift_id": "…",
+  "receipt_number": "JKT1-03-000482",
+  "catalog_seq": 1234,
+  "pricing": { "version": 1, "price_includes_tax": false, "tax_rate_bp": 1100,
+               "service_charge_rate_bp": 500, "service_charge_taxable": true,
+               "cash_rounding_unit": 100, "cash_rounding_mode": "nearest" },
+  "lines": [ { "variant_id": "…", "name": "Latte (Large)", "unit_price": 28000, "quantity": 2,
+               "modifiers": [ { "modifier_id": "…", "name": "Oat milk", "price_delta": 5000 } ],
+               "discount": 0, "allocated_bill_discount": 0, "total": 66000 } ],
+  "discounts": [ { "line": 0, "kind": "percent", "value": 1000, "amount": 6600,
+                   "reason": "staff", "approved_by": "…" } ],
+  "totals": { "subtotal": 66000, "discount_total": 6600, "service_charge": 2970,
+              "tax": 6806, "rounding_amount": 4, "total": 69176 },
+  "payments": [ { "method": "cash", "amount": 69176, "tendered": 70000, "change": 824, "reference": "" } ]
+}
+```
+
+* `receipt_number` is `{outlet_code}-{device_code, at least 2 digits}-{counter, 6 digits}`, for
+  example `JKT1-03-000482`. The device code is yours (from the device record); the counter is a
+  per-device counter that you keep and increment locally, **never reuse and never skip back** (a
+  gap, from a voided or unsent draft, is fine). A wrong prefix is `invalid_receipt_number`; a
+  repeat is `duplicate_receipt_number`.
+* `catalog_seq`: the catalog version your local copy was at when ringing the sale up. Taken from the
+  last pull's state; the server uses it to tell a stale price from a deliberate one.
+* `pricing`: the **exact settings you priced with**, copied from the outlet settings you hold.
+  Always send them; they let the server re-check the sale even if settings change later.
+  `pricing.version` is the algorithm version (`1`).
+* `lines[].name` is the name **as printed on the receipt**, stored with the sale so later renames
+  do not change history. Include the variant name when it is not empty.
+* `discounts[].line` is the index into `lines`, or omitted/`null` for a discount on the whole bill.
+  `kind` is `percent` (`value` in basis points: `1000` = 10%) or `amount` (`value` in rupiah);
+  `amount` is the rupiah it came to. A line may have only one discount.
+* `payments[].method`: `cash`, `qris_manual`, `qris_dynamic`, `ewallet`, `card_manual`. `amount` is
+  what was applied to the bill, **net of change**. For cash send `tendered` and `change`. At most
+  10 payments. The payments must add up to `totals.total + totals.rounding_amount` (the rounding is
+  0 unless the bill is paid entirely in cash), and for a cash payment `tendered − change` must equal
+  `amount`; otherwise `payment_mismatch` is raised.
+* Limits: 1 to 200 lines, quantity 1 to 10,000, unit price up to 1,000,000,000, up to 50 modifiers
+  per line, text up to 200 characters.
+
+**`sale.voided`** `{ sale_id, reason, approved_by?, shift_id? }`. `shift_id` is the shift the void
+happened in (default: the sale's own shift). `approved_by` is a manager who approved it, if the
+voider lacks `sale.void`. A sale voids once (`already_voided`). It may arrive before its sale; the
+server parks it (`pending_dependency`) and applies it when the sale arrives.
+
+### 6.3 Ordering
+
+Events may reach the server out of order (two tablets, a retry, a long-offline day). The server
+handles it: a close, movement or sale waits for its shift; a void waits for its sale. You do not
+need to order across event types, but **do** send oldest first and do not hold back events
+because an earlier one was parked.
+
+### 6.4 What the server does with a sale
+
+It stores the sale **exactly as you sent it**, recomputes it with the same algorithm (section 7),
+and raises flags for any difference. So the receipt the customer got and the report the owner sees
+always agree, even when the app has a bug; the flag tells a human where to look.
+
+---
+
+## 7. Pricing: one calculation, two implementations
+
+The POS prices bills locally, offline; the server recomputes them. If the two disagree, every such
+sale is flagged `total_mismatch`. The shared definition is `internal/pricing/pricing.go`
+(package comment) and `docs/BACKEND_PLAN.md` section 4.8, and the check is the golden vectors in
+`testdata/pricing-vectors/` (`README.md` there has the file format). **Run every vector in the POS's
+CI**; a change to the algorithm is a new `pricing.Version`, never a quiet edit.
+
+Summary (see the plan for the full text):
+
+* A line is `(unit_price + sum of modifier deltas) × quantity`, less its own discount.
+* A **bill discount** applies to the sum of the lines after their own discounts and is spread over
+  the lines in proportion, by largest remainder, ties to the earlier line.
+* **Service charge** and **tax** are computed once per bill (not per line) from the discounted
+  subtotal. With `price_includes_tax` the tax is extracted (`base × rate / (10000 + rate)`) and
+  shown, but the total does not include it again. The service charge is added either way.
+* **Rounding is half up, away from zero** everywhere, except cash rounding with mode `down` or `up`.
+* **Cash rounding** applies only when the bill is paid **entirely in cash**; it is
+  `rounding_amount` (cash total − total) and never changes `total`.
+* Use integer arithmetic (`BigInt` or checked 53-bit): products like `amount × rate_bp` are exact
+  for the vectors, but the server limits go beyond 2^53 in principle.
+* Bills that cannot be priced (two discounts on a line, a discount larger than its line, a quantity
+  of 0) are refused by the algorithm with `discount_exceeds_amount`, `invalid_discount`,
+  `duplicate_discount`, `invalid_quantity` or `negative_price`: the POS UI must prevent them.
+
+`GET /v1/pos/receipt-test` (device token) returns a made-up bill priced with the outlet's real
+settings, for checking printer layout and the calculation; it is not a sale.
+
+---
+
+## 8. Putting it together: what each screen calls
+
+| Screen | Calls |
+|---|---|
+| Back office sign in | `auth/login` → `me` → `entitlements` |
+| Dashboard / end of day | `reports/days/{date}?outlet_id=` |
+| Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |
+| Sales list and search | `sales?…` → `sales/{saleId}` |
+| Catalog manager | `categories`, `items`, `modifier-groups`, `outlets/{id}/variants` |
+| Staff manager | `roles`, `staff`, `staff/{id}/pin` |
+| Devices | `devices`, `devices/pair`, `devices/{id}` (revoke) |
+| Outlet settings | `outlets`, `outlets/{id}/settings` |
+| POS pairing | `auth/login` → `devices/pair` |
+| POS runtime | `devices/token`, `sync/pull`, `sync/push` |
+
+## 9. Device health (back office)
+
+Each device in `GET /v1/devices` carries: `last_seen_at`, `last_sync_at`, `app_version`,
+`clock_skew_ms` (server time minus device time; positive means the device clock is **behind**),
+`unsynced_events`, `oldest_unsynced_at` and `health_reported_at`, all taken from what the POS
+reports on push, pull and token exchange. Show a warning when `unsynced_events` is above 0 and
+`oldest_unsynced_at` is old, or the skew is more than a few minutes. The server also emails the
+owners once per incident (by default after 30 minutes undelivered, or 3 hours silent during an open
+shift).
+
+## 10. Not built yet
+
+So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display,
+customers, loyalty, refunds beyond voids, payment gateways (QRIS dynamic, e-wallets: the methods
+exist as labels only), receipt printing endpoints, file/image upload (an item's `image_url` is a
+plain URL you host), real email delivery, CORS, and webhooks. The roadmap is in
+`docs/BACKEND_PLAN.md`.
+
+## 11. Local development
+
+```sh
+make db-up && make run           # API on :8080
+make worker                       # background jobs; emails go to the log
+./bin/orion admin seed-demo       # demo business, menu, cashier PINs, a paired device
+```
+
+`seed-demo` prints the demo owner login and the cashier PINs. Regenerate your client from
+`api/openapi.yaml` after every pull of the backend.
