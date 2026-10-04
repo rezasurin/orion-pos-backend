@@ -159,10 +159,9 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 			w.gone(t, "SetOutletVariant/outlet", e.do(t, "PUT", "/v1/outlets/"+aOutlet+"/variants/"+w.catA.variant, ub, map[string]any{"available": false}), http.StatusNotFound, "not_found")
 		},
 		"CreateCategory": func(t *testing.T) {
-			// The same name in another business is fine, and must not collide with A's.
-			if r := e.do(t, "POST", "/v1/categories", ub, map[string]any{"name": "Secret category"}); r.Code != http.StatusCreated {
-				t.Errorf("CreateCategory: B cannot reuse A's category name: %d %s", r.Code, r.Body.String())
-			}
+			// B names a category after one of A's: allowed (checked after the loop), and the body
+			// of B's own response never carries A's data.
+			w.noLeak(t, "CreateCategory", e.do(t, "POST", "/v1/categories", ub, map[string]any{"name": "Plain category"}))
 		},
 		"CreateModifierGroup": func(t *testing.T) {
 			e.do(t, "POST", "/v1/modifier-groups", ub, map[string]any{"name": "B group"}).decode(t, &struct{}{})
@@ -212,6 +211,10 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 	e.do(t, "PATCH", "/v1/staff/"+w.staffA, w.userA, map[string]any{}).decode(t, &st)
 	if !st.Active || !st.HasPin || st.DisplayName != "Sari of A" {
 		t.Errorf("tenant A's staff was changed by tenant B: %+v", st)
+	}
+	// Names and codes are unique per business, so B may reuse A's category name, SKU and barcode.
+	if r := e.do(t, "POST", "/v1/categories", ub, map[string]any{"name": "Secret category"}); r.Code != http.StatusCreated {
+		t.Errorf("tenant B cannot reuse tenant A's category name: %d %s", r.Code, r.Body.String())
 	}
 	// Codes are unique per business: B may use the SKU and barcode A uses. This runs after the
 	// loop because B's own item would then legitimately contain those strings.
