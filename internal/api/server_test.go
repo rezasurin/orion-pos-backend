@@ -73,7 +73,7 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 	if err := syncstub.Install(context.Background(), d.Owner); err != nil {
 		t.Fatal(err)
 	}
-	syncSvc, err := syncsrv.NewService(syncsrv.Deps{Pool: d.App, Identity: ids, Projectors: []syncsrv.Projector{&syncstub.Projector{}, sales.NewProjector(sales.Deps{Identity: ids, Tenancy: tenants, Catalog: catalog.NewService(d.App)})}})
+	syncSvc, err := syncsrv.NewService(syncsrv.Deps{Pool: d.App, Identity: ids, Catalog: catalog.NewService(d.App), Tenancy: tenants, Entitlements: ents, Projectors: []syncsrv.Projector{&syncstub.Projector{}, sales.NewProjector(sales.Deps{Identity: ids, Tenancy: tenants, Catalog: catalog.NewService(d.App)})}})
 	if err != nil {
 		t.Fatal(err)
 	}

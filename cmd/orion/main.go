@@ -168,7 +168,7 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	catalogSvc := catalog.NewService(pool)
 	syncSvc, err := sync.NewService(sync.Deps{
-		Pool: pool, Identity: ids, Clock: kernel.SystemClock{}, Logger: logger,
+		Pool: pool, Identity: ids, Clock: kernel.SystemClock{}, Logger: logger, Catalog: catalogSvc, Tenancy: tenants, Entitlements: ents,
 		Projectors: []sync.Projector{sales.NewProjector(sales.Deps{Identity: ids, Tenancy: tenants, Catalog: catalogSvc})},
 	})
 	if err != nil {

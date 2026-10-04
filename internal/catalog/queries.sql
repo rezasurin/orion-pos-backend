@@ -191,3 +191,28 @@ SELECT DISTINCT entity_type, entity_id FROM change_log
 WHERE tenant_id = @tenant_id AND seq > @after_seq AND created_at <= @at
   AND ((entity_type = 'item' AND entity_id = ANY(@item_ids::uuid[]))
     OR (entity_type = 'outlet_variant' AND outlet_id = @outlet_id AND entity_id = ANY(@variant_ids::uuid[])));
+
+-- The POS pull (internal/sync): current state of what changed, or of everything.
+
+-- name: ListCategoriesByIDs :many
+SELECT * FROM category WHERE tenant_id = @tenant_id AND id = ANY(@ids::uuid[]) ORDER BY id;
+
+-- name: ListAllCategories :many
+SELECT * FROM category WHERE tenant_id = @tenant_id ORDER BY id;
+
+-- name: ListItemsByIDs :many
+SELECT * FROM item WHERE tenant_id = @tenant_id AND id = ANY(@ids::uuid[]) ORDER BY id;
+
+-- name: ListAllItems :many
+SELECT * FROM item WHERE tenant_id = @tenant_id ORDER BY id;
+
+-- name: ListAllModifierGroups :many
+SELECT * FROM modifier_group WHERE tenant_id = @tenant_id ORDER BY id;
+
+-- name: ListOutletVariantsByVariantIDs :many
+SELECT * FROM outlet_variant
+WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id AND variant_id = ANY(@variant_ids::uuid[])
+ORDER BY variant_id;
+
+-- name: ListAllOutletVariants :many
+SELECT * FROM outlet_variant WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id ORDER BY variant_id;

@@ -732,6 +732,41 @@ Implementation:
 - Each sale records the `catalog_seq` it was priced against, so a sale against a stale price is
   explainable.
 
+#### 5.2.1 Pull as built (B1.6)
+
+- `GET /v1/sync/pull?cursor=&limit=` (device token). The response lists the **current state** of
+  each entity that changed: `categories`, `items` (each with its variants and modifier group ids),
+  `modifier_groups` (each with its modifiers), `outlet_variants` (this outlet's overrides and
+  availability), `staff` roster entries (PIN hash, permissions at this outlet) and
+  `removed_staff_ids`, the `outlet` with its settings when either changed, `deleted` tombstones
+  (empty in Phase 1: the catalog is archived, and archived entities are sent marked
+  `archived_at`), and the entitlements snapshot with `expires_at` (7 days) on every pull. Every
+  list is present even when empty.
+- **Entities, not rows.** The change log stores aggregates (6.3.1): a variant change is an `item`
+  change. The pull collapses a run of entries to one reload per entity, so ten edits to one item
+  arrive once, in their latest state, and a fixed number of queries (the log, one per kind of
+  entity) serves any number of changes (tested at 1 and 41).
+- **Cursor.** Opaque (`c1:<change number>`, base64url). The server first reads the tenant's head
+  change number, which commits atomically with the changes it counts, so anything numbered up to it
+  is visible to the reads that follow and anything newer arrives next time. A response never
+  moves the cursor past a change it did not send: when a page is full, `has_more` is true and the
+  cursor is the last change number sent; otherwise it is the head, so changes for other outlets are
+  skipped once and not scanned again. The device stores the cursor after applying the response.
+- **Snapshot.** No cursor, an unreadable one, or one ahead of the server (a restored database)
+  returns the whole state with `snapshot: true`, which replaces the device's copy. There is no
+  retention job for the change log yet, so "older than retention" cannot happen; when one exists,
+  a cursor below the oldest retained change number must also give a snapshot. A snapshot is one
+  response, not paged; the catalog of a cafe is small.
+- **Per outlet.** Overrides, availability and settings of other outlets never reach a device.
+  Staff changes are recorded for every outlet and filtered at read time: someone deactivated or no
+  longer assigned to this outlet comes back in `removed_staff_ids`, and the snapshot roster is
+  exactly active staff assigned here plus owners.
+- **The property tested:** a device applying a random run of edits (items, prices, archives,
+  overrides at two outlets, modifiers, PINs, deactivations, role moves, settings) through pulls of
+  random small page sizes ends with exactly what a fresh snapshot gives it.
+- The roster endpoint (`GET /v1/pos/roster`) stays for the first load; the pull's snapshot covers
+  the same ground and more.
+
 ### 5.3 Tests written first
 
 Before any POS client code depends on it:
@@ -1080,7 +1115,7 @@ backup has been restored into a scratch database.
 | B1.3 | ✅ **Sync tests first** (section 5.3) against a stub projector (`internal/sync/sync_test.go`, `internal/sync/syncstub`); the end-of-day reconciliation test waits for the real projectors (B1.5) | 3d |
 | B1.4 | ✅ `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` (see 5.1.1) | 4d |
 | B1.5 | ✅ Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check); event payloads and rules in 6.4.1 | 5d |
-| B1.6 | Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling | 3d |
+| B1.6 | ✅ Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling (see 5.2.1) | 3d |
 | B1.7 | ✅ Outlet settings for tax, service charge, rounding, timezone, cutoff (`PATCH /v1/outlets/{outletId}/settings`); `business_date` derivation (`kernel.BusinessDate`, see 4.9.1). Done ahead of B1.5, which needs it | 1d |
 | B1.8 | Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers must match the POS's own totals | 4d |
 | B1.9 | Sales list and detail for the back office (read-only) | 2d |

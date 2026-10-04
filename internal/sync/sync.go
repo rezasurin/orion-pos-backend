@@ -36,9 +36,12 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/sync/db"
+	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
 // MaxEvents is the most events one push may carry; the device pages through its outbox.
@@ -116,6 +119,11 @@ type Deps struct {
 	Projectors []Projector
 	Clock      kernel.Clock
 	Logger     *slog.Logger
+
+	// Needed for Pull; a Service used only to push may leave them nil.
+	Catalog      *catalog.Service
+	Tenancy      *tenancy.Service
+	Entitlements *entitlements.Resolver
 }
 
 // Service accepts pushes from devices.
@@ -125,6 +133,9 @@ type Service struct {
 	byType map[string]projectorEntry
 	clock  kernel.Clock
 	log    *slog.Logger
+	cat    *catalog.Service
+	ten    *tenancy.Service
+	ent    *entitlements.Resolver
 }
 
 type projectorEntry struct {
@@ -134,7 +145,7 @@ type projectorEntry struct {
 
 // NewService registers the projectors. Two projectors may not claim one event type.
 func NewService(d Deps) (*Service, error) {
-	s := &Service{pool: d.Pool, ids: d.Identity, byType: map[string]projectorEntry{}, clock: d.Clock, log: d.Logger}
+	s := &Service{pool: d.Pool, ids: d.Identity, byType: map[string]projectorEntry{}, clock: d.Clock, log: d.Logger, cat: d.Catalog, ten: d.Tenancy, ent: d.Entitlements}
 	if s.clock == nil {
 		s.clock = kernel.SystemClock{}
 	}

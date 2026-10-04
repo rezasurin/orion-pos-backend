@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -200,4 +201,76 @@ func TestPushingRealEvents(t *testing.T) {
 	if err := e.d.Owner.QueryRow(t.Context(), `SELECT code FROM flag WHERE target_type = 'void'`).Scan(&flagCode); err != nil || flagCode != "permission_missing" {
 		t.Errorf("void flag = %q (%v)", flagCode, err)
 	}
+}
+
+type pullBody struct {
+	Cursor          string              `json:"cursor"`
+	Snapshot        bool                `json:"snapshot"`
+	HasMore         bool                `json:"has_more"`
+	Outlet          map[string]any      `json:"outlet"`
+	Categories      []categoryBody      `json:"categories"`
+	Items           []itemBody          `json:"items"`
+	ModifierGroups  []groupBody         `json:"modifier_groups"`
+	OutletVariants  []outletVariantBody `json:"outlet_variants"`
+	Staff           []map[string]any    `json:"staff"`
+	RemovedStaffIDs []string            `json:"removed_staff_ids"`
+	Entitlements    struct {
+		Items     []map[string]any `json:"items"`
+		ExpiresAt string           `json:"expires_at"`
+	} `json:"entitlements"`
+}
+
+func TestPullOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	p := e.pusher(t, f, owner, "Kasir 1")
+	var item itemBody
+	e.create(t, "/v1/items", owner, map[string]any{"name": "Latte", "variants": []map[string]any{{"name": "Hot", "base_price": 28000}}}, &item)
+
+	r := e.do(t, "GET", "/v1/sync/pull", p.token, nil)
+	if r.Code != http.StatusOK {
+		t.Fatalf("pull: %d %s", r.Code, r.Body.String())
+	}
+	var snap pullBody
+	r.decode(t, &snap)
+	if !snap.Snapshot || snap.HasMore || snap.Cursor == "" || len(snap.Items) != 1 || snap.Items[0].Name != "Latte" || snap.Outlet == nil {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if len(snap.Staff) != 2 || len(snap.Entitlements.Items) == 0 || snap.Entitlements.ExpiresAt == "" {
+		t.Errorf("roster %d, entitlements %d, expires %q", len(snap.Staff), len(snap.Entitlements.Items), snap.Entitlements.ExpiresAt)
+	}
+	// The response has every list, even when empty, so a client never has to guess null from absent.
+	for _, key := range []string{"categories", "items", "modifier_groups", "outlet_variants", "staff", "removed_staff_ids", "deleted"} {
+		var raw map[string]json.RawMessage
+		r.decode(t, &raw)
+		if string(raw[key]) == "null" || raw[key] == nil {
+			t.Errorf("%s is %s, want a list", key, raw[key])
+		}
+	}
+
+	// A change arrives as a delta.
+	newName := "Latte (renamed)"
+	e.do(t, "PATCH", "/v1/items/"+item.ID, owner, map[string]any{"name": newName})
+	var delta pullBody
+	e.do(t, "GET", "/v1/sync/pull?cursor="+snap.Cursor, p.token, nil).decode(t, &delta)
+	if delta.Snapshot || len(delta.Items) != 1 || delta.Items[0].Name != newName || delta.Outlet != nil || delta.Cursor == snap.Cursor {
+		t.Errorf("delta = %+v", delta)
+	}
+
+	// Rules.
+	e.do(t, "GET", "/v1/sync/pull", "", nil).problem(t, http.StatusUnauthorized, "invalid_token")
+	e.do(t, "GET", "/v1/sync/pull", owner, nil).problem(t, http.StatusUnauthorized, "invalid_token")
+	e.do(t, "GET", "/v1/sync/pull?limit=0", p.token, nil).problem(t, http.StatusBadRequest, "validation_failed")
+	e.do(t, "GET", "/v1/sync/pull?limit=1001", p.token, nil).problem(t, http.StatusBadRequest, "validation_failed")
+	var limited pullBody
+	r = e.do(t, "GET", "/v1/sync/pull?cursor=garbage&limit=1", p.token, nil)
+	r.decode(t, &limited)
+	if r.Code != http.StatusOK || !limited.Snapshot {
+		t.Errorf("an unreadable cursor: %d snapshot=%v", r.Code, limited.Snapshot)
+	}
+	if rr := e.do(t, "DELETE", "/v1/devices/"+p.deviceID, owner, nil); rr.Code != http.StatusNoContent {
+		t.Fatalf("revoke: %d", rr.Code)
+	}
+	e.do(t, "GET", "/v1/sync/pull", p.token, nil).problem(t, http.StatusForbidden, "device_revoked")
 }

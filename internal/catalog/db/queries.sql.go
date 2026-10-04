@@ -665,6 +665,145 @@ func (q *Queries) InsertVariants(ctx context.Context, arg InsertVariantsParams) 
 	return items, nil
 }
 
+const listAllCategories = `-- name: ListAllCategories :many
+SELECT id, tenant_id, name, sort_order, archived_at, created_at, updated_at FROM category WHERE tenant_id = $1 ORDER BY id
+`
+
+func (q *Queries) ListAllCategories(ctx context.Context, tenantID uuid.UUID) ([]Category, error) {
+	rows, err := q.db.Query(ctx, listAllCategories, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Category
+	for rows.Next() {
+		var i Category
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.SortOrder,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllItems = `-- name: ListAllItems :many
+SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at FROM item WHERE tenant_id = $1 ORDER BY id
+`
+
+func (q *Queries) ListAllItems(ctx context.Context, tenantID uuid.UUID) ([]Item, error) {
+	rows, err := q.db.Query(ctx, listAllItems, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Item
+	for rows.Next() {
+		var i Item
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.CategoryID,
+			&i.Name,
+			&i.Sku,
+			&i.Barcode,
+			&i.ImageUrl,
+			&i.TrackStock,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllModifierGroups = `-- name: ListAllModifierGroups :many
+SELECT id, tenant_id, name, min_select, max_select, required, archived_at, created_at, updated_at FROM modifier_group WHERE tenant_id = $1 ORDER BY id
+`
+
+func (q *Queries) ListAllModifierGroups(ctx context.Context, tenantID uuid.UUID) ([]ModifierGroup, error) {
+	rows, err := q.db.Query(ctx, listAllModifierGroups, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ModifierGroup
+	for rows.Next() {
+		var i ModifierGroup
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.MinSelect,
+			&i.MaxSelect,
+			&i.Required,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllOutletVariants = `-- name: ListAllOutletVariants :many
+SELECT tenant_id, outlet_id, variant_id, price_override, available, created_at, updated_at FROM outlet_variant WHERE tenant_id = $1 AND outlet_id = $2 ORDER BY variant_id
+`
+
+type ListAllOutletVariantsParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+}
+
+func (q *Queries) ListAllOutletVariants(ctx context.Context, arg ListAllOutletVariantsParams) ([]OutletVariant, error) {
+	rows, err := q.db.Query(ctx, listAllOutletVariants, arg.TenantID, arg.OutletID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OutletVariant
+	for rows.Next() {
+		var i OutletVariant
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.OutletID,
+			&i.VariantID,
+			&i.PriceOverride,
+			&i.Available,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCategories = `-- name: ListCategories :many
 SELECT id, tenant_id, name, sort_order, archived_at, created_at, updated_at FROM category
 WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
@@ -686,6 +825,45 @@ func (q *Queries) ListCategories(ctx context.Context, arg ListCategoriesParams) 
 		arg.IncludeArchived,
 		arg.PageSize,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Category
+	for rows.Next() {
+		var i Category
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.SortOrder,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCategoriesByIDs = `-- name: ListCategoriesByIDs :many
+
+SELECT id, tenant_id, name, sort_order, archived_at, created_at, updated_at FROM category WHERE tenant_id = $1 AND id = ANY($2::uuid[]) ORDER BY id
+`
+
+type ListCategoriesByIDsParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+}
+
+// The POS pull (internal/sync): current state of what changed, or of everything.
+func (q *Queries) ListCategoriesByIDs(ctx context.Context, arg ListCategoriesByIDsParams) ([]Category, error) {
+	rows, err := q.db.Query(ctx, listCategoriesByIDs, arg.TenantID, arg.Ids)
 	if err != nil {
 		return nil, err
 	}
@@ -776,6 +954,47 @@ func (q *Queries) ListItems(ctx context.Context, arg ListItemsParams) ([]Item, e
 		arg.CategoryID,
 		arg.PageSize,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Item
+	for rows.Next() {
+		var i Item
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.CategoryID,
+			&i.Name,
+			&i.Sku,
+			&i.Barcode,
+			&i.ImageUrl,
+			&i.TrackStock,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listItemsByIDs = `-- name: ListItemsByIDs :many
+SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at FROM item WHERE tenant_id = $1 AND id = ANY($2::uuid[]) ORDER BY id
+`
+
+type ListItemsByIDsParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+}
+
+func (q *Queries) ListItemsByIDs(ctx context.Context, arg ListItemsByIDsParams) ([]Item, error) {
+	rows, err := q.db.Query(ctx, listItemsByIDs, arg.TenantID, arg.Ids)
 	if err != nil {
 		return nil, err
 	}
@@ -957,6 +1176,46 @@ func (q *Queries) ListOutletVariants(ctx context.Context, arg ListOutletVariants
 		arg.After,
 		arg.PageSize,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OutletVariant
+	for rows.Next() {
+		var i OutletVariant
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.OutletID,
+			&i.VariantID,
+			&i.PriceOverride,
+			&i.Available,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOutletVariantsByVariantIDs = `-- name: ListOutletVariantsByVariantIDs :many
+SELECT tenant_id, outlet_id, variant_id, price_override, available, created_at, updated_at FROM outlet_variant
+WHERE tenant_id = $1 AND outlet_id = $2 AND variant_id = ANY($3::uuid[])
+ORDER BY variant_id
+`
+
+type ListOutletVariantsByVariantIDsParams struct {
+	TenantID   uuid.UUID
+	OutletID   uuid.UUID
+	VariantIds []uuid.UUID
+}
+
+func (q *Queries) ListOutletVariantsByVariantIDs(ctx context.Context, arg ListOutletVariantsByVariantIDsParams) ([]OutletVariant, error) {
+	rows, err := q.db.Query(ctx, listOutletVariantsByVariantIDs, arg.TenantID, arg.OutletID, arg.VariantIds)
 	if err != nil {
 		return nil, err
 	}

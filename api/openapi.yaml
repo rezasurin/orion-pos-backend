@@ -536,6 +536,47 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /v1/sync/pull:
+    get:
+      operationId: pullChanges
+      tags: [sync]
+      summary: Pull what changed since the device's cursor
+      description: |
+        Returns the **current state** of every entity that changed since `cursor`, for the device's
+        outlet: catalog entities (items with their variants and modifier group links, categories,
+        modifier groups, this outlet's price overrides and availability; archived ones included and
+        marked), the outlet and its settings, the roster entries with PIN hashes and permissions, and
+        the entitlements snapshot with its `expires_at`.
+
+        Store the returned `cursor` only after applying the response, and send it next time. While
+        `has_more` is true ask again straight away. With no cursor, an unreadable one, or one ahead
+        of the server (a restored database), the response is a **snapshot** (`snapshot: true`): the
+        whole state, which replaces the device's copy instead of merging into it.
+
+        Entitlements ride on every pull. The device applies new ones at its next sync and never in
+        the middle of a shift.
+      security:
+        - deviceAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          description: The `cursor` of the previous response. Opaque. Leave out for a full snapshot.
+          schema: {type: string, maxLength: 200}
+        - name: limit
+          in: query
+          description: At most this many changes are turned into entities per response.
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 500}
+      responses:
+        '200':
+          description: The changes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PullResponse'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /v1/entitlements:
     get:
       operationId: getEntitlements
@@ -1871,6 +1912,63 @@ components:
           type: array
           items: {$ref: '#/components/schemas/SyncResult'}
         server_time: {type: string, format: date-time}
+
+    PullResponse:
+      type: object
+      required: [cursor, snapshot, has_more, server_time, categories, items, modifier_groups, outlet_variants, staff, removed_staff_ids, deleted, entitlements]
+      properties:
+        cursor: {type: string, description: Send as `cursor` next time, after applying this response.}
+        snapshot: {type: boolean, description: This is the whole state; replace the local copy.}
+        has_more: {type: boolean, description: More changes are waiting; pull again now.}
+        server_time: {type: string, format: date-time}
+        outlet:
+          allOf:
+            - $ref: '#/components/schemas/Outlet'
+          description: Present when the outlet or its settings changed, and in a snapshot.
+        categories:
+          type: array
+          items: {$ref: '#/components/schemas/Category'}
+        items:
+          type: array
+          description: Each with its variants and modifier group ids.
+          items: {$ref: '#/components/schemas/Item'}
+        modifier_groups:
+          type: array
+          description: Each with its modifiers.
+          items: {$ref: '#/components/schemas/ModifierGroup'}
+        outlet_variants:
+          type: array
+          description: This outlet's price overrides and availability. A variant not listed (in a snapshot) is at its base price and available.
+          items: {$ref: '#/components/schemas/OutletVariant'}
+        staff:
+          type: array
+          description: Roster entries that changed.
+          items: {$ref: '#/components/schemas/RosterStaff'}
+        removed_staff_ids:
+          type: array
+          description: People who changed and are no longer on this outlet's roster.
+          items: {type: string, format: uuid}
+        deleted:
+          type: array
+          description: Entities removed outright. Empty in Phase 1; the catalog is archived, not deleted.
+          items:
+            type: object
+            required: [type, id]
+            properties:
+              type: {type: string}
+              id: {type: string, format: uuid}
+        entitlements:
+          type: object
+          required: [items, generated_at, expires_at]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Entitlement'}
+            generated_at: {type: string, format: date-time}
+            expires_at:
+              type: string
+              format: date-time
+              description: Keep applying these until then if the server cannot be reached.
 
     OperatorChallenge:
       type: object

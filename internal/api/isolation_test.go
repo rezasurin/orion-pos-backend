@@ -189,6 +189,11 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 				problem(t, http.StatusBadRequest, "validation_failed")
 		},
 
+		"PullChanges": func(t *testing.T) {
+			// B's tablet pulls everything it can: nothing of A's, from a snapshot or from cursor zero.
+			w.noLeak(t, "PullChanges", e.do(t, "GET", "/v1/sync/pull", db, nil))
+			w.noLeak(t, "PullChanges/limit", e.do(t, "GET", "/v1/sync/pull?limit=1000", db, nil))
+		},
 		"PushEvents": func(t *testing.T) {
 			// B's tablet names A's cashier, tries to void A's record, and claims A's outlet.
 			push := func(ev map[string]any) response {
@@ -305,7 +310,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "UpdateOutletSettings",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "PullChanges", "UpdateOutletSettings",
 	} {
 		covered[op] = true
 	}

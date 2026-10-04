@@ -237,3 +237,24 @@ SET last_sync_at = @now, last_seen_at = @now,
     app_version = coalesce(sqlc.narg(app_version), app_version),
     clock_skew_ms = coalesce(sqlc.narg(clock_skew_ms), clock_skew_ms)
 WHERE tenant_id = @tenant_id AND id = @id;
+
+-- The POS pull: roster entries for the staff whose records changed.
+
+-- name: ListRosterCandidates :many
+-- For each staff id: whether the person belongs on this outlet's roster (active, and an owner or
+-- assigned to the outlet). Those who do not are reported as removed.
+SELECT s.id, s.display_name, s.pin_hash, coalesce(m.is_owner, false)::boolean AS is_owner,
+       (s.active AND (coalesce(m.is_owner, false) OR EXISTS (
+            SELECT 1 FROM staff_outlet_role sor
+            WHERE sor.tenant_id = s.tenant_id AND sor.staff_id = s.id AND sor.outlet_id = @outlet_id)))::boolean AS on_roster
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = @tenant_id AND s.id = ANY(@staff_ids::uuid[])
+ORDER BY s.display_name, s.id;
+
+-- name: ListPermissionsOfStaffAt :many
+SELECT sor.staff_id, rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = @tenant_id AND sor.outlet_id = @outlet_id AND sor.staff_id = ANY(@staff_ids::uuid[])
+ORDER BY sor.staff_id, rp.permission;

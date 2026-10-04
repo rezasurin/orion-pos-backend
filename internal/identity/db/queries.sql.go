@@ -695,6 +695,45 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 	return items, nil
 }
 
+const listPermissionsOfStaffAt = `-- name: ListPermissionsOfStaffAt :many
+SELECT sor.staff_id, rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = $1 AND sor.outlet_id = $2 AND sor.staff_id = ANY($3::uuid[])
+ORDER BY sor.staff_id, rp.permission
+`
+
+type ListPermissionsOfStaffAtParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+	StaffIds []uuid.UUID
+}
+
+type ListPermissionsOfStaffAtRow struct {
+	StaffID    uuid.UUID
+	Permission string
+}
+
+func (q *Queries) ListPermissionsOfStaffAt(ctx context.Context, arg ListPermissionsOfStaffAtParams) ([]ListPermissionsOfStaffAtRow, error) {
+	rows, err := q.db.Query(ctx, listPermissionsOfStaffAt, arg.TenantID, arg.OutletID, arg.StaffIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPermissionsOfStaffAtRow
+	for rows.Next() {
+		var i ListPermissionsOfStaffAtRow
+		if err := rows.Scan(&i.StaffID, &i.Permission); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRolePermissions = `-- name: ListRolePermissions :many
 SELECT role_id, permission FROM role_permission
 WHERE tenant_id = $1 AND role_id = ANY($2::uuid[])
@@ -788,6 +827,61 @@ func (q *Queries) ListRolesByIDs(ctx context.Context, arg ListRolesByIDsParams) 
 			&i.IsSystem,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRosterCandidates = `-- name: ListRosterCandidates :many
+
+SELECT s.id, s.display_name, s.pin_hash, coalesce(m.is_owner, false)::boolean AS is_owner,
+       (s.active AND (coalesce(m.is_owner, false) OR EXISTS (
+            SELECT 1 FROM staff_outlet_role sor
+            WHERE sor.tenant_id = s.tenant_id AND sor.staff_id = s.id AND sor.outlet_id = $1)))::boolean AS on_roster
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = $2 AND s.id = ANY($3::uuid[])
+ORDER BY s.display_name, s.id
+`
+
+type ListRosterCandidatesParams struct {
+	OutletID uuid.UUID
+	TenantID uuid.UUID
+	StaffIds []uuid.UUID
+}
+
+type ListRosterCandidatesRow struct {
+	ID          uuid.UUID
+	DisplayName string
+	PinHash     *string
+	IsOwner     bool
+	OnRoster    bool
+}
+
+// The POS pull: roster entries for the staff whose records changed.
+// For each staff id: whether the person belongs on this outlet's roster (active, and an owner or
+// assigned to the outlet). Those who do not are reported as removed.
+func (q *Queries) ListRosterCandidates(ctx context.Context, arg ListRosterCandidatesParams) ([]ListRosterCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listRosterCandidates, arg.OutletID, arg.TenantID, arg.StaffIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRosterCandidatesRow
+	for rows.Next() {
+		var i ListRosterCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DisplayName,
+			&i.PinHash,
+			&i.IsOwner,
+			&i.OnRoster,
 		); err != nil {
 			return nil, err
 		}

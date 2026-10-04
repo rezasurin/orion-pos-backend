@@ -18,6 +18,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	syncsrv "github.com/rezasurin/orion-pos-backend/internal/sync"
@@ -55,7 +57,10 @@ func newWorld(t *testing.T) *world {
 		t.Fatal(err)
 	}
 	stub := &syncstub.Projector{}
-	svc, err := syncsrv.NewService(syncsrv.Deps{Pool: d.App, Identity: ids, Projectors: []syncsrv.Projector{stub}, Clock: clock})
+	svc, err := syncsrv.NewService(syncsrv.Deps{
+		Pool: d.App, Identity: ids, Projectors: []syncsrv.Projector{stub}, Clock: clock,
+		Catalog: catalog.NewService(d.App), Tenancy: tenancy.NewService(d.App), Entitlements: entitlements.NewResolver(d.App, clock),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
