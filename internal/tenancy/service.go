@@ -54,6 +54,7 @@ type Outlet struct {
 // OutletSettings are the per-outlet tax, rounding, time and receipt settings (ADR 0006).
 type OutletSettings struct {
 	Timezone             string
+	BusinessDayCutoff    time.Duration // when the business day begins, as a time of day; 0 is midnight
 	PriceIncludesTax     bool
 	TaxRate              kernel.BasisPoints
 	ServiceChargeRate    kernel.BasisPoints
@@ -289,6 +290,7 @@ func toOutlet(o db.Outlet, s db.OutletSetting) Outlet {
 		CreatedAt: o.CreatedAt,
 		Settings: OutletSettings{
 			Timezone:             s.Timezone,
+			BusinessDayCutoff:    time.Duration(s.BusinessDayCutoff.Microseconds) * time.Microsecond,
 			PriceIncludesTax:     s.PriceIncludesTax,
 			TaxRate:              kernel.BasisPoints(s.TaxRateBp),
 			ServiceChargeRate:    kernel.BasisPoints(s.ServiceChargeRateBp),

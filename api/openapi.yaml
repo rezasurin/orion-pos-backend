@@ -218,6 +218,37 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /v1/outlets/{outletId}/settings:
+    patch:
+      operationId: updateOutletSettings
+      tags: [tenancy]
+      summary: Change an outlet's tax, service charge, rounding, time and receipt settings
+      description: |
+        Fields left out stay as they are. Needs `settings.manage` at that outlet. The change reaches
+        the outlet's devices at their next sync and is written to the audit log with the old and new
+        values. Sales already recorded keep the amounts they were calculated with and their
+        business date.
+      x-permission: settings.manage
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutletSettingsUpdate'
+      responses:
+        '200':
+          description: The outlet with its settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Outlet'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /v1/roles:
     get:
       operationId: listRoles
@@ -1338,9 +1369,16 @@ components:
 
     OutletSettings:
       type: object
-      required: [timezone, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer]
+      required: [timezone, business_day_cutoff, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer]
       properties:
         timezone: {type: string, enum: [Asia/Jakarta, Asia/Makassar, Asia/Jayapura]}
+        business_day_cutoff:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          example: '04:00'
+          description: |
+            When the business day begins, as a time of day in the outlet's time zone, 00:00 to 11:59.
+            A sale before it counts towards the previous day.
         price_includes_tax: {type: boolean}
         tax_rate_bp: {type: integer, minimum: 0, maximum: 10000, description: Basis points; 1100 is 11%.}
         service_charge_rate_bp: {type: integer, minimum: 0, maximum: 10000}
@@ -1349,6 +1387,20 @@ components:
         cash_rounding_mode: {type: string, enum: [nearest, down, up]}
         receipt_header: {type: string}
         receipt_footer: {type: string}
+
+    OutletSettingsUpdate:
+      type: object
+      properties:
+        timezone: {type: string, enum: [Asia/Jakarta, Asia/Makassar, Asia/Jayapura]}
+        business_day_cutoff: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', example: '04:00'}
+        price_includes_tax: {type: boolean}
+        tax_rate_bp: {type: integer, minimum: 0, maximum: 10000}
+        service_charge_rate_bp: {type: integer, minimum: 0, maximum: 10000}
+        service_charge_taxable: {type: boolean}
+        cash_rounding_unit: {type: integer, minimum: 0, maximum: 10000}
+        cash_rounding_mode: {type: string, enum: [nearest, down, up]}
+        receipt_header: {type: string, maxLength: 500}
+        receipt_footer: {type: string, maxLength: 500}
 
     Outlet:
       type: object

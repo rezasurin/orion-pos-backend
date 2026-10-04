@@ -213,6 +213,10 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 			e.do(t, "POST", "/v1/sync/push", db, map[string]any{"device_id": w.deviceIDA, "events": []map[string]any{}}).problem(t, http.StatusBadRequest, "validation_failed")
 		},
 
+		"UpdateOutletSettings": func(t *testing.T) {
+			w.gone(t, "UpdateOutletSettings", e.do(t, "PATCH", "/v1/outlets/"+aOutlet+"/settings", ub, map[string]any{"tax_rate_bp": 1}), http.StatusNotFound, "not_found")
+		},
+
 		"GetOutlet": func(t *testing.T) {
 			w.gone(t, "GetOutlet", e.do(t, "GET", "/v1/outlets/"+aOutlet, ub, nil), http.StatusNotFound, "not_found")
 		},
@@ -261,6 +265,11 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 		t.Errorf("tenant B cannot reuse tenant A's SKU: %d %s", r.Code, r.Body.String())
 	}
 
+	var taxA int
+	if err := e.d.Owner.QueryRow(context.Background(), `SELECT tax_rate_bp FROM outlet_settings WHERE outlet_id = $1`, w.a.outlet.ID).Scan(&taxA); err != nil || taxA != 0 {
+		t.Errorf("tenant A's settings were changed by tenant B (%d, %v)", taxA, err)
+	}
+
 	var voided bool
 	if err := e.d.Owner.QueryRow(context.Background(), `SELECT voided FROM stub_record WHERE id = $1`, w.syncA).Scan(&voided); err != nil || voided {
 		t.Errorf("tenant A's record was voided by tenant B (%v, %v)", voided, err)
@@ -296,7 +305,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "UpdateOutletSettings",
 	} {
 		covered[op] = true
 	}

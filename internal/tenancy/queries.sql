@@ -44,3 +44,15 @@ SELECT * FROM tenant WHERE slug = @slug;
 
 -- name: SetTenantSuspended :exec
 UPDATE tenant SET suspended_at = sqlc.narg(suspended_at) WHERE id = @id;
+
+-- name: GetOutletSettingsForUpdate :one
+SELECT * FROM outlet_settings WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id FOR UPDATE;
+
+-- name: UpdateOutletSettings :one
+UPDATE outlet_settings
+SET timezone = @timezone, business_day_cutoff = @business_day_cutoff, price_includes_tax = @price_includes_tax,
+    tax_rate_bp = @tax_rate_bp, service_charge_rate_bp = @service_charge_rate_bp,
+    service_charge_taxable = @service_charge_taxable, cash_rounding_unit = @cash_rounding_unit,
+    cash_rounding_mode = @cash_rounding_mode, receipt_header = @receipt_header, receipt_footer = @receipt_footer
+WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id
+RETURNING *;

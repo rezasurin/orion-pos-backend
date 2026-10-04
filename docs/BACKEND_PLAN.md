@@ -461,6 +461,27 @@ trigger that raises on update or delete as a backstop.
   outlet's timezone and cutoff, and stored on the sale and shift. Reports group by it. Changing
   an outlet's timezone does not rewrite history.
 
+#### 4.9.1 Settings and the business date as built (B1.7)
+
+- `PATCH /v1/outlets/{outletId}/settings` needs `settings.manage` *at that outlet* (an outlet of
+  another business is `404`). Fields left out stay as they are. A real change is recorded in the
+  change log for that outlet only (`outlet_settings`, so only its devices pull it) and in the audit
+  log as `settings.updated` with the old and new value of each field; an update that changes
+  nothing writes nothing. `business_day_cutoff` is `HH:MM`, 00:00 to 11:59 in the outlet's time
+  zone, and is part of the outlet's settings in every response (so the roster carries it).
+- `kernel.BusinessDate(instant, zone, cutoff)` is the calendar date of the instant in the outlet's
+  zone after subtracting the cutoff: with a 04:00 cutoff, 02:30 belongs to the previous day and
+  04:00 starts the new one. `tenancy.OutletSettings.BusinessDate` applies it with the outlet's own
+  zone and cutoff. It is called once per sale, with the **device's** `device_time` (never
+  `received_at`), when the sale is projected, and stored. Changing the zone or cutoff later never
+  moves history.
+- The three outlet time zones are fixed offsets (WIB +7, WITA +8, WIT +9). Indonesia has no daylight
+  saving time, so this is exact and needs no tzdata in the binary.
+- A device whose clock is wrong still gets a self-consistent date (its own clock, in the outlet's
+  zone); the skew is recorded for support (5.1.1) but not corrected. If the pilot shows tablets
+  with badly wrong clocks, correcting `device_time` by the skew measured on the same push is the
+  change to make, as a new `pricing`-style versioned rule.
+
 ### 4.10 Errors and API conventions
 
 - Errors use `application/problem+json` (RFC 9457) with a stable `code` field
@@ -1006,7 +1027,7 @@ backup has been restored into a scratch database.
 | B1.4 | ✅ `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` (see 5.1.1) | 4d |
 | B1.5 | Projectors: `shift.opened/closed`, `cash.movement`, `sale.completed` (sale, lines, modifiers, discounts, payments, flags), `sale.voided` (permission re-check) | 5d |
 | B1.6 | Pull endpoint: deltas from `change_log`, full snapshot fallback, roster and settings and entitlements, cursor handling | 3d |
-| B1.7 | Outlet settings for tax, service charge, rounding, timezone, cutoff; `business_date` derivation | 1d |
+| B1.7 | ✅ Outlet settings for tax, service charge, rounding, timezone, cutoff (`PATCH /v1/outlets/{outletId}/settings`); `business_date` derivation (`kernel.BusinessDate`, see 4.9.1). Done ahead of B1.5, which needs it | 1d |
 | B1.8 | Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers must match the POS's own totals | 4d |
 | B1.9 | Sales list and detail for the back office (read-only) | 2d |
 | B1.10 | Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long | 1d |

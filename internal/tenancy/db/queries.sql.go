@@ -10,7 +10,39 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const getOutletSettingsForUpdate = `-- name: GetOutletSettingsForUpdate :one
+SELECT outlet_id, tenant_id, timezone, business_day_cutoff, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer, created_at, updated_at FROM outlet_settings WHERE tenant_id = $1 AND outlet_id = $2 FOR UPDATE
+`
+
+type GetOutletSettingsForUpdateParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+}
+
+func (q *Queries) GetOutletSettingsForUpdate(ctx context.Context, arg GetOutletSettingsForUpdateParams) (OutletSetting, error) {
+	row := q.db.QueryRow(ctx, getOutletSettingsForUpdate, arg.TenantID, arg.OutletID)
+	var i OutletSetting
+	err := row.Scan(
+		&i.OutletID,
+		&i.TenantID,
+		&i.Timezone,
+		&i.BusinessDayCutoff,
+		&i.PriceIncludesTax,
+		&i.TaxRateBp,
+		&i.ServiceChargeRateBp,
+		&i.ServiceChargeTaxable,
+		&i.CashRoundingUnit,
+		&i.CashRoundingMode,
+		&i.ReceiptHeader,
+		&i.ReceiptFooter,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
 
 const getOutletWithSettings = `-- name: GetOutletWithSettings :one
 SELECT o.id, o.tenant_id, o.name, o.code, o.address, o.archived_at, o.created_at, o.updated_at, s.outlet_id, s.tenant_id, s.timezone, s.business_day_cutoff, s.price_includes_tax, s.tax_rate_bp, s.service_charge_rate_bp, s.service_charge_taxable, s.cash_rounding_unit, s.cash_rounding_mode, s.receipt_header, s.receipt_footer, s.created_at, s.updated_at
@@ -307,4 +339,64 @@ type SetTenantSuspendedParams struct {
 func (q *Queries) SetTenantSuspended(ctx context.Context, arg SetTenantSuspendedParams) error {
 	_, err := q.db.Exec(ctx, setTenantSuspended, arg.SuspendedAt, arg.ID)
 	return err
+}
+
+const updateOutletSettings = `-- name: UpdateOutletSettings :one
+UPDATE outlet_settings
+SET timezone = $1, business_day_cutoff = $2, price_includes_tax = $3,
+    tax_rate_bp = $4, service_charge_rate_bp = $5,
+    service_charge_taxable = $6, cash_rounding_unit = $7,
+    cash_rounding_mode = $8, receipt_header = $9, receipt_footer = $10
+WHERE tenant_id = $11 AND outlet_id = $12
+RETURNING outlet_id, tenant_id, timezone, business_day_cutoff, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer, created_at, updated_at
+`
+
+type UpdateOutletSettingsParams struct {
+	Timezone             string
+	BusinessDayCutoff    pgtype.Time
+	PriceIncludesTax     bool
+	TaxRateBp            int32
+	ServiceChargeRateBp  int32
+	ServiceChargeTaxable bool
+	CashRoundingUnit     int32
+	CashRoundingMode     CashRoundingMode
+	ReceiptHeader        string
+	ReceiptFooter        string
+	TenantID             uuid.UUID
+	OutletID             uuid.UUID
+}
+
+func (q *Queries) UpdateOutletSettings(ctx context.Context, arg UpdateOutletSettingsParams) (OutletSetting, error) {
+	row := q.db.QueryRow(ctx, updateOutletSettings,
+		arg.Timezone,
+		arg.BusinessDayCutoff,
+		arg.PriceIncludesTax,
+		arg.TaxRateBp,
+		arg.ServiceChargeRateBp,
+		arg.ServiceChargeTaxable,
+		arg.CashRoundingUnit,
+		arg.CashRoundingMode,
+		arg.ReceiptHeader,
+		arg.ReceiptFooter,
+		arg.TenantID,
+		arg.OutletID,
+	)
+	var i OutletSetting
+	err := row.Scan(
+		&i.OutletID,
+		&i.TenantID,
+		&i.Timezone,
+		&i.BusinessDayCutoff,
+		&i.PriceIncludesTax,
+		&i.TaxRateBp,
+		&i.ServiceChargeRateBp,
+		&i.ServiceChargeTaxable,
+		&i.CashRoundingUnit,
+		&i.CashRoundingMode,
+		&i.ReceiptHeader,
+		&i.ReceiptFooter,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

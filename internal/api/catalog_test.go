@@ -280,3 +280,69 @@ func TestOutletPricesNeedThePermissionAtThatOutlet(t *testing.T) {
 		t.Errorf("owner at the second outlet: %d %s", r.Code, r.Body.String())
 	}
 }
+
+type outletSettingsBody struct {
+	Timezone          string `json:"timezone"`
+	BusinessDayCutoff string `json:"business_day_cutoff"`
+	TaxRateBP         int    `json:"tax_rate_bp"`
+	CashRoundingMode  string `json:"cash_rounding_mode"`
+	ReceiptFooter     string `json:"receipt_footer"`
+}
+
+func TestOutletSettingsOverHTTP(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	manager := e.member(t, f, "mgr@kopi.test", "Manager") // Manager lacks settings.manage
+	cashier := e.member(t, f, "cash@kopi.test", "Cashier")
+	path := "/v1/outlets/" + f.outlet.ID.String() + "/settings"
+
+	var o struct {
+		Settings outletSettingsBody `json:"settings"`
+	}
+	r := e.do(t, "PATCH", path, owner, map[string]any{
+		"timezone": "Asia/Makassar", "business_day_cutoff": "04:30", "tax_rate_bp": 1100, "cash_rounding_mode": "up", "receipt_footer": "Terima kasih",
+	})
+	if r.Code != http.StatusOK {
+		t.Fatalf("PATCH settings: %d %s", r.Code, r.Body.String())
+	}
+	r.decode(t, &o)
+	if o.Settings.Timezone != "Asia/Makassar" || o.Settings.BusinessDayCutoff != "04:30" || o.Settings.TaxRateBP != 1100 ||
+		o.Settings.CashRoundingMode != "up" || o.Settings.ReceiptFooter != "Terima kasih" {
+		t.Errorf("settings = %+v", o.Settings)
+	}
+	// The outlet endpoints show them too, with the cutoff always present.
+	o.Settings = outletSettingsBody{}
+	e.do(t, "GET", "/v1/outlets/"+f.outlet.ID.String(), owner, nil).decode(t, &o)
+	if o.Settings.BusinessDayCutoff != "04:30" {
+		t.Errorf("GET outlet: %+v", o.Settings)
+	}
+
+	for name, token := range map[string]string{"manager": manager.AccessToken, "cashier": cashier.AccessToken} {
+		e.do(t, "PATCH", path, token, map[string]any{"tax_rate_bp": 0}).problem(t, http.StatusForbidden, "forbidden")
+		_ = name
+	}
+	e.do(t, "PATCH", path, "", map[string]any{"tax_rate_bp": 0}).problem(t, http.StatusUnauthorized, "invalid_token")
+
+	for name, body := range map[string]map[string]any{
+		"bad zone":    {"timezone": "Europe/Paris"},
+		"bad cutoff":  {"business_day_cutoff": "25:00"},
+		"noon":        {"business_day_cutoff": "12:00"},
+		"not a time":  {"business_day_cutoff": "four"},
+		"tax too big": {"tax_rate_bp": 10001},
+		"bad mode":    {"cash_rounding_mode": "sideways"},
+	} {
+		if r := e.do(t, "PATCH", path, owner, body); r.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s", name, r.Code, r.Body.String())
+		}
+	}
+	e.do(t, "PATCH", "/v1/outlets/"+uuid.NewString()+"/settings", owner, map[string]any{"tax_rate_bp": 0}).problem(t, http.StatusNotFound, "not_found")
+	e.do(t, "PATCH", path, owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+
+	// Nothing refused changed anything.
+	o.Settings = outletSettingsBody{}
+	e.do(t, "GET", "/v1/outlets/"+f.outlet.ID.String(), owner, nil).decode(t, &o)
+	if o.Settings.TaxRateBP != 1100 || o.Settings.Timezone != "Asia/Makassar" {
+		t.Errorf("settings after refused updates: %+v", o.Settings)
+	}
+}

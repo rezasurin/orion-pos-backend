@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -375,4 +377,126 @@ func TestCheckAppRole(t *testing.T) {
 func isPgCode(err error, code string) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == code
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
+func TestUpdateOutletSettings(t *testing.T) {
+	d := testdb.New(t)
+	svc := tenancy.NewService(d.App)
+	ctx := context.Background()
+	tenant, outlet, err := svc.CreateTenant(ctx, newTenant("kopi-senja", "BDG1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seqBefore int64
+	_ = d.Owner.QueryRow(ctx, `SELECT change_seq FROM tenant WHERE id = $1`, tenant.ID).Scan(&seqBefore)
+
+	cutoff := 4 * time.Hour
+	got, err := svc.UpdateOutletSettings(ctx, tenant.ID, outlet.ID, tenancy.SettingsUpdate{
+		Timezone: ptrTo("Asia/Makassar"), BusinessDayCutoff: &cutoff, PriceIncludesTax: ptrTo(true),
+		TaxRate: ptrTo(kernel.BasisPoints(1100)), ServiceChargeRate: ptrTo(kernel.BasisPoints(500)),
+		ServiceChargeTaxable: ptrTo(false), CashRoundingUnit: ptrTo(kernel.Rupiah(500)), CashRoundingMode: ptrTo("down"),
+		ReceiptHeader: ptrTo("Kopi Senja\nJl. Braga 1"), ReceiptFooter: ptrTo("Terima kasih"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := got.Settings
+	if s.Timezone != "Asia/Makassar" || s.BusinessDayCutoff != cutoff || !s.PriceIncludesTax || s.TaxRate != 1100 ||
+		s.ServiceChargeRate != 500 || s.ServiceChargeTaxable || s.CashRoundingUnit != 500 || s.CashRoundingMode != "down" ||
+		s.ReceiptHeader != "Kopi Senja\nJl. Braga 1" || s.ReceiptFooter != "Terima kasih" {
+		t.Errorf("settings = %+v", s)
+	}
+
+	// Recorded for this outlet only, and audited with the old and new values.
+	var entity string
+	var outletID uuid.UUID
+	if err := d.Owner.QueryRow(ctx, `SELECT entity_type, outlet_id FROM change_log WHERE tenant_id = $1 AND seq = $2`, tenant.ID, seqBefore+1).Scan(&entity, &outletID); err != nil {
+		t.Fatal(err)
+	}
+	if entity != "outlet_settings" || outletID != outlet.ID {
+		t.Errorf("change = %s for %s", entity, outletID)
+	}
+	var detail string
+	if err := d.Owner.QueryRow(ctx, `SELECT detail::text FROM tenant_audit_log WHERE action = 'settings.updated'`).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"timezone": {"after": "Asia/Makassar", "before": "Asia/Jakarta"}`, `"business_day_cutoff": {"after": "04:00", "before": "00:00"}`, `"tax_rate_bp": {"after": 1100, "before": 0}`} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("audit detail lacks %s:\n%s", want, detail)
+		}
+	}
+
+	// Fields left out stay; an update that changes nothing writes nothing.
+	again, err := svc.UpdateOutletSettings(ctx, tenant.ID, outlet.ID, tenancy.SettingsUpdate{TaxRate: ptrTo(kernel.BasisPoints(1100))})
+	if err != nil || again.Settings != got.Settings {
+		t.Errorf("no-op update: %+v, %v", again.Settings, err)
+	}
+	var seqAfter int64
+	_ = d.Owner.QueryRow(ctx, `SELECT change_seq FROM tenant WHERE id = $1`, tenant.ID).Scan(&seqAfter)
+	if seqAfter != seqBefore+1 {
+		t.Errorf("change_seq moved from %d to %d; only the real change should count", seqBefore, seqAfter)
+	}
+
+	// Reading it back shows the same, including through the list.
+	list, err := svc.ListOutlets(ctx, tenant.ID)
+	if err != nil || list[0].Settings != got.Settings {
+		t.Errorf("list = %+v, %v", list, err)
+	}
+}
+
+func TestUpdateOutletSettingsValidation(t *testing.T) {
+	d := testdb.New(t)
+	svc := tenancy.NewService(d.App)
+	ctx := context.Background()
+	tenant, outlet, _ := svc.CreateTenant(ctx, newTenant("kopi-senja", "BDG1"))
+
+	hours := func(h int) *time.Duration { v := time.Duration(h) * time.Hour; return &v }
+	odd := 90*time.Minute + time.Second
+	bad := map[string]tenancy.SettingsUpdate{
+		"unknown timezone":   {Timezone: ptrTo("Europe/Paris")},
+		"cutoff at noon":     {BusinessDayCutoff: hours(12)},
+		"negative cutoff":    {BusinessDayCutoff: hours(-1)},
+		"cutoff in seconds":  {BusinessDayCutoff: &odd},
+		"tax over 100%":      {TaxRate: ptrTo(kernel.BasisPoints(10001))},
+		"negative tax":       {TaxRate: ptrTo(kernel.BasisPoints(-1))},
+		"service over 100%":  {ServiceChargeRate: ptrTo(kernel.BasisPoints(10001))},
+		"huge rounding unit": {CashRoundingUnit: ptrTo(kernel.Rupiah(1_000_000))},
+		"unknown mode":       {CashRoundingMode: ptrTo("sideways")},
+		"endless header":     {ReceiptHeader: ptrTo(strings.Repeat("x", 501))},
+		"endless footer":     {ReceiptFooter: ptrTo(strings.Repeat("é", 501))},
+	}
+	for name, in := range bad {
+		if _, err := svc.UpdateOutletSettings(ctx, tenant.ID, outlet.ID, in); !errors.Is(err, kernel.ErrValidation) {
+			t.Errorf("%s: err = %v, want validation", name, err)
+		}
+	}
+	if _, err := svc.UpdateOutletSettings(ctx, tenant.ID, kernel.NewID(), tenancy.SettingsUpdate{}); !errors.Is(err, kernel.ErrNotFound) {
+		t.Errorf("unknown outlet: err = %v", err)
+	}
+	// Another business's outlet is not found either.
+	other, _, _ := svc.CreateTenant(ctx, newTenant("teh-manis", "SBY1"))
+	if _, err := svc.UpdateOutletSettings(ctx, other.ID, outlet.ID, tenancy.SettingsUpdate{TaxRate: ptrTo(kernel.BasisPoints(1))}); !errors.Is(err, kernel.ErrNotFound) {
+		t.Errorf("another business's outlet: err = %v", err)
+	}
+	if got, _ := svc.GetOutlet(ctx, tenant.ID, outlet.ID); got.Settings.TaxRate != 0 {
+		t.Errorf("a refused update changed the outlet: %+v", got.Settings)
+	}
+}
+
+func TestSettingsGiveTheBusinessDate(t *testing.T) {
+	s := tenancy.OutletSettings{Timezone: "Asia/Jakarta", BusinessDayCutoff: 4 * time.Hour}
+	// 02:30 on 3 October in Jakarta is 19:30 UTC on 2 October; with a 04:00 cutoff the business
+	// day is the 2nd either way, and 05:00 is the 3rd.
+	if got := s.BusinessDate(time.Date(2026, 10, 2, 19, 30, 0, 0, time.UTC)); got.Format(time.DateOnly) != "2026-10-02" {
+		t.Errorf("02:30 local = %s", got.Format(time.DateOnly))
+	}
+	if got := s.BusinessDate(time.Date(2026, 10, 2, 22, 0, 0, 0, time.UTC)); got.Format(time.DateOnly) != "2026-10-03" {
+		t.Errorf("05:00 local = %s", got.Format(time.DateOnly))
+	}
+	s.Timezone = "Asia/Jayapura" // two hours ahead of Jakarta: the same instants fall on later local hours
+	if got := s.BusinessDate(time.Date(2026, 10, 2, 19, 30, 0, 0, time.UTC)); got.Format(time.DateOnly) != "2026-10-03" {
+		t.Errorf("04:30 local in WIT = %s", got.Format(time.DateOnly))
+	}
 }
