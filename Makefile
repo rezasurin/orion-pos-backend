@@ -10,7 +10,7 @@ export ORION_DATABASE_URL ?= postgres://orion_api:orion@localhost:5432/orion?ssl
 export ORION_SECRETS_KEY ?= b3Jpb24tbG9jYWwtZGV2ZWxvcG1lbnQta2V5LTAwMDE
 export ORION_PLATFORM_DATABASE_URL ?= postgres://orion_admin:orion@localhost:5432/orion?sslmode=disable
 
-.PHONY: help gen lint test build run worker migrate db-up db-down db-reset
+.PHONY: help gen lint test load build run worker migrate db-up db-down db-reset
 
 help: ## List targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -24,6 +24,9 @@ lint: ## Run golangci-lint
 
 test: ## Run all tests (needs Docker, or ORION_TEST_DATABASE_URL)
 	go test -race -count=1 ./...
+
+load: ## Run the load check alone and print its numbers (needs Docker, or ORION_TEST_DATABASE_URL)
+	go test -race=false -count=1 -run 'TestAWeekOfABusyCafeStaysFast|TestTheReportsHaveTheIndexesTheyReadThrough' -v ./internal/sales
 
 build: ## Build bin/orion
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/orion ./cmd/orion

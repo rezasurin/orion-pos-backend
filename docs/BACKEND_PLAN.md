@@ -734,6 +734,23 @@ Rules:
   outlet, one event id on two devices, content changes under one key, malformed events, and the
   inbox being unrewritable.
 
+#### 5.1.2 Load check as built (B1.11)
+
+`make load` (also part of `make test`; skipped by `-short`) pushes a week of a busy cafe through the
+real push path: 3 tablets, 600 sales a day each day for 7 days (4,242 events with shift opens and
+closes), cut into bursts of 1 to 25 events and sent by the three tablets at once. On a laptop-class
+Postgres with no tuning (the same one CI uses) it measured about 620 events per second with push
+latency p50 58 ms, p95 116 ms, p99 133 ms and max 150 ms against the 300 ms bar, with every sale
+stored once, no flag, and every event accepted. Afterwards the end-of-day report takes about 9 ms,
+the sales list 3 to 8 ms and the end-of-shift report 5 ms. The test fails if p95 passes 300 ms or a
+report passes 500 ms.
+
+The planner prefers a sequential scan on tables this small, so a plan on test data says little.
+Instead `TestTheReportsHaveTheIndexesTheyReadThrough` checks that each way the reports, the list and
+the monitor read has an index built for it (mutation-checked: removing one fails the test), and the
+timings above are on a full week of data. Run `EXPLAIN (ANALYZE, BUFFERS)` on the pilot's database
+after its first real week before adding anything.
+
 ### 5.2 Pull: server to device
 
 ```
@@ -1197,7 +1214,7 @@ backup has been restored into a scratch database.
 | B1.8 | ✅ Reports: end of shift (expected vs counted cash, by payment method, voids, discounts) and end of day per outlet; numbers match the POS's own totals (see 6.4.2) | 4d |
 | B1.9 | ✅ Sales list and detail for the back office (read-only; see 6.4.3) | 2d |
 | B1.10 | ✅ Device health: `last_sync_at`, skew, app version; alert (email to owner/operator) when a device has unsynced events for too long (see 4.11.1) | 1d |
-| B1.11 | Load sanity check: one week of a busy cafe (for example 600 sales/day, 3 devices) pushed in bursts, p95 push latency under 300 ms | 1d |
+| B1.11 | ✅ Load sanity check: one week of a busy cafe (600 sales/day, 3 devices) pushed in bursts, p95 push latency under 300 ms (see 5.1.2) | 1d |
 | B1.12 | Pilot runbook: how to read flags, fix a stuck device, rebuild a report | 1d |
 
 **Done when** the design partner's week passes with matching end-of-day totals (roadmap), **and**
