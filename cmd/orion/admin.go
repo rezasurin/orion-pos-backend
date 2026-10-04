@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
 	"github.com/rezasurin/orion-pos-backend/internal/config"
 	"github.com/rezasurin/orion-pos-backend/internal/database"
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
@@ -106,7 +107,7 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 		if cfg.Env == "production" {
 			return errors.New("seed-demo is refused when ORION_ENV is production")
 		}
-		return seedDemo(ctx, tenants, ids)
+		return seedDemo(ctx, tenants, ids, catalog.NewService(pool))
 	default:
 		fmt.Print(adminUsage)
 		return fmt.Errorf("unknown admin command %q", args[0])
@@ -126,7 +127,7 @@ func createBusiness(ctx context.Context, tenants *tenancy.Service, ids *identity
 
 const demoPassword = "demo-password-1"
 
-func seedDemo(ctx context.Context, tenants *tenancy.Service, ids *identity.Service) error {
+func seedDemo(ctx context.Context, tenants *tenancy.Service, ids *identity.Service, cat *catalog.Service) error {
 	t, o, err := createBusiness(ctx, tenants, ids, tenancy.NewTenant{
 		Name: "Demo Kopi", Slug: "demo-kopi", Outlet: tenancy.NewOutlet{Name: "Demo Kopi Jakarta", Code: "JKT1"},
 	}, "owner@demo.orion.test", demoPassword, "Demo Owner")
@@ -183,10 +184,64 @@ func seedDemo(ctx context.Context, tenants *tenancy.Service, ids *identity.Servi
 		return err
 	}
 
+	if err := seedMenu(ctx, cat, t.ID); err != nil {
+		return err
+	}
+
 	fmt.Printf("demo business %s (outlet %s %s)\n", t.ID, o.Code, o.ID)
 	fmt.Printf("sign in: owner@demo.orion.test or manager@demo.orion.test, password %s\n", demoPassword)
 	fmt.Println("cashiers: Sari PIN 4821, Budi PIN 9071")
 	fmt.Printf("device %s code %d, secret: %s\n", dev.Device.ID, dev.Device.Code, dev.Secret)
+	return nil
+}
+
+// seedMenu gives the demo business a small cafe menu: three categories, two modifier groups, and
+// items with and without variants, so front-end and POS work has realistic catalog data.
+func seedMenu(ctx context.Context, cat *catalog.Service, tenantID uuid.UUID) error {
+	category := func(name string, order int) (uuid.UUID, error) {
+		c, err := cat.CreateCategory(ctx, tenantID, catalog.NewCategory{Name: name, SortOrder: order})
+		return c.ID, err
+	}
+	coffee, err := category("Coffee", 1)
+	if err != nil {
+		return err
+	}
+	drinks, err := category("Other drinks", 2)
+	if err != nil {
+		return err
+	}
+	food, err := category("Food", 3)
+	if err != nil {
+		return err
+	}
+	sugar, err := cat.CreateModifierGroup(ctx, tenantID, catalog.NewModifierGroup{
+		Name: "Sugar level", MinSelect: 1, MaxSelect: 1, Required: true,
+		Modifiers: []catalog.NewModifier{{Name: "Normal"}, {Name: "Less sugar"}, {Name: "No sugar"}},
+	})
+	if err != nil {
+		return err
+	}
+	addOns, err := cat.CreateModifierGroup(ctx, tenantID, catalog.NewModifierGroup{
+		Name: "Add-ons", MinSelect: 0, MaxSelect: 3,
+		Modifiers: []catalog.NewModifier{{Name: "Extra shot", PriceDelta: 5000}, {Name: "Oat milk", PriceDelta: 4000}, {Name: "Whipped cream", PriceDelta: 3000}},
+	})
+	if err != nil {
+		return err
+	}
+	one := func(price kernel.Rupiah) []catalog.NewVariant { return []catalog.NewVariant{{BasePrice: price}} }
+	for _, it := range []catalog.NewItem{
+		{Name: "Espresso", CategoryID: &coffee, Variants: one(18000), ModifierGroupIDs: []uuid.UUID{addOns.ID}},
+		{Name: "Latte", CategoryID: &coffee, ModifierGroupIDs: []uuid.UUID{sugar.ID, addOns.ID},
+			Variants: []catalog.NewVariant{{Name: "Hot", BasePrice: 28000}, {Name: "Iced", BasePrice: 30000}}},
+		{Name: "Kopi susu", CategoryID: &coffee, Variants: one(22000), ModifierGroupIDs: []uuid.UUID{sugar.ID}},
+		{Name: "Es teh manis", CategoryID: &drinks, Variants: one(12000), ModifierGroupIDs: []uuid.UUID{sugar.ID}},
+		{Name: "Croissant", CategoryID: &food, Variants: one(25000)},
+		{Name: "Nasi goreng", CategoryID: &food, Variants: one(35000)},
+	} {
+		if _, err := cat.CreateItem(ctx, tenantID, it); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

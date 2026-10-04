@@ -19,6 +19,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/rezasurin/orion-pos-backend/internal/api"
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
@@ -83,7 +84,7 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 			t.Fatal(err)
 		}
 	}
-	srv, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	srv, err := api.New(api.Deps{Catalog: catalog.NewService(d.App), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

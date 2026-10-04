@@ -152,6 +152,16 @@ func (ns NullSubscriptionStatus) Value() (driver.Value, error) {
 	return string(ns.SubscriptionStatus), nil
 }
 
+type Category struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	Name       string
+	SortOrder  int32
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type ChangeLog struct {
 	TenantID   uuid.UUID
 	Seq        int64
@@ -208,6 +218,51 @@ type EntitlementKey struct {
 	CreatedAt    time.Time
 }
 
+type Item struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	CategoryID *uuid.UUID
+	Name       string
+	Sku        *string
+	Barcode    *string
+	ImageUrl   *string
+	TrackStock bool
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type ItemModifierGroup struct {
+	TenantID  uuid.UUID
+	ItemID    uuid.UUID
+	GroupID   uuid.UUID
+	SortOrder int32
+}
+
+type Modifier struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	GroupID    uuid.UUID
+	Name       string
+	PriceDelta int64
+	SortOrder  int32
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type ModifierGroup struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	Name       string
+	MinSelect  int32
+	MaxSelect  int32
+	Required   bool
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type Operator struct {
 	ID              uuid.UUID
 	Email           string
@@ -254,6 +309,16 @@ type OutletSetting struct {
 	ReceiptFooter        string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+type OutletVariant struct {
+	TenantID      uuid.UUID
+	OutletID      uuid.UUID
+	VariantID     uuid.UUID
+	PriceOverride *int64
+	Available     bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type Plan struct {
@@ -429,4 +494,18 @@ type UserAccount struct {
 	Locale          string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type Variant struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	ItemID     uuid.UUID
+	Name       string
+	Sku        *string
+	Barcode    *string
+	BasePrice  int64
+	SortOrder  int32
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }

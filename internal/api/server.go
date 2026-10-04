@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	openapi "github.com/rezasurin/orion-pos-backend/gen/openapi"
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
@@ -22,6 +23,7 @@ import (
 
 // Deps are the modules and settings the API needs.
 type Deps struct {
+	Catalog      *catalog.Service
 	Identity     *identity.Service
 	Entitlements *entitlements.Resolver
 	// Platform serves the operator console. Nil when the server has no platform database; operator

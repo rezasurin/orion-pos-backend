@@ -699,6 +699,47 @@ TOTP secrets are encrypted at rest with a key from the secret store (AES-GCM via
 Archive, never hard-delete, anything a sale may reference. Sale lines also snapshot the name and
 price (6.4), so a later rename never changes a receipt.
 
+#### 6.3.1 Catalog as built (B1.1)
+
+- **Permission.** Every catalog operation, reads included, needs `catalog.manage`. Cashiers read
+  the catalog through the sync pull, not through `/v1`. The two outlet routes
+  (`/v1/outlets/{outletId}/variants...`) also require the permission *at that outlet*, and an
+  outlet of another business is `404`.
+- **Archive, never delete.** `orion_app` has no `DELETE` on any catalog table except the
+  `item_modifier_group` links, and column-level `UPDATE` grants keep ids and parents fixed. Lists
+  hide archived rows unless `include_archived=true`; reading by id always works. Archiving a
+  variant frees its SKU and barcode; restoring one that has been reused answers `409 conflict`.
+  Live category and modifier group names are unique per business, ignoring case.
+- **Prices live on variants.** An item is sold through its variants, so creating one needs at
+  least one (a one-size item has one variant with an empty name). `outlet_variant` holds a price
+  override and an `available` flag per outlet; no row means the base price and available.
+  Rupiah are bounded to 0..1,000,000,000 (modifier deltas may be negative) by the API and by
+  `CHECK`s.
+- **The change log works in aggregates.** A change to a variant or to an item's modifier group
+  links is recorded as an `item` change, a change to a modifier is a `modifier_group` change, and a
+  category is its own entity. The pull (B1.6) therefore loads an item with its variants and links
+  in two queries and a group with its modifiers in one. An outlet's price or availability is an
+  `outlet_variant` change with `outlet_id` set and the variant id as the entity, so only that
+  outlet's devices download it. Archiving is an upsert carrying `archived_at`, not a tombstone, so
+  devices can still resolve old sales.
+- **Audit.** A changed variant `base_price`, modifier `price_delta` or outlet `price_override`
+  writes `catalog.price_changed` with the scope, the old and the new price. Renames and
+  availability changes do not.
+- **PATCH.** Fields left out stay as they are. A blank `sku`, `barcode` or `image_url` clears it,
+  and `clear_category: true` removes the category (JSON `null` and "absent" are the same to the
+  generated Go types, so an explicit flag keeps the two apart). `modifier_group_ids`, when present,
+  replaces the item's groups in that order.
+- **Lists** page by id (`cursor`, `limit`) and make a fixed number of queries whatever the page
+  size (items: 3, groups: 2); a test compares 2 rows with 40. Item and group creation insert their
+  children with one `INSERT ... SELECT unnest`.
+- Every write takes `LockTenant` first (section 4.12); a test runs 16 mixed edits at once and
+  requires gapless change numbers.
+- Differences from the table above: `item_modifier_group`, `outlet_variant` and the others carry
+  `tenant_id` in composite foreign keys like every tenant table; `modifier_group` also has
+  `CHECK (min_select <= max_select)` and `CHECK (NOT required OR min_select >= 1)`.
+- `orion admin seed-demo` creates a six-item cafe menu (with variants, a required and an optional
+  modifier group) for front-end work.
+
 ### 6.4 Sales and shifts (Phase 1)
 
 | Table | Key columns |
@@ -880,7 +921,7 @@ backup has been restored into a scratch database.
 
 | Id | Task | Size |
 |---|---|---|
-| B1.1 | Catalog schema and CRUD endpoints, archive semantics, per-outlet prices and availability, `change_log` writes | 5d |
+| B1.1 | ✅ Catalog schema and CRUD endpoints, archive semantics, per-outlet prices and availability, `change_log` writes (see 6.3.1) | 5d |
 | B1.2 | Pricing algorithm in Go + 40 golden vectors; publish vectors for the TS implementation | 3d |
 | B1.3 | **Sync tests first** (section 5.3) against a stub projector | 3d |
 | B1.4 | `sync_inbox`, push endpoint, per-event transactions, idempotency, payload-hash conflict detection, `pending_dependency` | 4d |

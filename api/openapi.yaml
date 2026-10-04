@@ -37,6 +37,8 @@ tags:
     description: People who work in the business, their roles and PINs
   - name: devices
     description: Pairing POS tablets and what they download
+  - name: catalog
+    description: What the business sells - categories, items, variants, modifiers and per-outlet prices
   - name: entitlements
     description: What the business's plan allows
   - name: admin
@@ -496,6 +498,413 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /v1/categories:
+    get:
+      operationId: listCategories
+      tags: [catalog]
+      summary: Categories, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page of categories ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createCategory
+      tags: [catalog]
+      summary: Add a category
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewCategory'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/categories/{categoryId}:
+    patch:
+      operationId: updateCategory
+      tags: [catalog]
+      summary: Rename, reorder, archive or restore a category
+      description: Fields left out stay as they are. A category is archived, never deleted.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryUpdate'
+      responses:
+        '200':
+          description: The updated category
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/items:
+    get:
+      operationId: listItems
+      tags: [catalog]
+      summary: Items with their variants, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+        - name: category_id
+          in: query
+          description: Only items in this category.
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: A page of items ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createItem
+      tags: [catalog]
+      summary: Add an item with its variants
+      description: |
+        An item is sold through its variants, so at least one is required (a one-size item has one
+        variant with no name). `modifier_group_ids` lists the groups offered with the item, in
+        display order.
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewItem'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/items/{itemId}:
+    get:
+      operationId: getItem
+      tags: [catalog]
+      summary: One item with its variants and modifier groups
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: The item, archived or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateItem
+      tags: [catalog]
+      summary: Change, archive or restore an item
+      description: |
+        Fields left out stay as they are. A blank `sku`, `barcode` or `image_url` clears it; to
+        remove the category send `clear_category: true`. `modifier_group_ids`, when present,
+        replaces the item's groups. Prices change on variants, not here.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemUpdate'
+      responses:
+        '200':
+          description: The updated item
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/items/{itemId}/variants:
+    post:
+      operationId: addVariant
+      tags: [catalog]
+      summary: Add a variant to an item
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewVariant'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Variant'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/variants/{variantId}:
+    patch:
+      operationId: updateVariant
+      tags: [catalog]
+      summary: Change a variant's name, codes, price or order, or archive it
+      description: |
+        Fields left out stay as they are; a blank `sku` or `barcode` clears it. A changed
+        `base_price` is written to the audit log. Archived variants free their SKU and barcode.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/VariantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VariantUpdate'
+      responses:
+        '200':
+          description: The updated variant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Variant'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/modifier-groups:
+    get:
+      operationId: listModifierGroups
+      tags: [catalog]
+      summary: Modifier groups with their modifiers, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page of groups ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModifierGroupPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createModifierGroup
+      tags: [catalog]
+      summary: Add a modifier group with its first modifiers
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewModifierGroup'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModifierGroup'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/modifier-groups/{groupId}:
+    patch:
+      operationId: updateModifierGroup
+      tags: [catalog]
+      summary: Change or archive a modifier group
+      description: The selection rules are checked on the result, so changing `required` alone fails when `min_select` is 0.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifierGroupUpdate'
+      responses:
+        '200':
+          description: The updated group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModifierGroup'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/modifier-groups/{groupId}/modifiers:
+    post:
+      operationId: addModifier
+      tags: [catalog]
+      summary: Add a modifier to a group
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewModifier'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Modifier'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/modifiers/{modifierId}:
+    patch:
+      operationId: updateModifier
+      tags: [catalog]
+      summary: Change or archive a modifier
+      description: A changed `price_delta` is written to the audit log.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ModifierId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifierUpdate'
+      responses:
+        '200':
+          description: The updated modifier
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Modifier'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/outlets/{outletId}/variants:
+    get:
+      operationId: listOutletVariants
+      tags: [catalog]
+      summary: Price overrides and availability at one outlet
+      description: |
+        Lists the variants that have a setting at this outlet. Variants not listed are available
+        at their base price. Needs `catalog.manage` at that outlet.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page ordered by variant id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutletVariantPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/outlets/{outletId}/variants/{variantId}:
+    put:
+      operationId: setOutletVariant
+      tags: [catalog]
+      summary: Set a variant's price and availability at one outlet
+      description: |
+        Replaces the setting: a null or missing `price_override` means the base price. Only that
+        outlet's devices receive the change. A changed price is written to the audit log. Needs
+        `catalog.manage` at that outlet.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+        - $ref: '#/components/parameters/VariantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutletVariantSetting'
+      responses:
+        '200':
+          description: The setting now in force
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutletVariant'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /admin/auth/login:
     post:
       operationId: adminLogin
@@ -627,6 +1036,37 @@ components:
         minimum: 1
         maximum: 200
         default: 50
+
+    CategoryId:
+      name: categoryId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    VariantId:
+      name: variantId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    GroupId:
+      name: groupId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ModifierId:
+      name: modifierId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IncludeArchived:
+      name: include_archived
+      in: query
+      description: Also list archived entries.
+      schema: {type: boolean, default: false}
 
   responses:
     ValidationFailed:
@@ -1033,6 +1473,236 @@ components:
           description: Cash rounding, applied to a cash tender only.
         cash_total: {type: integer, format: int64, description: total plus rounding_amount}
         pricing_version: {type: string, example: sample-0}
+
+    Category:
+      type: object
+      required: [id, name, sort_order, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    CategoryPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Category'}
+        next_cursor: {type: string, format: uuid}
+
+    NewCategory:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 60}
+        sort_order: {type: integer, default: 0}
+
+    CategoryUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    Variant:
+      type: object
+      required: [id, item_id, name, base_price, sort_order]
+      properties:
+        id: {type: string, format: uuid}
+        item_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60, description: Empty for a one-size item.}
+        sku: {type: string, nullable: true, maxLength: 40}
+        barcode: {type: string, nullable: true, maxLength: 40}
+        base_price: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: Rupiah.}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+
+    NewVariant:
+      type: object
+      required: [base_price]
+      properties:
+        name: {type: string, maxLength: 60, default: ''}
+        sku: {type: string, maxLength: 40}
+        barcode: {type: string, maxLength: 40}
+        base_price: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: Rupiah.}
+
+    VariantUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        sku: {type: string, maxLength: 40, description: Blank clears it.}
+        barcode: {type: string, maxLength: 40, description: Blank clears it.}
+        base_price: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    Item:
+      type: object
+      required: [id, name, track_stock, variants, modifier_group_ids, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        category_id: {type: string, format: uuid, nullable: true}
+        name: {type: string, maxLength: 120}
+        sku: {type: string, nullable: true, maxLength: 40}
+        barcode: {type: string, nullable: true, maxLength: 40}
+        image_url: {type: string, nullable: true, maxLength: 500}
+        track_stock: {type: boolean}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        variants:
+          type: array
+          description: Including archived ones, ordered by `sort_order`.
+          items: {$ref: '#/components/schemas/Variant'}
+        modifier_group_ids:
+          type: array
+          description: In display order.
+          items: {type: string, format: uuid}
+
+    ItemPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Item'}
+        next_cursor: {type: string, format: uuid}
+
+    NewItem:
+      type: object
+      required: [name, variants]
+      properties:
+        name: {type: string, maxLength: 120}
+        category_id: {type: string, format: uuid}
+        sku: {type: string, maxLength: 40}
+        barcode: {type: string, maxLength: 40}
+        image_url: {type: string, maxLength: 500}
+        track_stock: {type: boolean, default: false}
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {$ref: '#/components/schemas/NewVariant'}
+        modifier_group_ids:
+          type: array
+          maxItems: 20
+          items: {type: string, format: uuid}
+
+    ItemUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 120}
+        category_id: {type: string, format: uuid}
+        clear_category: {type: boolean, description: Remove the item from its category. Not combinable with category_id.}
+        sku: {type: string, maxLength: 40, description: Blank clears it.}
+        barcode: {type: string, maxLength: 40, description: Blank clears it.}
+        image_url: {type: string, maxLength: 500, description: Blank clears it.}
+        track_stock: {type: boolean}
+        archived: {type: boolean, description: true archives, false restores.}
+        modifier_group_ids:
+          type: array
+          maxItems: 20
+          description: Replaces the item's groups, in this order.
+          items: {type: string, format: uuid}
+
+    Modifier:
+      type: object
+      required: [id, group_id, name, price_delta, sort_order]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60}
+        price_delta: {type: integer, format: int64, minimum: -1000000000, maximum: 1000000000, description: Rupiah added to the line price; may be negative.}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+
+    NewModifier:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 60}
+        price_delta: {type: integer, format: int64, minimum: -1000000000, maximum: 1000000000, default: 0}
+
+    ModifierUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        price_delta: {type: integer, format: int64, minimum: -1000000000, maximum: 1000000000}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    ModifierGroup:
+      type: object
+      required: [id, name, min_select, max_select, required, modifiers, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60}
+        min_select: {type: integer, minimum: 0}
+        max_select: {type: integer, minimum: 1, maximum: 100}
+        required: {type: boolean, description: A required group needs `min_select` of at least 1.}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        modifiers:
+          type: array
+          items: {$ref: '#/components/schemas/Modifier'}
+
+    ModifierGroupPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ModifierGroup'}
+        next_cursor: {type: string, format: uuid}
+
+    NewModifierGroup:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 60}
+        min_select: {type: integer, minimum: 0, default: 0}
+        max_select: {type: integer, minimum: 1, maximum: 100, default: 1}
+        required: {type: boolean, default: false}
+        modifiers:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/NewModifier'}
+
+    ModifierGroupUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        min_select: {type: integer, minimum: 0}
+        max_select: {type: integer, minimum: 1, maximum: 100}
+        required: {type: boolean}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    OutletVariant:
+      type: object
+      required: [outlet_id, variant_id, available]
+      properties:
+        outlet_id: {type: string, format: uuid}
+        variant_id: {type: string, format: uuid}
+        price_override: {type: integer, format: int64, nullable: true, minimum: 0, maximum: 1000000000, description: Rupiah; null means the base price.}
+        available: {type: boolean}
+
+    OutletVariantPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/OutletVariant'}
+        next_cursor: {type: string, format: uuid}
+
+    OutletVariantSetting:
+      type: object
+      required: [available]
+      properties:
+        price_override: {type: integer, format: int64, nullable: true, minimum: 0, maximum: 1000000000}
+        available: {type: boolean}
 
     OperatorChallenge:
       type: object

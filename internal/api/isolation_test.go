@@ -25,8 +25,12 @@ type world struct {
 	deviceA, deviceB  string // device access tokens
 	staffA, deviceIDA string
 	roleA             string
+	catA              catalogIDs
 	secrets           []string // every identifier belonging to A
 }
+
+// catalogIDs are tenant A's catalog objects.
+type catalogIDs struct{ category, item, variant, group, modifier string }
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
@@ -49,7 +53,22 @@ func newWorld(t *testing.T) *world {
 	w.deviceA = e.deviceToken(t, pa.DeviceSecret).AccessToken
 	w.deviceB = e.deviceToken(t, e.pairDevice(t, w.userB, w.b.outlet.ID.String(), "Kasir B").DeviceSecret).AccessToken
 
-	w.secrets = []string{w.a.tenant.ID.String(), w.a.outlet.ID.String(), w.a.owner.ID.String(), w.staffA, w.deviceIDA, "owner@kopi.test", "Sari of A", "Kasir A", "JKT1"}
+	var cat categoryBody
+	e.create(t, "/v1/categories", w.userA, map[string]any{"name": "Secret category"}, &cat)
+	var grp groupBody
+	e.create(t, "/v1/modifier-groups", w.userA, map[string]any{
+		"name": "Secret group", "modifiers": []map[string]any{{"name": "Secret modifier"}},
+	}, &grp)
+	var it itemBody
+	e.create(t, "/v1/items", w.userA, map[string]any{
+		"name": "Secret blend", "category_id": cat.ID, "sku": "SECRET-SKU", "modifier_group_ids": []string{grp.ID},
+		"variants": []map[string]any{{"name": "Secret size", "base_price": 77777, "barcode": "SECRET-BARCODE"}},
+	}, &it)
+	w.catA = catalogIDs{category: cat.ID, item: it.ID, variant: it.Variants[0].ID, group: grp.ID, modifier: grp.Modifiers[0].ID}
+
+	w.secrets = []string{w.catA.category, w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
+		"Secret category", "Secret group", "Secret modifier", "Secret blend", "Secret size", "SECRET-SKU", "SECRET-BARCODE", "77777",
+		w.a.tenant.ID.String(), w.a.outlet.ID.String(), w.a.owner.ID.String(), w.staffA, w.deviceIDA, "owner@kopi.test", "Sari of A", "Kasir A", "JKT1"}
 	for _, r := range roles {
 		w.secrets = append(w.secrets, r.ID)
 	}
@@ -96,6 +115,66 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 		"GetReceiptTest":  func(t *testing.T) { w.noLeak(t, "GetReceiptTest", e.do(t, "GET", "/v1/pos/receipt-test", db, nil)) },
 
 		// By-id access to A's objects looks like they do not exist.
+		"ListCategories": func(t *testing.T) {
+			w.noLeak(t, "ListCategories", e.do(t, "GET", "/v1/categories?include_archived=true&limit=200", ub, nil))
+		},
+		"ListItems": func(t *testing.T) {
+			w.noLeak(t, "ListItems", e.do(t, "GET", "/v1/items?include_archived=true&limit=200", ub, nil))
+		},
+		"ListModifierGroups": func(t *testing.T) {
+			w.noLeak(t, "ListModifierGroups", e.do(t, "GET", "/v1/modifier-groups?include_archived=true&limit=200", ub, nil))
+		},
+		"ListOutletVariants": func(t *testing.T) {
+			// B's own outlet lists nothing of A's; A's outlet looks like it does not exist.
+			w.noLeak(t, "ListOutletVariants", e.do(t, "GET", "/v1/outlets/"+w.b.outlet.ID.String()+"/variants", ub, nil))
+			w.gone(t, "ListOutletVariants/A", e.do(t, "GET", "/v1/outlets/"+aOutlet+"/variants", ub, nil), http.StatusNotFound, "not_found")
+		},
+		"GetItem": func(t *testing.T) {
+			w.gone(t, "GetItem", e.do(t, "GET", "/v1/items/"+w.catA.item, ub, nil), http.StatusNotFound, "not_found")
+		},
+		"UpdateItem": func(t *testing.T) {
+			w.gone(t, "UpdateItem", e.do(t, "PATCH", "/v1/items/"+w.catA.item, ub, map[string]any{"name": "Taken", "archived": true}), http.StatusNotFound, "not_found")
+		},
+		"UpdateCategory": func(t *testing.T) {
+			w.gone(t, "UpdateCategory", e.do(t, "PATCH", "/v1/categories/"+w.catA.category, ub, map[string]any{"name": "Taken"}), http.StatusNotFound, "not_found")
+		},
+		"AddVariant": func(t *testing.T) {
+			w.gone(t, "AddVariant", e.do(t, "POST", "/v1/items/"+w.catA.item+"/variants", ub, map[string]any{"base_price": 1}), http.StatusNotFound, "not_found")
+		},
+		"UpdateVariant": func(t *testing.T) {
+			w.gone(t, "UpdateVariant", e.do(t, "PATCH", "/v1/variants/"+w.catA.variant, ub, map[string]any{"base_price": 1}), http.StatusNotFound, "not_found")
+		},
+		"UpdateModifierGroup": func(t *testing.T) {
+			w.gone(t, "UpdateModifierGroup", e.do(t, "PATCH", "/v1/modifier-groups/"+w.catA.group, ub, map[string]any{"name": "Taken"}), http.StatusNotFound, "not_found")
+		},
+		"AddModifier": func(t *testing.T) {
+			w.gone(t, "AddModifier", e.do(t, "POST", "/v1/modifier-groups/"+w.catA.group+"/modifiers", ub, map[string]any{"name": "Taken"}), http.StatusNotFound, "not_found")
+		},
+		"UpdateModifier": func(t *testing.T) {
+			w.gone(t, "UpdateModifier", e.do(t, "PATCH", "/v1/modifiers/"+w.catA.modifier, ub, map[string]any{"price_delta": 1}), http.StatusNotFound, "not_found")
+		},
+		"SetOutletVariant": func(t *testing.T) {
+			// A's variant at B's outlet, B's variant id at A's outlet, and both of A's.
+			w.gone(t, "SetOutletVariant/variant", e.do(t, "PUT", "/v1/outlets/"+w.b.outlet.ID.String()+"/variants/"+w.catA.variant, ub, map[string]any{"available": false}), http.StatusNotFound, "not_found")
+			w.gone(t, "SetOutletVariant/outlet", e.do(t, "PUT", "/v1/outlets/"+aOutlet+"/variants/"+w.catA.variant, ub, map[string]any{"available": false}), http.StatusNotFound, "not_found")
+		},
+		"CreateCategory": func(t *testing.T) {
+			// The same name in another business is fine, and must not collide with A's.
+			if r := e.do(t, "POST", "/v1/categories", ub, map[string]any{"name": "Secret category"}); r.Code != http.StatusCreated {
+				t.Errorf("CreateCategory: B cannot reuse A's category name: %d %s", r.Code, r.Body.String())
+			}
+		},
+		"CreateModifierGroup": func(t *testing.T) {
+			e.do(t, "POST", "/v1/modifier-groups", ub, map[string]any{"name": "B group"}).decode(t, &struct{}{})
+		},
+		"CreateItem": func(t *testing.T) {
+			// Pointing at A's category or group is refused.
+			e.do(t, "POST", "/v1/items", ub, map[string]any{"name": "X", "category_id": w.catA.category, "variants": []map[string]any{{"base_price": 1}}}).
+				problem(t, http.StatusBadRequest, "validation_failed")
+			e.do(t, "POST", "/v1/items", ub, map[string]any{"name": "X", "modifier_group_ids": []string{w.catA.group}, "variants": []map[string]any{{"base_price": 1}}}).
+				problem(t, http.StatusBadRequest, "validation_failed")
+		},
+
 		"GetOutlet": func(t *testing.T) {
 			w.gone(t, "GetOutlet", e.do(t, "GET", "/v1/outlets/"+aOutlet, ub, nil), http.StatusNotFound, "not_found")
 		},
@@ -134,6 +213,17 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 	if !st.Active || !st.HasPin || st.DisplayName != "Sari of A" {
 		t.Errorf("tenant A's staff was changed by tenant B: %+v", st)
 	}
+	// Codes are unique per business: B may use the SKU and barcode A uses. This runs after the
+	// loop because B's own item would then legitimately contain those strings.
+	if r := e.do(t, "POST", "/v1/items", ub, map[string]any{"name": "Mine", "variants": []map[string]any{{"base_price": 1, "sku": "SECRET-SKU", "barcode": "SECRET-BARCODE"}}}); r.Code != http.StatusCreated {
+		t.Errorf("tenant B cannot reuse tenant A's SKU: %d %s", r.Code, r.Body.String())
+	}
+
+	var itA itemBody
+	e.do(t, "GET", "/v1/items/"+w.catA.item, w.userA, nil).decode(t, &itA)
+	if itA.Name != "Secret blend" || itA.ArchivedAt != nil || itA.Variants[0].BasePrice != 77777 || len(itA.Variants) != 1 {
+		t.Errorf("tenant A's item was changed by tenant B: %+v", itA)
+	}
 	if r := e.do(t, "GET", "/v1/pos/roster", w.deviceA, nil); r.Code != http.StatusOK {
 		t.Errorf("tenant A's device stopped working: %d", r.Code)
 	}
@@ -157,6 +247,9 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 	for _, op := range []string{
 		"GetMe", "ListOutlets", "ListRoles", "ListStaff", "ListDevices", "GetEntitlements", "GetRoster", "GetReceiptTest",
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
+		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
+		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
+		"CreateCategory", "CreateModifierGroup", "CreateItem",
 	} {
 		covered[op] = true
 	}
