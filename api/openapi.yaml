@@ -126,6 +126,38 @@ paths:
           description: Signed out
         '400': {$ref: '#/components/responses/ValidationFailed'}
 
+  /v1/signup:
+    post:
+      operationId: signUp
+      tags: [auth]
+      summary: Create a business, its first outlet and its owner
+      description: |
+        The public sign-up form. In one transaction it creates the business (on the early access
+        plan), its roles, its first outlet and its owner, and queues the verification email. The
+        owner cannot sign in until the address is verified (`POST /v1/auth/verify-email`).
+
+        **Always answers 202 with no body**, whether the business was created or the email address
+        already has an account, so the form cannot be used to find out who is registered. In the
+        second case nothing is created and the existing account's owner is emailed instead (a
+        verification link again if the address was never verified, otherwise a notice pointing at
+        sign-in). The caller can only say "if the address is usable, you will get an email".
+
+        `website` is a honeypot: a real form leaves it empty (hide it from people); a request that
+        fills it is accepted and ignored. Sign-ups are rate limited by caller address and by email
+        address (`429 rate_limited`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '202':
+          description: Accepted. Check your email.
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /v1/auth/verify-email:
     post:
       operationId: verifyEmail
@@ -1445,6 +1477,37 @@ components:
       required: [token]
       properties:
         token: {type: string, maxLength: 512}
+
+    SignupRequest:
+      type: object
+      required: [business_name, owner_name, email, password]
+      properties:
+        business_name: {type: string, maxLength: 120, example: Kopi Senja}
+        owner_name: {type: string, maxLength: 60, description: The owner's own name, shown in the staff list., example: Sari}
+        email: {type: string, maxLength: 254}
+        password: {type: string, minLength: 10, maxLength: 128}
+        outlet_name:
+          type: string
+          maxLength: 120
+          description: The first outlet. Defaults to the business name.
+        outlet_code:
+          type: string
+          pattern: '^[A-Za-z0-9]{2,6}$'
+          description: |
+            Prefix of this outlet's receipt numbers (`KOPI1-01-000001`); cannot be changed later.
+            Defaults to up to four letters from the outlet name followed by 1.
+        timezone:
+          type: string
+          enum: [Asia/Jakarta, Asia/Makassar, Asia/Jayapura]
+          description: Defaults to Asia/Jakarta.
+        locale:
+          type: string
+          enum: [id-ID, en]
+          description: The language of emails to the owner. Defaults to id-ID.
+        website:
+          type: string
+          maxLength: 200
+          description: Honeypot. Leave empty and hide it from people.
 
     ResendVerificationRequest:
       type: object

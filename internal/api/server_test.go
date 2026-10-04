@@ -27,6 +27,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/reporting"
 	"github.com/rezasurin/orion-pos-backend/internal/sales"
+	"github.com/rezasurin/orion-pos-backend/internal/signup"
 	syncsrv "github.com/rezasurin/orion-pos-backend/internal/sync"
 	"github.com/rezasurin/orion-pos-backend/internal/sync/syncstub"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
@@ -95,7 +96,7 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 			t.Fatal(err)
 		}
 	}
-	srv, err := api.New(api.Deps{Catalog: catalog.NewService(d.App), Sync: syncSvc, Reporting: reporting.NewService(d.App), Sales: sales.NewService(d.App), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	srv, err := api.New(api.Deps{Catalog: catalog.NewService(d.App), Sync: syncSvc, Reporting: reporting.NewService(d.App), Sales: sales.NewService(d.App), Signup: signup.NewService(signup.Deps{Pool: d.App, Identity: ids, Tenancy: tenants}), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}

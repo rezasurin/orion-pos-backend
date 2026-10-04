@@ -34,6 +34,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/reporting"
 	"github.com/rezasurin/orion-pos-backend/internal/sales"
+	"github.com/rezasurin/orion-pos-backend/internal/signup"
 	"github.com/rezasurin/orion-pos-backend/internal/sync"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
@@ -191,7 +192,7 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		logger.Warn("ORION_PLATFORM_DATABASE_URL is not set: the operator console (/admin) is disabled")
 	}
-	apiServer, err := api.New(api.Deps{Catalog: catalogSvc, Sync: syncSvc, Reporting: reporting.NewService(pool), Sales: sales.NewService(pool), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: logger})
+	apiServer, err := api.New(api.Deps{Catalog: catalogSvc, Sync: syncSvc, Reporting: reporting.NewService(pool), Sales: sales.NewService(pool), Signup: signup.NewService(signup.Deps{Pool: pool, Identity: ids, Tenancy: tenants}), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: logger})
 	if err != nil {
 		return err
 	}

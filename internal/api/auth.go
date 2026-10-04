@@ -9,6 +9,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/signup"
 )
 
 func (s *Server) Login(ctx context.Context, req openapi.LoginRequestObject) (openapi.LoginResponseObject, error) {
@@ -85,6 +86,40 @@ func (s *Server) ResendVerification(ctx context.Context, req openapi.ResendVerif
 		return nil, err
 	}
 	return openapi.ResendVerification202Response{}, nil
+}
+
+// SignUp is the public sign-up form. It answers 202 whether the business was created or the
+// address already had an account (see signup.Service), and a filled honeypot is accepted and
+// ignored: neither lets the caller learn anything.
+func (s *Server) SignUp(ctx context.Context, req openapi.SignUpRequestObject) (openapi.SignUpResponseObject, error) {
+	b := req.Body
+	if b == nil || b.Email == "" {
+		return nil, fmt.Errorf("%w: email is required", kernel.ErrValidation)
+	}
+	if err := allow(s.signupByIP, httpserver.ClientIP(ctx)); err != nil {
+		return nil, err
+	}
+	if err := allow(s.signupByEmail, strings.ToLower(strings.TrimSpace(b.Email))); err != nil {
+		return nil, err
+	}
+	if b.Website != nil && strings.TrimSpace(*b.Website) != "" {
+		s.Logger.InfoContext(ctx, "sign-up ignored: honeypot filled", "client_ip", httpserver.ClientIP(ctx))
+		return openapi.SignUp202Response{}, nil
+	}
+	in := signup.Input{
+		BusinessName: b.BusinessName, OwnerName: b.OwnerName, Email: b.Email, Password: b.Password,
+		OutletName: deref(b.OutletName), OutletCode: deref(b.OutletCode),
+	}
+	if b.Timezone != nil {
+		in.Timezone = string(*b.Timezone)
+	}
+	if b.Locale != nil {
+		in.Locale = string(*b.Locale)
+	}
+	if err := s.Signup.SignUp(ctx, in); err != nil {
+		return nil, err
+	}
+	return openapi.SignUp202Response{}, nil
 }
 
 func toSession(s identity.Session) openapi.Session {

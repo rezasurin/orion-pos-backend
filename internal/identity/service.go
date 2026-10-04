@@ -440,68 +440,115 @@ type NewMember struct {
 // in the roster once they have a PIN). Unless the email is marked verified, a verification email
 // is queued in the same transaction.
 func (s *Service) CreateMember(ctx context.Context, in NewMember) (User, error) {
+	m, err := s.PrepareMember(ctx, in)
+	if err != nil {
+		return User{}, err
+	}
+	var u User
+	err = kernel.TenantTx(ctx, s.Pool, m.TenantID, func(tx pgx.Tx) error {
+		var err error
+		u, err = s.CreateMemberIn(ctx, tx, m)
+		return err
+	})
+	return u, err
+}
+
+// PreparedMember is a NewMember that has been checked and whose password is hashed, ready for
+// CreateMemberIn. Hashing is slow, so it is done before a transaction opens, not inside it.
+type PreparedMember struct {
+	NewMember
+	hash string
+}
+
+// PrepareMember normalizes and validates in and hashes its password.
+func (s *Service) PrepareMember(ctx context.Context, in NewMember) (PreparedMember, error) {
 	in.Email = normalizeEmail(in.Email)
 	if in.Locale == "" {
 		in.Locale = Locales[0]
 	}
 	if err := validateNewMember(in); err != nil {
-		return User{}, err
+		return PreparedMember{}, err
 	}
-	// Hash before the transaction: it is slow and needs no database.
 	hash, err := s.Hasher.Hash(ctx, in.Password, s.PasswordCost)
 	if err != nil {
-		return User{}, err
+		return PreparedMember{}, err
 	}
+	return PreparedMember{NewMember: in, hash: hash}, nil
+}
 
+// CreateMemberIn creates the member inside the caller's transaction, which must have been opened
+// for m.TenantID (kernel.TenantTx). Signup uses it to create a business and its owner together.
+func (s *Service) CreateMemberIn(ctx context.Context, tx pgx.Tx, m PreparedMember) (User, error) {
 	userID := kernel.NewID()
 	now := s.Clock.Now()
 	var verifiedAt *time.Time
-	if in.EmailVerified {
+	if m.EmailVerified {
 		verifiedAt = &now
 	}
 	staffID := kernel.NewID()
-	err = kernel.TenantTx(ctx, s.Pool, in.TenantID, func(tx pgx.Tx) error {
-		q := db.New(tx)
-		if err := kernel.LockTenant(ctx, tx); err != nil {
-			return err
-		}
-		if err := s.checkStaffLimit(ctx, tx, q, in.TenantID); err != nil {
-			return err
-		}
-		if err := q.InsertUser(ctx, db.InsertUserParams{
-			ID: userID, Email: in.Email, PasswordHash: hash, EmailVerifiedAt: verifiedAt, Locale: in.Locale,
-		}); err != nil {
-			return mapErr(err)
-		}
-		if err := q.InsertMember(ctx, db.InsertMemberParams{TenantID: in.TenantID, UserID: userID, IsOwner: in.IsOwner}); err != nil {
-			return mapErr(err)
-		}
-		if err := q.InsertStaff(ctx, db.InsertStaffParams{
-			ID: staffID, TenantID: in.TenantID, UserID: &userID, DisplayName: strings.TrimSpace(in.DisplayName),
-		}); err != nil {
-			return mapErr(err)
-		}
-		if err := insertAssignments(ctx, q, in.TenantID, staffID, in.OutletRoles); err != nil {
-			return err
-		}
-		if _, err := kernel.RecordChange(ctx, tx, "staff", staffID, "upsert", nil); err != nil {
-			return err
-		}
-		if err := kernel.RecordAudit(ctx, tx, kernel.AuditEntry{
-			Action: "member.created", TargetType: "user", TargetID: userID,
-			Detail: map[string]any{"is_owner": in.IsOwner, "staff_id": staffID},
-		}); err != nil {
-			return err
-		}
-		if in.EmailVerified {
-			return nil
-		}
-		return s.enqueueVerification(ctx, tx, in.TenantID, userID)
-	})
-	if err != nil {
+	q := db.New(tx)
+	if err := kernel.LockTenant(ctx, tx); err != nil {
 		return User{}, err
 	}
-	return User{ID: userID, Email: in.Email, EmailVerified: in.EmailVerified, Locale: in.Locale, CreatedAt: now}, nil
+	if err := s.checkStaffLimit(ctx, tx, q, m.TenantID); err != nil {
+		return User{}, err
+	}
+	if err := q.InsertUser(ctx, db.InsertUserParams{
+		ID: userID, Email: m.Email, PasswordHash: m.hash, EmailVerifiedAt: verifiedAt, Locale: m.Locale,
+	}); err != nil {
+		return User{}, mapErr(err)
+	}
+	if err := q.InsertMember(ctx, db.InsertMemberParams{TenantID: m.TenantID, UserID: userID, IsOwner: m.IsOwner}); err != nil {
+		return User{}, mapErr(err)
+	}
+	if err := q.InsertStaff(ctx, db.InsertStaffParams{
+		ID: staffID, TenantID: m.TenantID, UserID: &userID, DisplayName: strings.TrimSpace(m.DisplayName),
+	}); err != nil {
+		return User{}, mapErr(err)
+	}
+	if err := insertAssignments(ctx, q, m.TenantID, staffID, m.OutletRoles); err != nil {
+		return User{}, err
+	}
+	if _, err := kernel.RecordChange(ctx, tx, "staff", staffID, "upsert", nil); err != nil {
+		return User{}, err
+	}
+	if err := kernel.RecordAudit(ctx, tx, kernel.AuditEntry{
+		Action: "member.created", TargetType: "user", TargetID: userID,
+		Detail: map[string]any{"is_owner": m.IsOwner, "staff_id": staffID},
+	}); err != nil {
+		return User{}, err
+	}
+	if !m.EmailVerified {
+		if err := s.enqueueVerification(ctx, tx, m.TenantID, userID); err != nil {
+			return User{}, err
+		}
+	}
+	return User{ID: userID, Email: m.Email, EmailVerified: m.EmailVerified, Locale: m.Locale, CreatedAt: now}, nil
+}
+
+// NoticeExistingAccount handles someone signing up with an address that already has an account,
+// without telling the caller anything: an unverified account gets its verification link again, a
+// verified one gets an email saying so and pointing at sign-in. It reports whether the account
+// exists, for the signup flow only; it must not reach the HTTP response.
+func (s *Service) NoticeExistingAccount(ctx context.Context, email string) (bool, error) {
+	u, found, err := s.findUserForLogin(ctx, normalizeEmail(email))
+	if err != nil || !found {
+		return false, err
+	}
+	if len(u.TenantIDs) == 0 {
+		return true, nil
+	}
+	err = pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
+		if u.EmailVerifiedAt == nil {
+			return s.enqueueVerification(ctx, tx, u.TenantIDs[0], u.ID)
+		}
+		// One notice an hour per account, so signing up over and over cannot flood an inbox.
+		_, err := s.Jobs.InsertTx(ctx, tx, AccountExistsArgs{UserID: u.ID}, &river.InsertOpts{
+			UniqueOpts: river.UniqueOpts{ByArgs: true, ByPeriod: time.Hour},
+		})
+		return err
+	})
+	return true, err
 }
 
 // ResendVerification queues another verification email for an unverified account. It says
@@ -596,6 +643,10 @@ func mapNoRows(err, as error) error {
 	return err
 }
 
+// ErrEmailTaken is returned when an email address already has an account. It is a
+// kernel.ErrConflict.
+var ErrEmailTaken = fmt.Errorf("%w: email is already registered", kernel.ErrConflict)
+
 func mapErr(err error) error {
 	if err == nil {
 		return nil
@@ -608,7 +659,7 @@ func mapErr(err error) error {
 		switch pgErr.Code {
 		case "23505":
 			if pgErr.ConstraintName == "user_account_email_key" {
-				return fmt.Errorf("%w: email is already registered", kernel.ErrConflict)
+				return ErrEmailTaken
 			}
 			return fmt.Errorf("%w: %s", kernel.ErrConflict, pgErr.ConstraintName)
 		case "23503":

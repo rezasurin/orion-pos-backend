@@ -54,6 +54,14 @@ it up apart from the database) and `ORION_JWT_OPERATOR_KEYS`. Create the first o
 There is no email provider yet. `ORION_EMAIL_PROVIDER=log` writes each message, including
 verification links, to the log, so `orion worker` refuses it when `ORION_ENV=production`. To add one, follow `docs/guides/email-provider.md`.
 
+## Sign-up
+
+`POST /v1/signup` is public and creates businesses, so it is rate limited by caller address. That
+address is the real one only when `ORION_TRUST_PROXY` matches your setup (exactly one proxy that
+appends to `X-Forwarded-For`); get it wrong and either every visitor shares one limit or the limit
+can be dodged. The verification and "account exists" emails link to `ORION_PUBLIC_URL`
+(`/verify-email?token=...` and `/login`).
+
 ## CORS
 
 A browser app on another origin can call the API only if its origin is listed in

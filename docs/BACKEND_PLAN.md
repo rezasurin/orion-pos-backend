@@ -868,6 +868,35 @@ tables), `created_at`, `updated_at` where mutable.
 | `device` | `tenant_id`, `outlet_id`, `device_code`, `name`, `secret_hash`, `paired_by`, `paired_at`, `revoked_at`, `last_seen_at`, `last_sync_at`, `app_version`, `clock_skew_ms` |
 | `refresh_token` | `principal_type`, `principal_id`, `token_hash`, `family_id`, `expires_at`, `revoked_at` (rotation with reuse detection) |
 
+#### 6.1.1 Self-serve signup as built (B2.1)
+
+`POST /v1/signup` (public) and `internal/signup`, a small module that composes `tenancy` and
+`identity` (`tenancy.CreateTenantIn` and `identity.CreateMemberIn` run inside one transaction opened
+by signup; the password is hashed beforehand with `identity.PrepareMember`). One transaction creates
+the tenant (early access), its four system roles, the first outlet with its settings, the owner (a
+member and a staff record), the verification email job and a `tenant.signed_up` audit entry; any
+failure leaves nothing behind (tested by forcing the owner step to fail after the tenant insert).
+
+- **No account enumeration.** The endpoint always answers 202 with no body. An address that already
+  has an account creates nothing: an unverified account is sent its verification link again, a
+  verified one an "account exists" email pointing at sign-in (one per hour per account, deduplicated
+  by river), so signing up repeatedly cannot flood an inbox. The password is hashed before the check,
+  so timing does not give it away either. Two sign-ups with one address at the same moment (eight in
+  the test) produce one business, and all answer 202.
+- **Slug and outlet code** are generated: `slugify(business name)-xxxx` with four random characters,
+  retried on collision up to five times; the outlet code is up to four letters of the outlet name
+  plus 1 unless given.
+- **Bot protection:** a honeypot field (`website`; filled means accepted and ignored) and rate limits
+  per caller address (burst 5, then one per two minutes) and per email address (burst 3, then one per
+  ten minutes). The caller address is only meaningful behind the right `ORION_TRUST_PROXY`
+  (`deploy/README.md`).
+- **Not built, on purpose:** Turnstile or another CAPTCHA (the honeypot and the limits come first;
+  add a verifier behind the same handler if abuse appears), cleanup of businesses whose owner never
+  verified (a job that removes tenants unverified after N days is B2.1b: deleting a tenant touches
+  every table), accepting the terms (B2.10), password reset (no endpoint exists; the account-exists
+  email has nothing better to point at than sign-in), and adding a second business to an existing
+  account.
+
 ### 6.2 Platform (Phase 0)
 
 | Table | Key columns |
@@ -1243,7 +1272,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 
 | Id | Task | Size |
 |---|---|---|
-| B2.1 | Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
+| B2.1 | ✅ (see 6.1.1) Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
 | B2.2 | Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
 | B2.3 | CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit as a job | 4d |
 | B2.4 | Gateway integration behind the `Gateway` interface: dynamic QRIS and e-wallets, webhooks, reconciliation jobs (6.5) | 6d |

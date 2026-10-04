@@ -99,25 +99,40 @@ func (s *Service) CreateTenant(ctx context.Context, in NewTenant) (Tenant, Outle
 	}
 
 	var (
-		tenant db.Tenant
+		tenant Tenant
 		outlet Outlet
 	)
 	tenantID := kernel.NewID()
 	err := kernel.TenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
-		q := db.New(tx)
 		var err error
-		// The new tenant row is locked by this insert and invisible to anyone else, so it is
-		// already the first lock this transaction holds (see kernel.LockTenant).
-		tenant, err = q.InsertTenant(ctx, db.InsertTenantParams{ID: tenantID, Name: in.Name, Slug: in.Slug})
-		if err != nil {
-			return mapErr(err)
-		}
-		if err = identity.SeedRoles(ctx, tx, tenantID); err != nil {
-			return err
-		}
-		outlet, err = insertOutlet(ctx, q, tenantID, in.Outlet)
+		tenant, outlet, err = s.CreateTenantIn(ctx, tx, tenantID, in)
 		return err
 	})
+	if err != nil {
+		return Tenant{}, Outlet{}, err
+	}
+	return tenant, outlet, nil
+}
+
+// CreateTenantIn is CreateTenant inside the caller's transaction, which must have been opened for
+// tenantID (kernel.TenantTx) and is expected to add the tenant's owner before it commits, so a
+// business never exists without one. It lets signup create the business and its owner together.
+func (s *Service) CreateTenantIn(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, in NewTenant) (Tenant, Outlet, error) {
+	in.Name = strings.TrimSpace(in.Name)
+	if err := validateTenant(in); err != nil {
+		return Tenant{}, Outlet{}, err
+	}
+	q := db.New(tx)
+	// The new tenant row is locked by this insert and invisible to anyone else, so it is already
+	// the first lock this transaction holds (see kernel.LockTenant).
+	tenant, err := q.InsertTenant(ctx, db.InsertTenantParams{ID: tenantID, Name: in.Name, Slug: in.Slug})
+	if err != nil {
+		return Tenant{}, Outlet{}, mapErr(err)
+	}
+	if err = identity.SeedRoles(ctx, tx, tenantID); err != nil {
+		return Tenant{}, Outlet{}, err
+	}
+	outlet, err := insertOutlet(ctx, q, tenantID, in.Outlet)
 	if err != nil {
 		return Tenant{}, Outlet{}, err
 	}
@@ -250,6 +265,9 @@ func isTimezone(tz string) bool {
 	return false
 }
 
+// ErrSlugTaken is returned when a business slug is already in use. It is a kernel.ErrConflict.
+var ErrSlugTaken = fmt.Errorf("%w: slug is taken", kernel.ErrConflict)
+
 func mapErr(err error) error {
 	if err == nil {
 		return nil
@@ -261,7 +279,7 @@ func mapErr(err error) error {
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		switch pgErr.ConstraintName {
 		case "tenant_slug_key":
-			return fmt.Errorf("%w: slug is taken", kernel.ErrConflict)
+			return ErrSlugTaken
 		case "outlet_tenant_id_code_key":
 			return fmt.Errorf("%w: outlet code is taken", kernel.ErrConflict)
 		}
