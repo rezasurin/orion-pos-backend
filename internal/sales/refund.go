@@ -123,7 +123,7 @@ func (p *Projector) refundIssued(ctx context.Context, tx pgx.Tx, env sync.Env, e
 			}})
 		}
 		lines.SaleLineIds = append(lines.SaleLineIds, sl.ID)
-		lines.Quantities = append(lines.Quantities, int32(qty))
+		lines.Quantities = append(lines.Quantities, int32(qty)) //nolint:gosec // qty was validated to 1..10000 above
 		lines.Amounts = append(lines.Amounts, amount)
 		total += amount
 	}
