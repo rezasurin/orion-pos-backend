@@ -30,7 +30,7 @@ var (
 	outletCodePattern = regexp.MustCompile(`^[A-Z0-9]{2,6}$`)
 )
 
-// ErrSuspended means an operator suspended the business. Its users and devices cannot sign in.
+// ErrSuspended means an operator suspended the business and refuses a change its people asked for.
 var ErrSuspended = errors.New("tenancy: business is suspended")
 
 // Tenant is a business using Orion.
@@ -39,6 +39,7 @@ type Tenant struct {
 	Name               string
 	Slug               string
 	SubscriptionStatus string
+	SuspendedAt        *time.Time
 	CreatedAt          time.Time
 }
 
@@ -158,22 +159,17 @@ func (s *Service) GetTenant(ctx context.Context, tenantID uuid.UUID) (Tenant, er
 	return toTenant(t), err
 }
 
-// CheckActive returns ErrSuspended if an operator suspended the tenant, and ErrNotFound if it does
-// not exist. It is the gate sign-in and request authentication pass through.
-func (s *Service) CheckActive(ctx context.Context, tenantID uuid.UUID) error {
+// SuspendedAt returns when an operator suspended the tenant, nil when it is active, and ErrNotFound
+// if it does not exist. A suspended business is read-only for its people (ErrSuspended on a write)
+// and keeps syncing from its tablets, which warn and close the open shift (BACKEND_PLAN.md 6.2.1).
+func (s *Service) SuspendedAt(ctx context.Context, tenantID uuid.UUID) (*time.Time, error) {
 	var t db.Tenant
 	err := kernel.TenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		var err error
 		t, err = db.New(tx).GetTenant(ctx, tenantID)
 		return mapErr(err)
 	})
-	if err != nil {
-		return err
-	}
-	if t.SuspendedAt != nil {
-		return ErrSuspended
-	}
-	return nil
+	return t.SuspendedAt, err
 }
 
 // ListOutlets returns the tenant's active outlets with their settings, ordered by code.
@@ -328,6 +324,7 @@ func toTenant(t db.Tenant) Tenant {
 		Name:               t.Name,
 		Slug:               t.Slug,
 		SubscriptionStatus: string(t.SubscriptionStatus),
+		SuspendedAt:        t.SuspendedAt,
 		CreatedAt:          t.CreatedAt,
 	}
 }

@@ -36,7 +36,8 @@ func (a *Admin) FindBySlug(ctx context.Context, tx pgx.Tx, slug string) (TenantR
 }
 
 // SetSuspended suspends (at now) or reinstates a tenant inside the caller's transaction. While
-// suspended, its users and devices cannot sign in or call any route; its data is untouched.
+// suspended, its people can read but not change anything, and its tablets keep syncing; its data is
+// untouched.
 func (a *Admin) SetSuspended(ctx context.Context, tx pgx.Tx, id uuid.UUID, suspended bool, now time.Time) error {
 	var at *time.Time
 	if suspended {

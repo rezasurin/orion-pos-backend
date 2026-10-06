@@ -54,7 +54,7 @@ either language. Show your own translated message per `code`.
 | 403 | `forbidden` | Signed in but lacks a permission or outlet. `detail` names the permission. Hide the control instead where you can. |
 | 403 | `email_not_verified` | Verify the email first (section 3.1). |
 | 403 | `no_tenant` | The account belongs to no business. |
-| 403 | `tenant_suspended` | The business is suspended. Show a blocking message. |
+| 403 | `tenant_suspended` | The business is suspended and this is a change. The back office stays readable: show a "suspended, read-only" banner (also when `me.tenant.suspended_at` is set) and disable editing. |
 | 403 | `device_revoked` | This tablet was revoked. Stop syncing, keep the outbox, show "ask the owner to pair this device again". |
 | 403 | `module_disabled` | The plan does not include this module. Hide it (see entitlements). |
 | 403 | `limit_reached` | A plan limit (devices, staff, outlets) is full. Say which; `detail` has the number. |
@@ -347,6 +347,7 @@ log of edits, so apply it as an upsert by `id`:
 
 | Field | Apply as |
 |---|---|
+| `suspended` | Every response. `true` while an operator has suspended the business: see section 5. |
 | `outlet` | Present when the outlet or its settings changed (and in a snapshot). Replace the local outlet and settings. |
 | `categories`, `kitchen_stations`, `items` (with `variants` and `modifier_group_ids`), `modifier_groups` (with `modifiers`) | Upsert by id. **Archived ones are included, marked with `archived_at`**: keep them (an old sale may need the name), but do not offer them for new sales. |
 | `outlet_variants` | This outlet's price override and availability, upsert by `variant_id`. In a snapshot, a variant not listed is at base price and available. |
@@ -391,6 +392,10 @@ while a shift is open), and when connectivity returns.
 * **Clock**: events carry `device_time`. A tablet clock that is wrong moves sales to the wrong
   business day. Show a warning when the device clock is clearly off (compare `server_time` from
   responses), and always send `client_time`.
+* **Suspended business** (`suspended: true` in a pull): show a banner, let the shift that is open
+  run to its close, and refuse to open a new one. Keep pushing: the server accepts every event
+  while suspended, so nothing rung up is lost, and token exchange keeps working. When a later pull
+  says `suspended: false`, carry on as normal.
 * **Never lose the outbox.** It lives only on the tablet until accepted. Do not wipe app data or
   log the device out while it is non-empty.
 

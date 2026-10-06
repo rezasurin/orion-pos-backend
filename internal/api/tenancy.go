@@ -37,6 +37,7 @@ func (s *Server) GetMe(ctx context.Context, _ openapi.GetMeRequestObject) (opena
 		Tenant: openapi.TenantSummary{
 			Id: t.ID, Name: t.Name, Slug: t.Slug,
 			SubscriptionStatus: openapi.TenantSummarySubscriptionStatus(t.SubscriptionStatus),
+			SuspendedAt:        t.SuspendedAt,
 		},
 	}, nil
 }

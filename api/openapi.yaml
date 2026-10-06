@@ -1706,6 +1706,11 @@ components:
         subscription_status:
           type: string
           enum: [early_access, trialing, active, past_due, grace, read_only, canceled]
+        suspended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set while an operator has suspended the business. The back office is read-only (every change answers `403 tenant_suspended`).
 
     Me:
       type: object
@@ -2374,12 +2379,13 @@ components:
 
     PullResponse:
       type: object
-      required: [cursor, snapshot, has_more, server_time, categories, kitchen_stations, items, modifier_groups, outlet_variants, staff, removed_staff_ids, deleted, entitlements]
+      required: [cursor, snapshot, has_more, server_time, suspended, categories, kitchen_stations, items, modifier_groups, outlet_variants, staff, removed_staff_ids, deleted, entitlements]
       properties:
         cursor: {type: string, description: Send as `cursor` next time, after applying this response.}
         snapshot: {type: boolean, description: This is the whole state; replace the local copy.}
         has_more: {type: boolean, description: More changes are waiting; pull again now.}
         server_time: {type: string, format: date-time}
+        suspended: {type: boolean, description: 'The business is suspended: show a banner, let the open shift close, and do not open a new one. Pushes are still accepted.'}
         outlet:
           allOf:
             - $ref: '#/components/schemas/Outlet'

@@ -28,6 +28,7 @@ type pusher struct {
 	token    string
 	deviceID string
 	staffID  string
+	secret   string
 }
 
 func (e *env) pusher(t *testing.T, f tenantFixture, ownerToken, name string) pusher {
@@ -39,7 +40,7 @@ func (e *env) pusher(t *testing.T, f tenantFixture, ownerToken, name string) pus
 		"outlet_roles": []map[string]string{{"outlet_id": f.outlet.ID.String(), "role_id": roles["Cashier"].ID}},
 	}).decode(t, &st)
 	p := e.pairDevice(t, ownerToken, f.outlet.ID.String(), name)
-	return pusher{e: e, token: e.deviceToken(t, p.DeviceSecret).AccessToken, deviceID: p.Device.ID, staffID: st.ID}
+	return pusher{e: e, token: e.deviceToken(t, p.DeviceSecret).AccessToken, deviceID: p.Device.ID, staffID: st.ID, secret: p.DeviceSecret}
 }
 
 func (p pusher) event(typ string, payload map[string]any) map[string]any {

@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
@@ -163,7 +164,7 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	ids, err := identity.NewService(identity.Deps{
 		Pool: pool, Clock: kernel.SystemClock{}, TenantKeys: tenantKeys, DeviceKeys: deviceKeys,
-		Jobs: jobs, Gate: tenants.CheckActive, Entitlements: ents,
+		Jobs: jobs, Gate: func(ctx context.Context, id uuid.UUID) error { _, err := tenants.SuspendedAt(ctx, id); return err }, Entitlements: ents,
 	})
 	if err != nil {
 		return err

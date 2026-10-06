@@ -202,9 +202,12 @@ Notes:
   family (`token_reused`) and commits that before reporting it. There is no grace window for a
   lost response, so a client that retries a refresh after a network failure must be prepared to
   sign in again; add a short grace period if the pilot shows this hurting.
-- **Every request to a user route reloads membership** (one indexed query) and checks the tenant
-  is not suspended (one primary-key read), so removing a member or suspending a business takes
-  effect at once instead of when the access token expires. Both are cache candidates (section
+- **Every request to a user route reloads membership** (one indexed query) and reads the tenant's
+  suspension (one primary-key read), so removing a member or suspending a business takes effect at
+  once instead of when the access token expires. Since B2.8 suspension is soft: a person's change
+  (any method but GET) is refused with `tenant_suspended`, reads and sign-in still work, and
+  devices keep pushing, pulling and exchanging tokens; the pull carries `suspended` so the POS
+  closes its open shift and opens no new one (section 6.2.1). Both are cache candidates (section
   4.13) when measured, not before.
 - **Jobs carry ids, never secrets.** The verification job holds `tenant_id` and `user_id`; the
   worker mints the token, stores its hash and sends the email. `river_job` is readable by
@@ -932,6 +935,15 @@ tables), `created_at`, `updated_at` where mutable.
 
 TOTP secrets are encrypted at rest with a key from the secret store (AES-GCM via a small
 `kernel/secrets` helper), not just hashed, because they must be read back.
+
+#### 6.2.1 The operator console as built (B2.8)
+
+- **Suspension is soft** (decided 2026-10-06). A suspended business's people can sign in and read
+  everything; any change (a method other than GET) answers `403 tenant_suspended`, which also
+  stops pairing. Its tablets keep exchanging tokens, pushing and pulling, because the server never
+  refuses a sale; the pull's `suspended: true` tells the POS to let the open shift close and open no
+  new one, and `GET /v1/me` shows `tenant.suspended_at` for the back office's banner. The device
+  monitor and the stopped-syncing list skip suspended businesses.
 
 ### 6.3 Catalog (Phase 1)
 

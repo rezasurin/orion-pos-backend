@@ -69,7 +69,7 @@ func (s *Server) PullChanges(ctx context.Context, req openapi.PullChangesRequest
 	}
 
 	out := openapi.PullChanges200JSONResponse{
-		Cursor: res.Cursor, Snapshot: res.Snapshot, HasMore: res.HasMore, ServerTime: res.ServerTime,
+		Cursor: res.Cursor, Snapshot: res.Snapshot, HasMore: res.HasMore, ServerTime: res.ServerTime, Suspended: suspendedFrom(ctx),
 		Categories:      make([]openapi.Category, len(res.Catalog.Categories)),
 		KitchenStations: make([]openapi.KitchenStation, len(res.Catalog.Stations)),
 		Items:           make([]openapi.Item, len(res.Catalog.Items)),

@@ -183,8 +183,11 @@ func TestDeviceTokenErrors(t *testing.T) {
 	forged := paired.DeviceSecret[:len(paired.DeviceSecret)-3] + "AAA"
 	e.do(t, "POST", "/v1/devices/token", "", map[string]string{"device_secret": forged}).problem(t, http.StatusUnauthorized, "invalid_token")
 
+	// A suspended business's tablets still get tokens: a shift in progress must be able to sync.
 	e.d.Exec(t, `UPDATE tenant SET suspended_at = now() WHERE id = $1`, f.tenant.ID)
-	e.do(t, "POST", "/v1/devices/token", "", map[string]string{"device_secret": paired.DeviceSecret}).problem(t, http.StatusForbidden, "tenant_suspended")
+	if r := e.do(t, "POST", "/v1/devices/token", "", map[string]string{"device_secret": paired.DeviceSecret}); r.Code != http.StatusOK {
+		t.Errorf("token exchange while suspended: %d %s", r.Code, r.Body.String())
+	}
 }
 
 func TestPairingPermissionsAndValidation(t *testing.T) {
