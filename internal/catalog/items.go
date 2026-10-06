@@ -25,6 +25,7 @@ type NewVariant struct {
 // its variants.
 type NewItem struct {
 	CategoryID       *uuid.UUID
+	StationID        *uuid.UUID
 	Name             string
 	SKU              *string
 	Barcode          *string
@@ -70,7 +71,7 @@ func (s *Service) CreateItem(ctx context.Context, tenantID uuid.UUID, in NewItem
 		}
 		q := db.New(tx)
 		if _, err := q.InsertItem(ctx, db.InsertItemParams{
-			ID: id, TenantID: tenantID, CategoryID: in.CategoryID, Name: in.Name, Sku: in.SKU, Barcode: in.Barcode,
+			ID: id, TenantID: tenantID, CategoryID: in.CategoryID, StationID: in.StationID, Name: in.Name, Sku: in.SKU, Barcode: in.Barcode,
 			ImageUrl: in.ImageURL, TrackStock: in.TrackStock,
 		}); err != nil {
 			return mapErr(err)
@@ -134,6 +135,8 @@ type UpdateItem struct {
 	Name             *string
 	CategoryID       *uuid.UUID
 	ClearCategory    bool
+	StationID        *uuid.UUID
+	ClearStation     bool
 	SKU              *string
 	Barcode          *string
 	ImageURL         *string
@@ -153,6 +156,9 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, id uuid.UUID, in Upd
 	}
 	if in.CategoryID != nil && in.ClearCategory {
 		return Item{}, fmt.Errorf("%w: category_id and clear_category cannot be combined", kernel.ErrValidation)
+	}
+	if in.StationID != nil && in.ClearStation {
+		return Item{}, fmt.Errorf("%w: station_id and clear_station cannot be combined", kernel.ErrValidation)
 	}
 	var err error
 	// A pointer to a blank string means "clear", so keep it distinct from nil (no change).
@@ -197,7 +203,7 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, id uuid.UUID, in Upd
 			return mapErr(err)
 		}
 		p := db.UpdateItemParams{
-			TenantID: tenantID, ID: id, CategoryID: cur.CategoryID, Name: cur.Name, Sku: cur.Sku, Barcode: cur.Barcode,
+			TenantID: tenantID, ID: id, CategoryID: cur.CategoryID, StationID: cur.StationID, Name: cur.Name, Sku: cur.Sku, Barcode: cur.Barcode,
 			ImageUrl: cur.ImageUrl, TrackStock: cur.TrackStock, ArchivedAt: s.archiveState(cur.ArchivedAt, in.Archived),
 		}
 		if in.Name != nil {
@@ -208,6 +214,12 @@ func (s *Service) UpdateItem(ctx context.Context, tenantID, id uuid.UUID, in Upd
 			p.CategoryID = nil
 		case in.CategoryID != nil:
 			p.CategoryID = in.CategoryID
+		}
+		switch {
+		case in.ClearStation:
+			p.StationID = nil
+		case in.StationID != nil:
+			p.StationID = in.StationID
 		}
 		p.Sku, p.Barcode, p.ImageUrl = patchText(p.Sku, in.SKU), patchText(p.Barcode, in.Barcode), patchText(p.ImageUrl, in.ImageURL)
 		if in.TrackStock != nil {
@@ -410,7 +422,7 @@ func assembleItems(ctx context.Context, q *db.Queries, tenantID uuid.UUID, rows 
 	out := make([]Item, len(rows))
 	for i, r := range rows {
 		out[i] = Item{
-			ID: r.ID, CategoryID: r.CategoryID, Name: r.Name, SKU: r.Sku, Barcode: r.Barcode, ImageURL: r.ImageUrl,
+			ID: r.ID, CategoryID: r.CategoryID, StationID: r.StationID, Name: r.Name, SKU: r.Sku, Barcode: r.Barcode, ImageURL: r.ImageUrl,
 			TrackStock: r.TrackStock, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt,
 			Variants: orEmpty(vByItem[r.ID]), ModifierGroupIDs: orEmpty(gByItem[r.ID]),
 		}

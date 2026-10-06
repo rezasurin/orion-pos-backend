@@ -71,6 +71,7 @@ func (s *Server) PullChanges(ctx context.Context, req openapi.PullChangesRequest
 	out := openapi.PullChanges200JSONResponse{
 		Cursor: res.Cursor, Snapshot: res.Snapshot, HasMore: res.HasMore, ServerTime: res.ServerTime,
 		Categories:      make([]openapi.Category, len(res.Catalog.Categories)),
+		KitchenStations: make([]openapi.KitchenStation, len(res.Catalog.Stations)),
 		Items:           make([]openapi.Item, len(res.Catalog.Items)),
 		ModifierGroups:  make([]openapi.ModifierGroup, len(res.Catalog.Groups)),
 		OutletVariants:  make([]openapi.OutletVariant, len(res.Catalog.OutletVariants)),
@@ -87,6 +88,9 @@ func (s *Server) PullChanges(ctx context.Context, req openapi.PullChangesRequest
 	}
 	for i, c := range res.Catalog.Categories {
 		out.Categories[i] = toCategoryBody(c)
+	}
+	for i, st := range res.Catalog.Stations {
+		out.KitchenStations[i] = toStationBody(st)
 	}
 	for i, it := range res.Catalog.Items {
 		out.Items[i] = toItemBody(it)

@@ -30,6 +30,7 @@ const (
 	EntityItem          = "item"           // an item with its variants and modifier group links
 	EntityModifierGroup = "modifier_group" // a group with its modifiers
 	EntityOutletVariant = "outlet_variant" // entity_id is the variant id; the outlet is in outlet_id
+	EntityStation       = "kitchen_station"
 )
 
 const (
@@ -67,6 +68,7 @@ type Category struct {
 type Item struct {
 	ID               uuid.UUID
 	CategoryID       *uuid.UUID
+	StationID        *uuid.UUID // where it is made; nil prints no ticket
 	Name             string
 	SKU              *string
 	Barcode          *string
@@ -307,7 +309,7 @@ func mapErr(err error) error {
 		case "23505":
 			return fmt.Errorf("%w: %s", kernel.ErrConflict, conflictText[pgErr.ConstraintName])
 		case "23503":
-			return fmt.Errorf("%w: a referenced category, modifier group, outlet or variant does not exist", kernel.ErrValidation)
+			return fmt.Errorf("%w: a referenced category, station, modifier group, outlet or variant does not exist", kernel.ErrValidation)
 		case "23514":
 			return fmt.Errorf("%w: a value is out of range (%s)", kernel.ErrValidation, pgErr.ConstraintName)
 		}
@@ -316,10 +318,11 @@ func mapErr(err error) error {
 }
 
 var conflictText = map[string]string{
-	"category_name_idx":       "a category with this name already exists",
-	"modifier_group_name_idx": "a modifier group with this name already exists",
-	"variant_sku_idx":         "this SKU is already used by another variant",
-	"variant_barcode_idx":     "this barcode is already used by another variant",
+	"category_name_idx":        "a category with this name already exists",
+	"modifier_group_name_idx":  "a modifier group with this name already exists",
+	"variant_sku_idx":          "this SKU is already used by another variant",
+	"variant_barcode_idx":      "this barcode is already used by another variant",
+	"kitchen_station_name_idx": "a station with this name already exists",
 }
 
 // mapRefErr is mapErr for a reference the caller named by id: a missing target, including one the

@@ -14,6 +14,7 @@ import (
 // comment).
 type PullIDs struct {
 	Categories []uuid.UUID
+	Stations   []uuid.UUID
 	Items      []uuid.UUID
 	Groups     []uuid.UUID
 	Variants   []uuid.UUID // variants whose setting at the device's outlet changed
@@ -23,6 +24,7 @@ type PullIDs struct {
 // show what an old sale was.
 type PullState struct {
 	Categories     []Category
+	Stations       []Station
 	Items          []Item
 	Groups         []ModifierGroup
 	OutletVariants []OutletVariant
@@ -36,12 +38,16 @@ func (s *Service) PullState(ctx context.Context, tx pgx.Tx, tenantID, outletID u
 	var out PullState
 
 	var cats []db.Category
+	var stations []db.KitchenStation
 	var items []db.Item
 	var groups []db.ModifierGroup
 	var ovs []db.OutletVariant
 	var err error
 	if all {
 		if cats, err = q.ListAllCategories(ctx, tenantID); err != nil {
+			return out, err
+		}
+		if stations, err = q.ListAllStations(ctx, tenantID); err != nil {
 			return out, err
 		}
 		if items, err = q.ListAllItems(ctx, tenantID); err != nil {
@@ -56,6 +62,11 @@ func (s *Service) PullState(ctx context.Context, tx pgx.Tx, tenantID, outletID u
 	} else {
 		if len(ids.Categories) > 0 {
 			if cats, err = q.ListCategoriesByIDs(ctx, db.ListCategoriesByIDsParams{TenantID: tenantID, Ids: ids.Categories}); err != nil {
+				return out, err
+			}
+		}
+		if len(ids.Stations) > 0 {
+			if stations, err = q.ListStationsByIDs(ctx, db.ListStationsByIDsParams{TenantID: tenantID, Ids: ids.Stations}); err != nil {
 				return out, err
 			}
 		}
@@ -79,6 +90,10 @@ func (s *Service) PullState(ctx context.Context, tx pgx.Tx, tenantID, outletID u
 	out.Categories = make([]Category, len(cats))
 	for i, c := range cats {
 		out.Categories[i] = toCategory(c)
+	}
+	out.Stations = make([]Station, len(stations))
+	for i, st := range stations {
+		out.Stations[i] = toStation(st)
 	}
 	if out.Items, err = assembleItems(ctx, q, tenantID, items); err != nil {
 		return out, err

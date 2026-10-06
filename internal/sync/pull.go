@@ -185,6 +185,7 @@ func sortChanges(changes []kernel.Change) (ids changedIDs, outletChanged bool, d
 		return out
 	}
 	ids.catalog.Categories = pick(catalog.EntityCategory)
+	ids.catalog.Stations = pick(catalog.EntityStation)
 	ids.catalog.Items = pick(catalog.EntityItem)
 	ids.catalog.Groups = pick(catalog.EntityModifierGroup)
 	ids.catalog.Variants = pick(catalog.EntityOutletVariant)
@@ -192,7 +193,7 @@ func sortChanges(changes []kernel.Change) (ids changedIDs, outletChanged bool, d
 	outletChanged = len(last["outlet"])+len(last["outlet_settings"]) > 0
 
 	known := map[string]bool{
-		catalog.EntityCategory: true, catalog.EntityItem: true, catalog.EntityModifierGroup: true, catalog.EntityOutletVariant: true,
+		catalog.EntityCategory: true, catalog.EntityStation: true, catalog.EntityItem: true, catalog.EntityModifierGroup: true, catalog.EntityOutletVariant: true,
 		"staff": true, "outlet": true, "outlet_settings": true,
 	}
 	for entityType := range last {

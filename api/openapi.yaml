@@ -930,6 +930,77 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
 
+  /v1/kitchen-stations:
+    get:
+      operationId: listKitchenStations
+      tags: [catalog]
+      summary: Kitchen and bar stations, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page of stations ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KitchenStationPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createKitchenStation
+      tags: [catalog]
+      summary: Add a kitchen or bar station
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewKitchenStation'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KitchenStation'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/kitchen-stations/{stationId}:
+    patch:
+      operationId: updateKitchenStation
+      tags: [catalog]
+      summary: Rename, reorder, archive or restore a station
+      description: Fields left out stay as they are. A station is archived, never deleted; items keep pointing at an archived station, and the POS prints no ticket for it.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/StationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KitchenStationUpdate'
+      responses:
+        '200':
+          description: The updated station
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KitchenStation'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
   /v1/items:
     get:
       operationId: listItems
@@ -1438,6 +1509,11 @@ components:
 
     CategoryId:
       name: categoryId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    StationId:
+      name: stationId
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -1986,6 +2062,39 @@ components:
         sort_order: {type: integer}
         archived: {type: boolean, description: true archives, false restores.}
 
+    KitchenStation:
+      type: object
+      required: [id, name, sort_order, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 40}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    KitchenStationPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/KitchenStation'}
+        next_cursor: {type: string, format: uuid}
+
+    NewKitchenStation:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 40}
+        sort_order: {type: integer, default: 0}
+
+    KitchenStationUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 40}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
     Variant:
       type: object
       required: [id, item_id, name, base_price, sort_order]
@@ -2024,6 +2133,7 @@ components:
       properties:
         id: {type: string, format: uuid}
         category_id: {type: string, format: uuid, nullable: true}
+        station_id: {type: string, format: uuid, nullable: true, description: The kitchen station that makes it; null prints no ticket.}
         name: {type: string, maxLength: 120}
         sku: {type: string, nullable: true, maxLength: 40}
         barcode: {type: string, nullable: true, maxLength: 40}
@@ -2055,6 +2165,7 @@ components:
       properties:
         name: {type: string, maxLength: 120}
         category_id: {type: string, format: uuid}
+        station_id: {type: string, format: uuid}
         sku: {type: string, maxLength: 40}
         barcode: {type: string, maxLength: 40}
         image_url: {type: string, maxLength: 500}
@@ -2075,6 +2186,8 @@ components:
         name: {type: string, maxLength: 120}
         category_id: {type: string, format: uuid}
         clear_category: {type: boolean, description: Remove the item from its category. Not combinable with category_id.}
+        station_id: {type: string, format: uuid}
+        clear_station: {type: boolean, description: Stop printing tickets for the item. Not combinable with station_id.}
         sku: {type: string, maxLength: 40, description: Blank clears it.}
         barcode: {type: string, maxLength: 40, description: Blank clears it.}
         image_url: {type: string, maxLength: 500, description: Blank clears it.}
@@ -2261,7 +2374,7 @@ components:
 
     PullResponse:
       type: object
-      required: [cursor, snapshot, has_more, server_time, categories, items, modifier_groups, outlet_variants, staff, removed_staff_ids, deleted, entitlements]
+      required: [cursor, snapshot, has_more, server_time, categories, kitchen_stations, items, modifier_groups, outlet_variants, staff, removed_staff_ids, deleted, entitlements]
       properties:
         cursor: {type: string, description: Send as `cursor` next time, after applying this response.}
         snapshot: {type: boolean, description: This is the whole state; replace the local copy.}
@@ -2274,6 +2387,10 @@ components:
         categories:
           type: array
           items: {$ref: '#/components/schemas/Category'}
+        kitchen_stations:
+          type: array
+          description: Stations that changed, archived ones included.
+          items: {$ref: '#/components/schemas/KitchenStation'}
         items:
           type: array
           description: Each with its variants and modifier group ids.

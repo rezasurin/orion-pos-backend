@@ -176,7 +176,8 @@ What the business sells. Archived entries stay (old sales refer to them): list w
 | Call | Notes |
 |---|---|
 | `GET/POST /v1/categories`, `PATCH /v1/categories/{categoryId}` | `{name, sort_order}`. |
-| `GET/POST /v1/items`, `GET/PATCH /v1/items/{itemId}` | An item has at least one **variant** (a size or option with its own price). A one-size item has one variant with an empty `name`. An item lists its `modifier_group_ids` in display order; `PATCH` replaces that list. `clear_category: true` removes the category. `sku`/`barcode`/`image_url`: a blank string clears. |
+| `GET/POST /v1/items`, `GET/PATCH /v1/items/{itemId}` | An item has at least one **variant** (a size or option with its own price). A one-size item has one variant with an empty `name`. An item lists its `modifier_group_ids` in display order; `PATCH` replaces that list. `clear_category: true` removes the category. `station_id` routes it to a kitchen station; `clear_station: true` removes it (no ticket). `sku`/`barcode`/`image_url`: a blank string clears. A null `category_id` or `station_id` is left out of the response. |
+| `GET/POST /v1/kitchen-stations`, `PATCH /v1/kitchen-stations/{stationId}` | Where items are made, for kitchen and bar tickets: `{name (max 40), sort_order}`. Live names are unique per business, ignoring case. Archive rather than delete. |
 | `POST /v1/items/{itemId}/variants`, `PATCH /v1/variants/{variantId}` | `base_price` in rupiah, 0 to 1,000,000,000. |
 | `GET/POST /v1/modifier-groups`, `PATCH /v1/modifier-groups/{groupId}` | A group (for example "Sugar") has `min_select`, `max_select` and `required` (a required group needs `min_select` of at least 1). |
 | `POST /v1/modifier-groups/{groupId}/modifiers`, `PATCH /v1/modifiers/{modifierId}` | `price_delta` in rupiah, **may be negative**. |
@@ -185,6 +186,16 @@ What the business sells. Archived entries stay (old sales refer to them): list w
 
 The price a sale line uses is `price_override` if set, else `base_price`, plus the chosen
 modifiers' `price_delta`. The POS does this from its pulled copy, offline.
+
+#### Kitchen and bar tickets (printed by the POS)
+
+The server only says **which station makes each item** (`item.station_id`); the tablet prints.
+When a sale is completed, group its lines by their item's station and print one ticket per
+station: receipt number, time, cashier, then each line's name, quantity and modifiers. Lines
+whose item has no station, or whose station is archived, get no ticket. Which printer a station
+uses is a setting on the tablet (printers live on the outlet's network), so offer a "station →
+printer" mapping in the POS settings, from `kitchen_stations` in the pull. Nothing is sent back:
+there is no ticket status until the restaurant flow (Phase 4) adds a kitchen display.
 
 #### Importing a menu from CSV
 
@@ -337,7 +348,7 @@ log of edits, so apply it as an upsert by `id`:
 | Field | Apply as |
 |---|---|
 | `outlet` | Present when the outlet or its settings changed (and in a snapshot). Replace the local outlet and settings. |
-| `categories`, `items` (with `variants` and `modifier_group_ids`), `modifier_groups` (with `modifiers`) | Upsert by id. **Archived ones are included, marked with `archived_at`**: keep them (an old sale may need the name), but do not offer them for new sales. |
+| `categories`, `kitchen_stations`, `items` (with `variants` and `modifier_group_ids`), `modifier_groups` (with `modifiers`) | Upsert by id. **Archived ones are included, marked with `archived_at`**: keep them (an old sale may need the name), but do not offer them for new sales. |
 | `outlet_variants` | This outlet's price override and availability, upsert by `variant_id`. In a snapshot, a variant not listed is at base price and available. |
 | `staff` | Roster entries that changed (`display_name`, `pin_hash`, `permissions`). Upsert. |
 | `removed_staff_ids` | Remove these from the local roster. |
@@ -517,7 +528,7 @@ settings, for checking printer layout and the calculation; it is not a sale.
 | Sales reports (charts, best sellers, payment mix, CSV download) | `reports/sales?outlet_id=&from=&to=&group_by=day\|item\|payment_method[&format=csv]` |
 | Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |
 | Sales list and search | `sales?…` → `sales/{saleId}` |
-| Catalog manager | `categories`, `items`, `modifier-groups`, `outlets/{id}/variants` |
+| Catalog manager | `categories`, `kitchen-stations`, `items`, `modifier-groups`, `outlets/{id}/variants` |
 | Menu import | `catalog/import?dry_run=true` → show counts and row errors → `catalog/import` |
 | Staff manager | `roles`, `staff`, `staff/{id}/pin` |
 | Devices | `devices`, `devices/pair`, `devices/{id}` (revoke) |
@@ -537,7 +548,8 @@ shift).
 
 ## 10. Not built yet
 
-So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display,
+So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display (and
+ticket status; kitchen tickets themselves are printed by the POS, see 3.5),
 customers, loyalty, refunds beyond voids, payment gateways (QRIS dynamic, e-wallets: the methods
 exist as labels only), receipt printing endpoints, file/image upload (an item's `image_url` is a
 plain URL you host), CORS, and webhooks. The roadmap is in

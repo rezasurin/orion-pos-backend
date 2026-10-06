@@ -57,6 +57,51 @@ func (s *Server) UpdateCategory(ctx context.Context, req openapi.UpdateCategoryR
 	return openapi.UpdateCategory200JSONResponse(toCategoryBody(c)), nil
 }
 
+func (s *Server) ListKitchenStations(ctx context.Context, req openapi.ListKitchenStationsRequestObject) (openapi.ListKitchenStationsResponseObject, error) {
+	page, err := pageFrom(req.Params.Cursor, req.Params.Limit)
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.Catalog.ListStations(ctx, principalFrom(ctx).TenantID, page, flag(req.Params.IncludeArchived))
+	if err != nil {
+		return nil, err
+	}
+	out := openapi.ListKitchenStations200JSONResponse{Items: make([]openapi.KitchenStation, len(res.Items)), NextCursor: nextCursor(res.Next)}
+	for i, st := range res.Items {
+		out.Items[i] = toStationBody(st)
+	}
+	return out, nil
+}
+
+func (s *Server) CreateKitchenStation(ctx context.Context, req openapi.CreateKitchenStationRequestObject) (openapi.CreateKitchenStationResponseObject, error) {
+	if req.Body == nil {
+		return nil, errBodyRequired
+	}
+	in := catalog.NewStation{Name: req.Body.Name}
+	if req.Body.SortOrder != nil {
+		in.SortOrder = *req.Body.SortOrder
+	}
+	st, err := s.Catalog.CreateStation(ctx, principalFrom(ctx).TenantID, in)
+	if err != nil {
+		return nil, err
+	}
+	return openapi.CreateKitchenStation201JSONResponse(toStationBody(st)), nil
+}
+
+func (s *Server) UpdateKitchenStation(ctx context.Context, req openapi.UpdateKitchenStationRequestObject) (openapi.UpdateKitchenStationResponseObject, error) {
+	if req.Body == nil {
+		return nil, errBodyRequired
+	}
+	b := req.Body
+	st, err := s.Catalog.UpdateStation(ctx, principalFrom(ctx).TenantID, req.StationId, catalog.UpdateStation{
+		Name: b.Name, SortOrder: b.SortOrder, Archived: b.Archived,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return openapi.UpdateKitchenStation200JSONResponse(toStationBody(st)), nil
+}
+
 func (s *Server) ListItems(ctx context.Context, req openapi.ListItemsRequestObject) (openapi.ListItemsResponseObject, error) {
 	page, err := pageFrom(req.Params.Cursor, req.Params.Limit)
 	if err != nil {
@@ -81,7 +126,7 @@ func (s *Server) CreateItem(ctx context.Context, req openapi.CreateItemRequestOb
 		return nil, errBodyRequired
 	}
 	in := catalog.NewItem{
-		CategoryID: b.CategoryId, Name: b.Name, SKU: b.Sku, Barcode: b.Barcode, ImageURL: b.ImageUrl,
+		CategoryID: b.CategoryId, StationID: b.StationId, Name: b.Name, SKU: b.Sku, Barcode: b.Barcode, ImageURL: b.ImageUrl,
 		TrackStock: flag(b.TrackStock), Variants: make([]catalog.NewVariant, len(b.Variants)),
 	}
 	for i, v := range b.Variants {
@@ -111,7 +156,7 @@ func (s *Server) UpdateItem(ctx context.Context, req openapi.UpdateItemRequestOb
 		return nil, errBodyRequired
 	}
 	it, err := s.Catalog.UpdateItem(ctx, principalFrom(ctx).TenantID, req.ItemId, catalog.UpdateItem{
-		Name: b.Name, CategoryID: b.CategoryId, ClearCategory: flag(b.ClearCategory), SKU: b.Sku, Barcode: b.Barcode,
+		Name: b.Name, CategoryID: b.CategoryId, ClearCategory: flag(b.ClearCategory), StationID: b.StationId, ClearStation: flag(b.ClearStation), SKU: b.Sku, Barcode: b.Barcode,
 		ImageURL: b.ImageUrl, TrackStock: b.TrackStock, Archived: b.Archived, ModifierGroupIDs: b.ModifierGroupIds,
 	})
 	if err != nil {
@@ -315,6 +360,10 @@ func toCategoryBody(c catalog.Category) openapi.Category {
 	return openapi.Category{Id: c.ID, Name: c.Name, SortOrder: c.SortOrder, ArchivedAt: c.ArchivedAt, CreatedAt: c.CreatedAt}
 }
 
+func toStationBody(st catalog.Station) openapi.KitchenStation {
+	return openapi.KitchenStation{Id: st.ID, Name: st.Name, SortOrder: st.SortOrder, ArchivedAt: st.ArchivedAt, CreatedAt: st.CreatedAt}
+}
+
 func toVariantBody(v catalog.Variant) openapi.Variant {
 	return openapi.Variant{
 		Id: v.ID, ItemId: v.ItemID, Name: v.Name, Sku: v.SKU, Barcode: v.Barcode, BasePrice: int64(v.BasePrice),
@@ -328,7 +377,7 @@ func toItemBody(it catalog.Item) openapi.Item {
 		vs[i] = toVariantBody(v)
 	}
 	return openapi.Item{
-		Id: it.ID, CategoryId: it.CategoryID, Name: it.Name, Sku: it.SKU, Barcode: it.Barcode, ImageUrl: it.ImageURL,
+		Id: it.ID, CategoryId: it.CategoryID, StationId: it.StationID, Name: it.Name, Sku: it.SKU, Barcode: it.Barcode, ImageUrl: it.ImageURL,
 		TrackStock: it.TrackStock, ArchivedAt: it.ArchivedAt, CreatedAt: it.CreatedAt, Variants: vs, ModifierGroupIds: it.ModifierGroupIDs,
 	}
 }

@@ -271,6 +271,7 @@ type Item struct {
 	ArchivedAt *time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	StationID  *uuid.UUID
 }
 
 type ItemModifierGroup struct {
@@ -278,6 +279,16 @@ type ItemModifierGroup struct {
 	ItemID    uuid.UUID
 	GroupID   uuid.UUID
 	SortOrder int32
+}
+
+type KitchenStation struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	Name       string
+	SortOrder  int32
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type Modifier struct {

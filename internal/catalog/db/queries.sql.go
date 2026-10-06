@@ -159,7 +159,7 @@ func (q *Queries) GetCategoryForUpdate(ctx context.Context, arg GetCategoryForUp
 }
 
 const getItem = `-- name: GetItem :one
-SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at FROM item WHERE tenant_id = $1 AND id = $2
+SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at, station_id FROM item WHERE tenant_id = $1 AND id = $2
 `
 
 type GetItemParams struct {
@@ -182,12 +182,13 @@ func (q *Queries) GetItem(ctx context.Context, arg GetItemParams) (Item, error) 
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.StationID,
 	)
 	return i, err
 }
 
 const getItemForUpdate = `-- name: GetItemForUpdate :one
-SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at FROM item WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at, station_id FROM item WHERE tenant_id = $1 AND id = $2 FOR UPDATE
 `
 
 type GetItemForUpdateParams struct {
@@ -210,6 +211,7 @@ func (q *Queries) GetItemForUpdate(ctx context.Context, arg GetItemForUpdatePara
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.StationID,
 	)
 	return i, err
 }
@@ -287,6 +289,30 @@ func (q *Queries) GetOutletVariantForUpdate(ctx context.Context, arg GetOutletVa
 		&i.VariantID,
 		&i.PriceOverride,
 		&i.Available,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getStationForUpdate = `-- name: GetStationForUpdate :one
+SELECT id, tenant_id, name, sort_order, archived_at, created_at, updated_at FROM kitchen_station WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+`
+
+type GetStationForUpdateParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) GetStationForUpdate(ctx context.Context, arg GetStationForUpdateParams) (KitchenStation, error) {
+	row := q.db.QueryRow(ctx, getStationForUpdate, arg.TenantID, arg.ID)
+	var i KitchenStation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.SortOrder,
+		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -442,15 +468,16 @@ func (q *Queries) InsertCategory(ctx context.Context, arg InsertCategoryParams) 
 
 const insertItem = `-- name: InsertItem :one
 
-INSERT INTO item (id, tenant_id, category_id, name, sku, barcode, image_url, track_stock)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at
+INSERT INTO item (id, tenant_id, category_id, station_id, name, sku, barcode, image_url, track_stock)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at, station_id
 `
 
 type InsertItemParams struct {
 	ID         uuid.UUID
 	TenantID   uuid.UUID
 	CategoryID *uuid.UUID
+	StationID  *uuid.UUID
 	Name       string
 	Sku        *string
 	Barcode    *string
@@ -464,6 +491,7 @@ func (q *Queries) InsertItem(ctx context.Context, arg InsertItemParams) (Item, e
 		arg.ID,
 		arg.TenantID,
 		arg.CategoryID,
+		arg.StationID,
 		arg.Name,
 		arg.Sku,
 		arg.Barcode,
@@ -483,6 +511,7 @@ func (q *Queries) InsertItem(ctx context.Context, arg InsertItemParams) (Item, e
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.StationID,
 	)
 	return i, err
 }
@@ -638,6 +667,41 @@ func (q *Queries) InsertModifiers(ctx context.Context, arg InsertModifiersParams
 	return items, nil
 }
 
+const insertStation = `-- name: InsertStation :one
+
+INSERT INTO kitchen_station (id, tenant_id, name, sort_order)
+VALUES ($1, $2, $3, $4)
+RETURNING id, tenant_id, name, sort_order, archived_at, created_at, updated_at
+`
+
+type InsertStationParams struct {
+	ID        uuid.UUID
+	TenantID  uuid.UUID
+	Name      string
+	SortOrder int32
+}
+
+// Kitchen stations
+func (q *Queries) InsertStation(ctx context.Context, arg InsertStationParams) (KitchenStation, error) {
+	row := q.db.QueryRow(ctx, insertStation,
+		arg.ID,
+		arg.TenantID,
+		arg.Name,
+		arg.SortOrder,
+	)
+	var i KitchenStation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.SortOrder,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const insertVariant = `-- name: InsertVariant :one
 
 INSERT INTO variant (id, tenant_id, item_id, name, sku, barcode, base_price, sort_order)
@@ -782,7 +846,7 @@ func (q *Queries) ListAllCategories(ctx context.Context, tenantID uuid.UUID) ([]
 }
 
 const listAllItems = `-- name: ListAllItems :many
-SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at FROM item WHERE tenant_id = $1 ORDER BY id
+SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at, station_id FROM item WHERE tenant_id = $1 ORDER BY id
 `
 
 func (q *Queries) ListAllItems(ctx context.Context, tenantID uuid.UUID) ([]Item, error) {
@@ -806,6 +870,7 @@ func (q *Queries) ListAllItems(ctx context.Context, tenantID uuid.UUID) ([]Item,
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.StationID,
 		); err != nil {
 			return nil, err
 		}
@@ -875,6 +940,38 @@ func (q *Queries) ListAllOutletVariants(ctx context.Context, arg ListAllOutletVa
 			&i.VariantID,
 			&i.PriceOverride,
 			&i.Available,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAllStations = `-- name: ListAllStations :many
+SELECT id, tenant_id, name, sort_order, archived_at, created_at, updated_at FROM kitchen_station WHERE tenant_id = $1 ORDER BY id
+`
+
+func (q *Queries) ListAllStations(ctx context.Context, tenantID uuid.UUID) ([]KitchenStation, error) {
+	rows, err := q.db.Query(ctx, listAllStations, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KitchenStation
+	for rows.Next() {
+		var i KitchenStation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.SortOrder,
+			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -1014,7 +1111,7 @@ func (q *Queries) ListItemModifierGroups(ctx context.Context, arg ListItemModifi
 }
 
 const listItems = `-- name: ListItems :many
-SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at FROM item
+SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at, station_id FROM item
 WHERE tenant_id = $1 AND id > $2
   AND ($3::boolean OR archived_at IS NULL)
   AND ($4::uuid IS NULL OR category_id = $4)
@@ -1057,6 +1154,7 @@ func (q *Queries) ListItems(ctx context.Context, arg ListItemsParams) ([]Item, e
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.StationID,
 		); err != nil {
 			return nil, err
 		}
@@ -1069,7 +1167,7 @@ func (q *Queries) ListItems(ctx context.Context, arg ListItemsParams) ([]Item, e
 }
 
 const listItemsByIDs = `-- name: ListItemsByIDs :many
-SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at FROM item WHERE tenant_id = $1 AND id = ANY($2::uuid[]) ORDER BY id
+SELECT id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at, station_id FROM item WHERE tenant_id = $1 AND id = ANY($2::uuid[]) ORDER BY id
 `
 
 type ListItemsByIDsParams struct {
@@ -1098,6 +1196,7 @@ func (q *Queries) ListItemsByIDs(ctx context.Context, arg ListItemsByIDsParams) 
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.StationID,
 		); err != nil {
 			return nil, err
 		}
@@ -1382,6 +1481,90 @@ func (q *Queries) ListOutletVariantsByVariantIDs(ctx context.Context, arg ListOu
 	return items, nil
 }
 
+const listStations = `-- name: ListStations :many
+SELECT id, tenant_id, name, sort_order, archived_at, created_at, updated_at FROM kitchen_station
+WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
+ORDER BY id
+LIMIT $4
+`
+
+type ListStationsParams struct {
+	TenantID        uuid.UUID
+	After           uuid.UUID
+	IncludeArchived bool
+	PageSize        int32
+}
+
+func (q *Queries) ListStations(ctx context.Context, arg ListStationsParams) ([]KitchenStation, error) {
+	rows, err := q.db.Query(ctx, listStations,
+		arg.TenantID,
+		arg.After,
+		arg.IncludeArchived,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KitchenStation
+	for rows.Next() {
+		var i KitchenStation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.SortOrder,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStationsByIDs = `-- name: ListStationsByIDs :many
+SELECT id, tenant_id, name, sort_order, archived_at, created_at, updated_at FROM kitchen_station WHERE tenant_id = $1 AND id = ANY($2::uuid[]) ORDER BY id
+`
+
+type ListStationsByIDsParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+}
+
+func (q *Queries) ListStationsByIDs(ctx context.Context, arg ListStationsByIDsParams) ([]KitchenStation, error) {
+	rows, err := q.db.Query(ctx, listStationsByIDs, arg.TenantID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KitchenStation
+	for rows.Next() {
+		var i KitchenStation
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.SortOrder,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listVariantsByItems = `-- name: ListVariantsByItems :many
 SELECT id, tenant_id, item_id, name, sku, barcode, base_price, sort_order, archived_at, created_at, updated_at FROM variant
 WHERE tenant_id = $1 AND item_id = ANY($2::uuid[])
@@ -1463,14 +1646,15 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 
 const updateItem = `-- name: UpdateItem :one
 UPDATE item
-SET category_id = $1, name = $2, sku = $3, barcode = $4,
-    image_url = $5, track_stock = $6, archived_at = $7
-WHERE tenant_id = $8 AND id = $9
-RETURNING id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at
+SET category_id = $1, station_id = $2, name = $3, sku = $4, barcode = $5,
+    image_url = $6, track_stock = $7, archived_at = $8
+WHERE tenant_id = $9 AND id = $10
+RETURNING id, tenant_id, category_id, name, sku, barcode, image_url, track_stock, archived_at, created_at, updated_at, station_id
 `
 
 type UpdateItemParams struct {
 	CategoryID *uuid.UUID
+	StationID  *uuid.UUID
 	Name       string
 	Sku        *string
 	Barcode    *string
@@ -1484,6 +1668,7 @@ type UpdateItemParams struct {
 func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) (Item, error) {
 	row := q.db.QueryRow(ctx, updateItem,
 		arg.CategoryID,
+		arg.StationID,
 		arg.Name,
 		arg.Sku,
 		arg.Barcode,
@@ -1506,6 +1691,7 @@ func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) (Item, e
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.StationID,
 	)
 	return i, err
 }
@@ -1586,6 +1772,41 @@ func (q *Queries) UpdateModifierGroup(ctx context.Context, arg UpdateModifierGro
 		&i.MinSelect,
 		&i.MaxSelect,
 		&i.Required,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateStation = `-- name: UpdateStation :one
+UPDATE kitchen_station SET name = $1, sort_order = $2, archived_at = $3
+WHERE tenant_id = $4 AND id = $5
+RETURNING id, tenant_id, name, sort_order, archived_at, created_at, updated_at
+`
+
+type UpdateStationParams struct {
+	Name       string
+	SortOrder  int32
+	ArchivedAt *time.Time
+	TenantID   uuid.UUID
+	ID         uuid.UUID
+}
+
+func (q *Queries) UpdateStation(ctx context.Context, arg UpdateStationParams) (KitchenStation, error) {
+	row := q.db.QueryRow(ctx, updateStation,
+		arg.Name,
+		arg.SortOrder,
+		arg.ArchivedAt,
+		arg.TenantID,
+		arg.ID,
+	)
+	var i KitchenStation
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.SortOrder,
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,

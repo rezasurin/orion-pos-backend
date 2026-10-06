@@ -241,7 +241,7 @@ func TestPullOverHTTP(t *testing.T) {
 		t.Errorf("roster %d, entitlements %d, expires %q", len(snap.Staff), len(snap.Entitlements.Items), snap.Entitlements.ExpiresAt)
 	}
 	// The response has every list, even when empty, so a client never has to guess null from absent.
-	for _, key := range []string{"categories", "items", "modifier_groups", "outlet_variants", "staff", "removed_staff_ids", "deleted"} {
+	for _, key := range []string{"categories", "kitchen_stations", "items", "modifier_groups", "outlet_variants", "staff", "removed_staff_ids", "deleted"} {
 		var raw map[string]json.RawMessage
 		r.decode(t, &raw)
 		if string(raw[key]) == "null" || raw[key] == nil {

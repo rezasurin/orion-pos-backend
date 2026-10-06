@@ -995,6 +995,22 @@ price (6.4), so a later rename never changes a receipt.
 - The commit writes `catalog.imported` to the audit log with the counts, and category and item
   changes to the change log, so tablets get the menu in their next pull.
 
+#### 6.3.3 Kitchen stations as built (B2.7)
+
+- `kitchen_station (tenant_id, id, name, sort_order, archived_at)` (migration 00016), managed at
+  `/v1/kitchen-stations` with `catalog.manage` exactly like categories: live names unique ignoring
+  case, archived not deleted, an id of another business is `404` (and `400` when an item points
+  at it).
+- **One station per item** (`item.station_id`, nullable; `clear_station` in a PATCH). The
+  `item_station` link table section 6.7 sketched is left until an item has to print in two places.
+  Routing is per item, not per category; a per-category default can come later if owners ask.
+- Stations are a change log entity of their own (`kitchen_station`) and arrive in the pull's
+  `kitchen_stations`; moving an item is an item change. The tablet prints one ticket per station
+  when a sale completes and maps stations to printers locally; the contract (3.5) says how.
+  Nothing about tickets reaches the server yet: Phase 4 (B4.5) adds `kitchen_ticket` with a
+  status for a kitchen display on top of these stations.
+- Not in the CSV import yet: stations are set in the catalog manager.
+
 ### 6.4 Sales and shifts (Phase 1)
 
 | Table | Key columns |
@@ -1246,8 +1262,8 @@ its own before the code.
   append-only, they merge without CRDTs, but "who sees the latest bill" needs the devices online
   or on the same LAN. The ADR should decide: require connectivity for shared open bills, and allow
   single-device open bills offline.
-- `kitchen_station`, `item_station` routing, `kitchen_ticket` (printed by the POS in Phase 4,
-  then a KDS view reading the same tickets).
+- `kitchen_station` and per-item routing exist since B2.7 (6.3.3); Phase 4 adds `kitchen_ticket`
+  (printed by the POS, then a KDS view reading the same tickets).
 
 ### 6.8 Billing (Phase 5 only)
 
@@ -1360,7 +1376,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.4 | Gateway integration behind the `Gateway` interface: doit.id (6.5.1): tenant sub-merchant onboarding, dynamic QRIS (e-wallets pay by scanning it), webhooks, reconciliation jobs | 6d |
 | B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |
 | B2.6 | ✅ Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download (see 6.4.4) | 3d |
-| B2.7 | Kitchen/bar tickets: station routing on items, included in pull; printing is client-side | 1d |
+| B2.7 | ✅ Kitchen/bar tickets: station routing on items, included in pull; printing is client-side (see 6.3.3) | 1d |
 | B2.8 | Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer | 5d |
 | B2.9 | `tenant_daily_metrics` aggregates, "stopped syncing" query | 1d |
 | B2.10 | ✅ Legal plumbing: `terms_acceptance(user_id, version, accepted_at)`; signup requires the current version | 0.5d |

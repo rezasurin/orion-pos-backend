@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -355,4 +356,82 @@ func TestOutletSettingsOverHTTP(t *testing.T) {
 	if o.Settings.TaxRateBP != 1100 || o.Settings.Timezone != "Asia/Makassar" {
 		t.Errorf("settings after refused updates: %+v", o.Settings)
 	}
+}
+
+// Stations are managed like categories, items point at one, and tablets get both in the pull.
+func TestKitchenStationsRouteItemsAndReachTheTablet(t *testing.T) {
+	e := newEnv(t)
+	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	p := e.pusher(t, f, owner, "Kasir 1")
+
+	var kitchen, bar categoryBody
+	e.create(t, "/v1/kitchen-stations", owner, map[string]any{"name": "Kitchen"}, &kitchen)
+	e.create(t, "/v1/kitchen-stations", owner, map[string]any{"name": "Bar", "sort_order": 1}, &bar)
+	e.do(t, "POST", "/v1/kitchen-stations", owner, map[string]any{"name": "BAR"}).problem(t, http.StatusConflict, "conflict")
+	e.do(t, "POST", "/v1/kitchen-stations", owner, map[string]any{"name": strings.Repeat("x", 41)}).problem(t, http.StatusBadRequest, "validation_failed")
+
+	type stationItem struct {
+		ID        string  `json:"id"`
+		StationID *string `json:"station_id"`
+	}
+	var latte, water stationItem
+	e.create(t, "/v1/items", owner, map[string]any{"name": "Latte", "station_id": bar.ID, "variants": []map[string]any{{"base_price": 28000}}}, &latte)
+	e.create(t, "/v1/items", owner, map[string]any{"name": "Air", "variants": []map[string]any{{"base_price": 5000}}}, &water)
+	if latte.StationID == nil || *latte.StationID != bar.ID || water.StationID != nil {
+		t.Fatalf("latte %+v, water %+v", latte, water)
+	}
+
+	type pullStations struct {
+		Cursor          string         `json:"cursor"`
+		KitchenStations []categoryBody `json:"kitchen_stations"`
+		Items           []stationItem  `json:"items"`
+	}
+	var snap pullStations
+	e.do(t, "GET", "/v1/sync/pull", p.token, nil).decode(t, &snap)
+	if len(snap.KitchenStations) != 2 || len(snap.Items) != 2 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+
+	// Moving the latte to the kitchen and renaming the bar arrive as a delta.
+	var moved stationItem
+	r := e.do(t, "PATCH", "/v1/items/"+latte.ID, owner, map[string]any{"station_id": kitchen.ID})
+	r.decode(t, &moved)
+	if moved.StationID == nil || *moved.StationID != kitchen.ID {
+		t.Errorf("moved = %+v", moved)
+	}
+	var renamed categoryBody
+	e.do(t, "PATCH", "/v1/kitchen-stations/"+bar.ID, owner, map[string]any{"name": "Coffee bar"}).decode(t, &renamed)
+	var delta pullStations
+	e.do(t, "GET", "/v1/sync/pull?cursor="+snap.Cursor, p.token, nil).decode(t, &delta)
+	if len(delta.KitchenStations) != 1 || delta.KitchenStations[0].Name != "Coffee bar" || len(delta.Items) != 1 || *delta.Items[0].StationID != kitchen.ID {
+		t.Errorf("delta = %+v", delta)
+	}
+
+	// Clearing, and the two ways of saying it at once.
+	var cleared stationItem // a null station_id is left out of the body, like category_id
+	e.do(t, "PATCH", "/v1/items/"+latte.ID, owner, map[string]any{"clear_station": true}).decode(t, &cleared)
+	if cleared.StationID != nil {
+		t.Errorf("cleared = %+v", cleared)
+	}
+	e.do(t, "PATCH", "/v1/items/"+latte.ID, owner, map[string]any{"clear_station": true, "station_id": bar.ID}).problem(t, http.StatusBadRequest, "validation_failed")
+	// A patch that does not mention the station leaves it alone.
+	e.do(t, "PATCH", "/v1/items/"+latte.ID, owner, map[string]any{"station_id": bar.ID})
+	var renamedItem stationItem
+	e.do(t, "PATCH", "/v1/items/"+latte.ID, owner, map[string]any{"name": "Caffe latte"}).decode(t, &renamedItem)
+	if renamedItem.StationID == nil || *renamedItem.StationID != bar.ID {
+		t.Errorf("a rename moved the station: %+v", renamedItem)
+	}
+
+	// Archived stations leave the list but stay pointed at; a new one may take the name.
+	e.do(t, "PATCH", "/v1/kitchen-stations/"+kitchen.ID, owner, map[string]any{"archived": true})
+	var list struct{ Items []categoryBody }
+	e.do(t, "GET", "/v1/kitchen-stations", owner, nil).decode(t, &list)
+	if len(list.Items) != 1 || list.Items[0].ID != bar.ID {
+		t.Errorf("list = %+v", list)
+	}
+	e.create(t, "/v1/kitchen-stations", owner, map[string]any{"name": "Kitchen"}, &categoryBody{})
+
+	cashier := e.member(t, f, "cash@kopi.test", "Cashier")
+	e.do(t, "GET", "/v1/kitchen-stations", cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
 }

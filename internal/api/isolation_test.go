@@ -35,7 +35,7 @@ type world struct {
 }
 
 // catalogIDs are tenant A's catalog objects.
-type catalogIDs struct{ category, item, variant, group, modifier string }
+type catalogIDs struct{ category, station, item, variant, group, modifier string }
 
 func newWorld(t *testing.T) *world {
 	t.Helper()
@@ -77,20 +77,21 @@ func newWorld(t *testing.T) *world {
 	}
 	w.shiftA = shiftA
 
-	var cat categoryBody
+	var cat, station categoryBody
 	e.create(t, "/v1/categories", w.userA, map[string]any{"name": "Secret category"}, &cat)
+	e.create(t, "/v1/kitchen-stations", w.userA, map[string]any{"name": "Secret station"}, &station)
 	var grp groupBody
 	e.create(t, "/v1/modifier-groups", w.userA, map[string]any{
 		"name": "Secret group", "modifiers": []map[string]any{{"name": "Secret modifier"}},
 	}, &grp)
 	var it itemBody
 	e.create(t, "/v1/items", w.userA, map[string]any{
-		"name": "Secret blend", "category_id": cat.ID, "sku": "SECRET-SKU", "modifier_group_ids": []string{grp.ID},
+		"name": "Secret blend", "category_id": cat.ID, "station_id": station.ID, "sku": "SECRET-SKU", "modifier_group_ids": []string{grp.ID},
 		"variants": []map[string]any{{"name": "Secret size", "base_price": 77777, "barcode": "SECRET-BARCODE"}},
 	}, &it)
-	w.catA = catalogIDs{category: cat.ID, item: it.ID, variant: it.Variants[0].ID, group: grp.ID, modifier: grp.Modifiers[0].ID}
+	w.catA = catalogIDs{category: cat.ID, station: station.ID, item: it.ID, variant: it.Variants[0].ID, group: grp.ID, modifier: grp.Modifiers[0].ID}
 
-	w.secrets = []string{w.syncA, w.shiftA, "777000", "A's secret sale", w.catA.category, w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
+	w.secrets = []string{w.syncA, w.shiftA, "777000", "A's secret sale", w.catA.category, w.catA.station, "Secret station", w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
 		"Secret category", "Secret group", "Secret modifier", "Secret blend", "Secret size", "SECRET-SKU", "SECRET-BARCODE", "77777",
 		w.a.tenant.ID.String(), w.a.outlet.ID.String(), w.a.owner.ID.String(), w.staffA, w.deviceIDA, "owner@kopi.test", "Sari of A", "Kasir A", "JKT1"}
 	for _, r := range roles {
@@ -159,6 +160,15 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 		"UpdateItem": func(t *testing.T) {
 			w.gone(t, "UpdateItem", e.do(t, "PATCH", "/v1/items/"+w.catA.item, ub, map[string]any{"name": "Taken", "archived": true}), http.StatusNotFound, "not_found")
 		},
+		"ListKitchenStations": func(t *testing.T) {
+			w.noLeak(t, "ListKitchenStations", e.do(t, "GET", "/v1/kitchen-stations?include_archived=true&limit=200", ub, nil))
+		},
+		"CreateKitchenStation": func(t *testing.T) {
+			w.noLeak(t, "CreateKitchenStation", e.do(t, "POST", "/v1/kitchen-stations", ub, map[string]any{"name": "Plain station"}))
+		},
+		"UpdateKitchenStation": func(t *testing.T) {
+			w.gone(t, "UpdateKitchenStation", e.do(t, "PATCH", "/v1/kitchen-stations/"+w.catA.station, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
+		},
 		"UpdateCategory": func(t *testing.T) {
 			w.gone(t, "UpdateCategory", e.do(t, "PATCH", "/v1/categories/"+w.catA.category, ub, map[string]any{"name": "Taken"}), http.StatusNotFound, "not_found")
 		},
@@ -195,6 +205,8 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 			e.do(t, "POST", "/v1/items", ub, map[string]any{"name": "X", "category_id": w.catA.category, "variants": []map[string]any{{"base_price": 1}}}).
 				problem(t, http.StatusBadRequest, "validation_failed")
 			e.do(t, "POST", "/v1/items", ub, map[string]any{"name": "X", "modifier_group_ids": []string{w.catA.group}, "variants": []map[string]any{{"base_price": 1}}}).
+				problem(t, http.StatusBadRequest, "validation_failed")
+			e.do(t, "POST", "/v1/items", ub, map[string]any{"name": "X", "station_id": w.catA.station, "variants": []map[string]any{{"base_price": 1}}}).
 				problem(t, http.StatusBadRequest, "validation_failed")
 		},
 
@@ -353,7 +365,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 	for _, op := range []string{
 		"GetMe", "ListOutlets", "ListRoles", "ListStaff", "ListDevices", "GetEntitlements", "GetRoster", "GetReceiptTest",
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
-		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
+		"ListCategories", "ListKitchenStations", "CreateKitchenStation", "UpdateKitchenStation", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
 		"CreateCategory", "CreateModifierGroup", "CreateItem", "ImportCatalog", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "GetSalesReport", "ListSales", "GetSale",
 	} {

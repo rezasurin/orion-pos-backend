@@ -19,11 +19,38 @@ UPDATE category SET name = @name, sort_order = @sort_order, archived_at = sqlc.n
 WHERE tenant_id = @tenant_id AND id = @id
 RETURNING *;
 
+-- Kitchen stations
+
+-- name: InsertStation :one
+INSERT INTO kitchen_station (id, tenant_id, name, sort_order)
+VALUES (@id, @tenant_id, @name, @sort_order)
+RETURNING *;
+
+-- name: GetStationForUpdate :one
+SELECT * FROM kitchen_station WHERE tenant_id = @tenant_id AND id = @id FOR UPDATE;
+
+-- name: ListStations :many
+SELECT * FROM kitchen_station
+WHERE tenant_id = @tenant_id AND id > @after AND (@include_archived::boolean OR archived_at IS NULL)
+ORDER BY id
+LIMIT @page_size;
+
+-- name: UpdateStation :one
+UPDATE kitchen_station SET name = @name, sort_order = @sort_order, archived_at = sqlc.narg(archived_at)
+WHERE tenant_id = @tenant_id AND id = @id
+RETURNING *;
+
+-- name: ListStationsByIDs :many
+SELECT * FROM kitchen_station WHERE tenant_id = @tenant_id AND id = ANY(@ids::uuid[]) ORDER BY id;
+
+-- name: ListAllStations :many
+SELECT * FROM kitchen_station WHERE tenant_id = @tenant_id ORDER BY id;
+
 -- Items
 
 -- name: InsertItem :one
-INSERT INTO item (id, tenant_id, category_id, name, sku, barcode, image_url, track_stock)
-VALUES (@id, @tenant_id, sqlc.narg(category_id), @name, sqlc.narg(sku), sqlc.narg(barcode), sqlc.narg(image_url), @track_stock)
+INSERT INTO item (id, tenant_id, category_id, station_id, name, sku, barcode, image_url, track_stock)
+VALUES (@id, @tenant_id, sqlc.narg(category_id), sqlc.narg(station_id), @name, sqlc.narg(sku), sqlc.narg(barcode), sqlc.narg(image_url), @track_stock)
 RETURNING *;
 
 -- name: GetItem :one
@@ -42,7 +69,7 @@ LIMIT @page_size;
 
 -- name: UpdateItem :one
 UPDATE item
-SET category_id = sqlc.narg(category_id), name = @name, sku = sqlc.narg(sku), barcode = sqlc.narg(barcode),
+SET category_id = sqlc.narg(category_id), station_id = sqlc.narg(station_id), name = @name, sku = sqlc.narg(sku), barcode = sqlc.narg(barcode),
     image_url = sqlc.narg(image_url), track_stock = @track_stock, archived_at = sqlc.narg(archived_at)
 WHERE tenant_id = @tenant_id AND id = @id
 RETURNING *;
