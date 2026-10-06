@@ -4,11 +4,13 @@ package tenancy
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -68,7 +70,7 @@ type OutletSettings struct {
 // NewTenant is what CreateTenant needs: the business and its first outlet.
 type NewTenant struct {
 	Name   string
-	Slug   string
+	Slug   string // generated from the name when empty (signup)
 	Outlet NewOutlet
 }
 
@@ -93,7 +95,16 @@ func NewService(pool *pgxpool.Pool) *Service {
 // CreateTenant creates a tenant on the early_access plan with its system roles and its first
 // outlet, in one transaction.
 func (s *Service) CreateTenant(ctx context.Context, in NewTenant) (Tenant, Outlet, error) {
+	return s.CreateTenantWith(ctx, in, nil)
+}
+
+// CreateTenantWith is CreateTenant that also runs then inside the same transaction, after the
+// outlet exists. Signup uses it to add the owner, so a business never exists without one.
+func (s *Service) CreateTenantWith(ctx context.Context, in NewTenant, then func(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error) (Tenant, Outlet, error) {
 	in.Name = strings.TrimSpace(in.Name)
+	if in.Slug == "" {
+		in.Slug = slugFor(in.Name)
+	}
 	if err := validateTenant(in); err != nil {
 		return Tenant{}, Outlet{}, err
 	}
@@ -115,8 +126,10 @@ func (s *Service) CreateTenant(ctx context.Context, in NewTenant) (Tenant, Outle
 		if err = identity.SeedRoles(ctx, tx, tenantID); err != nil {
 			return err
 		}
-		outlet, err = insertOutlet(ctx, q, tenantID, in.Outlet)
-		return err
+		if outlet, err = insertOutlet(ctx, q, tenantID, in.Outlet); err != nil || then == nil {
+			return err
+		}
+		return then(ctx, tx, tenantID)
 	})
 	if err != nil {
 		return Tenant{}, Outlet{}, err
@@ -218,10 +231,36 @@ func insertOutlet(ctx context.Context, q *db.Queries, tenantID uuid.UUID, in New
 	return toOutlet(o, st), nil
 }
 
+// slugFor makes a slug from a business name plus a random suffix, so two cafes with the same name
+// do not collide: "Kopi Kenangan!" becomes "kopi-kenangan-x7k2qd".
+func slugFor(name string) string {
+	var b strings.Builder
+	hyphen := false
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			if hyphen && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			b.WriteRune(r)
+			hyphen = false
+		} else {
+			hyphen = true
+		}
+		if b.Len() >= 40 {
+			break
+		}
+	}
+	suffix := strings.ToLower(rand.Text()[:6])
+	if b.Len() == 0 {
+		return "usaha-" + suffix
+	}
+	return b.String() + "-" + suffix
+}
+
 func validateTenant(in NewTenant) error {
 	var problems []string
-	if in.Name == "" {
-		problems = append(problems, "name is required")
+	if in.Name == "" || utf8.RuneCountInString(in.Name) > 100 {
+		problems = append(problems, "name is required, at most 100 characters")
 	}
 	if !slugPattern.MatchString(in.Slug) {
 		problems = append(problems, "slug must be lowercase letters, digits and single hyphens")

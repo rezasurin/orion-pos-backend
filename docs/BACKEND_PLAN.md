@@ -270,6 +270,30 @@ Notes:
 - **Console off by default.** `orion serve` mounts `/admin` working only when
   `ORION_PLATFORM_DATABASE_URL` is set; otherwise those routes answer `503 admin_disabled`.
 
+#### 4.3.4 Signup and terms as built (B2.1, B2.10)
+
+- **`POST /v1/auth/signup`** creates the tenant (slug generated from the name plus six random
+  characters, since slugs are only for operators), its system roles, its first outlet and the
+  owner in **one transaction**: `tenancy.CreateTenantWith` runs `identity.PreparedMember.Insert`
+  inside the tenant's transaction. The password is hashed before the transaction opens. `orion
+  admin create-tenant` and `seed-demo` now go the same way, so a business never exists without
+  its owner.
+- **It never reveals who is registered.** An email that already has an account rolls the whole
+  transaction back and still answers `202`, like `resend-verification`. A filled honeypot field
+  (`website`) answers the same `202` and creates nothing.
+- **Bot protection** is a rate limit (5 per address, refill 1 per 2 minutes, kept loose for
+  carrier NAT; 3 per email, shared with the verification email limit) plus the honeypot.
+  Turnstile was not added: it needs a third-party script and key. Add it if signups from bots get
+  through.
+- **Terms (B2.10).** `terms_acceptance(tenant_id, user_id, version, accepted_at)`, append-only,
+  under row-level security, keyed to the membership the user accepted in. The current version is
+  `identity.TermsVersion` in code; the front end publishes the text. A signup naming another
+  version is `409 terms_outdated` and records nothing. Re-accepting a new version after signup
+  is not built: nothing asks existing users yet. Add a check at login when the terms first change.
+- The owner's verification email is queued in the same transaction. The owner signs in after
+  verifying; there is no session at signup.
+- Not built: limits on how many businesses one person may create (B2.2 covers per-tenant limits).
+
 ### 4.4 Roles and permissions
 
 ADR 0002 requires roles from the start.
@@ -1265,7 +1289,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 
 | Id | Task | Size |
 |---|---|---|
-| B2.1 | Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
+| B2.1 | ✅ Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
 | B2.2 | Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
 | B2.3 | CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit as a job | 4d |
 | B2.4 | Gateway integration behind the `Gateway` interface: doit.id (6.5.1): tenant sub-merchant onboarding, dynamic QRIS (e-wallets pay by scanning it), webhooks, reconciliation jobs | 6d |
@@ -1274,7 +1298,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.7 | Kitchen/bar tickets: station routing on items, included in pull; printing is client-side | 1d |
 | B2.8 | Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer | 5d |
 | B2.9 | `tenant_daily_metrics` aggregates, "stopped syncing" query | 1d |
-| B2.10 | Legal plumbing: `terms_acceptance(user_id, version, accepted_at)`; signup requires the current version | 0.5d |
+| B2.10 | ✅ Legal plumbing: `terms_acceptance(user_id, version, accepted_at)`; signup requires the current version | 0.5d |
 | B2.11 | Security pass: rate limits, headers, dependency audit (`govulncheck` in CI), secret rotation runbook, operator account review | 2d |
 
 **Done when** a stranger can sign up, import a menu, pair a tablet and sell with dynamic QRIS, and

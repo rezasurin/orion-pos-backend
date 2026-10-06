@@ -73,6 +73,8 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		p.Status, p.Code, p.Detail = http.StatusUnauthorized, "invalid_token", "the token is invalid, expired or already used"
 	case errors.Is(err, identity.ErrEmailNotVerified):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "email_not_verified", "verify your email address first"
+	case errors.Is(err, identity.ErrTermsOutdated):
+		p.Status, p.Code, p.Detail = http.StatusConflict, "terms_outdated", "the current terms version is "+identity.TermsVersion
 	case errors.Is(err, identity.ErrNoTenant):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "no_tenant", "this account does not belong to a business"
 	case errors.Is(err, tenancy.ErrSuspended):

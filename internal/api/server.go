@@ -52,6 +52,7 @@ type Server struct {
 	tokenByIP      *httpserver.Limiter
 	emailByIP      *httpserver.Limiter
 	emailByAccount *httpserver.Limiter
+	signupByIP     *httpserver.Limiter
 	pinByUser      *httpserver.Limiter
 	pairByUser     *httpserver.Limiter
 
@@ -80,8 +81,11 @@ func New(d Deps) (*Server, error) {
 		tokenByIP:      httpserver.NewLimiter(time.Second, 30),
 		emailByIP:      httpserver.NewLimiter(10*time.Second, 5),
 		emailByAccount: httpserver.NewLimiter(5*time.Minute, 3),
-		pinByUser:      httpserver.NewLimiter(6*time.Second, 10),
-		pairByUser:     httpserver.NewLimiter(12*time.Second, 5),
+		// Generous enough for a cafe owner behind a carrier's shared address, tight enough that a
+		// script cannot create businesses in bulk.
+		signupByIP: httpserver.NewLimiter(2*time.Minute, 5),
+		pinByUser:  httpserver.NewLimiter(6*time.Second, 10),
+		pairByUser: httpserver.NewLimiter(12*time.Second, 5),
 
 		adminByIP:        httpserver.NewLimiter(6*time.Second, 10),
 		adminByAccount:   httpserver.NewLimiter(time.Minute, 5),

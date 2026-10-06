@@ -81,6 +81,34 @@ paths:
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
+  /v1/auth/signup:
+    post:
+      operationId: signup
+      tags: [auth]
+      summary: Create a business, its first outlet and its owner
+      description: |
+        Self-serve signup. Creates the business on the current plan, its system roles, its first
+        outlet and the owner's account in one transaction, records the accepted terms version, and
+        emails a verification link. The owner signs in after verifying.
+
+        Always answers 202 for a well-formed request, including when the email already has an
+        account (nothing is created then), so it cannot be used to find out who is registered.
+        `terms_version` must be the current version, otherwise `409 terms_outdated`: reload the
+        terms and ask again. Limited per caller address and per email (`429`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '202':
+          description: Accepted; a verification email is on its way
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
   /v1/auth/refresh:
     post:
       operationId: refreshSession
@@ -1378,7 +1406,7 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
     Conflict:
-      description: The request conflicts with current state (`conflict`, `tenant_required`).
+      description: The request conflicts with current state (`conflict`, `tenant_required`, `terms_outdated`).
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
@@ -1433,6 +1461,34 @@ components:
           type: string
           format: uuid
           description: Which business to sign in to, for accounts that belong to several.
+
+    SignupRequest:
+      type: object
+      required: [business_name, owner_name, email, password, terms_version]
+      properties:
+        business_name: {type: string, maxLength: 100}
+        outlet_name:
+          type: string
+          maxLength: 100
+          description: The first outlet's name. Defaults to the business name.
+        outlet_code:
+          type: string
+          pattern: '^[A-Z0-9]{2,6}$'
+          description: Short outlet code printed on receipts. Defaults to `OUT1`.
+        owner_name: {type: string, maxLength: 60}
+        email: {type: string, maxLength: 254}
+        password: {type: string, minLength: 10, maxLength: 128}
+        locale:
+          type: string
+          enum: [id-ID, en]
+          description: Language of the owner's emails. Defaults to `id-ID`.
+        terms_version:
+          type: string
+          maxLength: 40
+          description: The version of the terms of service the owner accepted.
+        website:
+          type: string
+          description: Leave empty and hide it from people. Bots fill it in; a request with a value is answered 202 and ignored.
 
     RefreshRequest:
       type: object

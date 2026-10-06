@@ -60,9 +60,10 @@ either language. Show your own translated message per `code`.
 | 403 | `limit_reached` | A plan limit (devices, staff, outlets) is full. Say which; `detail` has the number. |
 | 404 | `not_found` | No such thing **in this business**. A resource of another business is also a 404, never a 403. |
 | 409 | `conflict` | The change clashes with current state (duplicate, already done). `detail` explains. |
+| 409 | `terms_outdated` | At signup: the accepted terms are not the current version. Reload the terms and ask again. |
 | 409 | `tenant_required` | At login: the account belongs to several businesses. `tenant_ids` lists them; ask which and login again with `tenant_id`. |
 | 413 | `payload_too_large` | Body over 1 MB. For a push, send fewer events. |
-| 429 | `rate_limited` | Wait `Retry-After` seconds (header) and retry. Login, token exchange, pairing and email endpoints are limited. |
+| 429 | `rate_limited` | Wait `Retry-After` seconds (header) and retry. Signup, login, token exchange, pairing and email endpoints are limited. |
 | 500 | `internal` | Our fault. Retry with backoff; quote `request_id` if it persists. |
 | 503 | `admin_disabled` | Operator console off. Not for the apps. |
 
@@ -109,11 +110,12 @@ list for one outlet.
 
 | Call | Notes |
 |---|---|
+| `POST /v1/auth/signup` `{business_name, owner_name, email, password, terms_version, outlet_name?, outlet_code?, locale?, website?}` | Public. Creates the business, its first outlet (`outlet_code` defaults to `OUT1`, `outlet_name` to the business name), the default roles and the owner, then emails a verification link. **Always an empty `202`** for a well-formed request, including when the email already has an account (nothing is created then), so after signup show "check your inbox" either way and offer resend. `terms_version` is the version of the terms you showed and the user ticked; anything but the current one is `409 terms_outdated` (`detail` names the current one): reload the terms and ask again. `website` is a honeypot: render it hidden from people (off-screen, `tabindex="-1"`, `autocomplete="off"`) and always send it empty. Limited to 5 per address (refill 1 per 2 minutes) and 3 per email. |
 | `POST /v1/auth/login` `{email, password, tenant_id?}` | Public. Returns a `Session` (`access_token`, `refresh_token`, expiry times, `tenant_id`, `user_id`). `409 tenant_required` when `tenant_id` is needed. `403 email_not_verified` before verification. |
 | `POST /v1/auth/refresh` `{refresh_token}` | Public. Returns a new `Session`. **Every refresh token works once**: store the new pair before using it, and serialise refreshes (two tabs refreshing at once will trip `token_reused` and sign the user out). Refresh when the access token is about to expire or on the first `401 invalid_token`. |
 | `POST /v1/auth/logout` `{refresh_token}` | Public, idempotent (always `204`). |
 | `POST /v1/auth/verify-email` `{token}` | Public. The token comes in the email link. |
-| `POST /v1/auth/resend-verification` `{email}` | Public. Always `204`, whether or not the address exists. |
+| `POST /v1/auth/resend-verification` `{email}` | Public. Always `202`, whether or not the address exists. |
 | `GET /v1/me` | The user, the business (`subscription_status`), `is_owner`, `permissions[]`. Call after login to build the menu. |
 | `GET /v1/entitlements` | `items[]` of `{key, kind, category, value, source}`: modules on/off, limits (`-1` = unlimited), flags. Hide a module when its key is `0`. |
 
@@ -478,6 +480,7 @@ settings, for checking printer layout and the calculation; it is not a sale.
 
 | Screen | Calls |
 |---|---|
+| Sign up | `auth/signup` → "check your inbox" (`auth/resend-verification`) → link → `auth/verify-email` → sign in |
 | Back office sign in | `auth/login` → `me` → `entitlements` |
 | Dashboard / end of day | `reports/days/{date}?outlet_id=` |
 | Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |

@@ -618,6 +618,28 @@ func (q *Queries) InsertStaffOutletRoles(ctx context.Context, arg InsertStaffOut
 	return err
 }
 
+const insertTermsAcceptance = `-- name: InsertTermsAcceptance :exec
+INSERT INTO terms_acceptance (tenant_id, user_id, version, accepted_at)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertTermsAcceptanceParams struct {
+	TenantID   uuid.UUID
+	UserID     uuid.UUID
+	Version    string
+	AcceptedAt time.Time
+}
+
+func (q *Queries) InsertTermsAcceptance(ctx context.Context, arg InsertTermsAcceptanceParams) error {
+	_, err := q.db.Exec(ctx, insertTermsAcceptance,
+		arg.TenantID,
+		arg.UserID,
+		arg.Version,
+		arg.AcceptedAt,
+	)
+	return err
+}
+
 const insertUser = `-- name: InsertUser :exec
 INSERT INTO user_account (id, email, password_hash, email_verified_at, locale)
 VALUES ($1, $2, $3, $4, $5)

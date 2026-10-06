@@ -122,14 +122,13 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 }
 
 func createBusiness(ctx context.Context, tenants *tenancy.Service, ids *identity.Service, in tenancy.NewTenant, email, password, ownerName string) (tenancy.Tenant, tenancy.Outlet, error) {
-	t, o, err := tenants.CreateTenant(ctx, in)
+	owner, err := ids.PrepareMember(ctx, identity.NewMember{
+		Email: email, Password: password, DisplayName: ownerName, IsOwner: true, EmailVerified: true,
+	})
 	if err != nil {
 		return tenancy.Tenant{}, tenancy.Outlet{}, err
 	}
-	_, err = ids.CreateMember(ctx, identity.NewMember{
-		TenantID: t.ID, Email: email, Password: password, DisplayName: ownerName, IsOwner: true, EmailVerified: true,
-	})
-	return t, o, err
+	return tenants.CreateTenantWith(ctx, in, owner.Insert)
 }
 
 const demoPassword = "demo-password-1"

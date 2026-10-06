@@ -636,6 +636,13 @@ type TenantMember struct {
 	CreatedAt time.Time
 }
 
+type TermsAcceptance struct {
+	TenantID   uuid.UUID
+	UserID     uuid.UUID
+	Version    string
+	AcceptedAt time.Time
+}
+
 type UserAccount struct {
 	ID              uuid.UUID
 	Email           string

@@ -264,3 +264,7 @@ FROM staff_outlet_role sor
 JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
 WHERE sor.tenant_id = @tenant_id AND sor.outlet_id = @outlet_id AND sor.staff_id = ANY(@staff_ids::uuid[])
 ORDER BY sor.staff_id, rp.permission;
+
+-- name: InsertTermsAcceptance :exec
+INSERT INTO terms_acceptance (tenant_id, user_id, version, accepted_at)
+VALUES (@tenant_id, @user_id, @version, @accepted_at);
