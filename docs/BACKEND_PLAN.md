@@ -390,6 +390,24 @@ Rules:
   reads another module's table: going through tenancy would make an import cycle, and the read is
   one column.
 
+#### 4.5.2 The free plan as built (B2.2)
+
+- Migration 00015 seeds a `free` plan with explicit values: `limit.outlets` 1, `limit.devices` 2,
+  `limit.staff` 5 (the owner's staff record counts), `module.inventory` and `module.restaurant`
+  off. The values are written out rather than left to key defaults, so changing a default never
+  changes what free tenants get.
+- Self-serve signups are created on `free` with `subscription_status = active`. Tenants an
+  operator creates (`orion admin create-tenant`, `seed-demo`) stay on `early_access` with that
+  status. `tenancy.NewTenant.Plan` chooses; anything but these two is a validation error.
+- Devices and staff were already checked at creation (B0.9); a test signs up, pairs two
+  tablets, is refused the third, adds four staff besides the owner, and is refused the fifth.
+- **`limit.outlets` is not checked anywhere yet.** At signup the business has no outlets, so a
+  check there cannot fail. It belongs in the "add an outlet" endpoint, which does not exist
+  (multi-outlet is Phase 6): call `CheckLimit(LimitOutlets, active outlets)` there, after
+  `kernel.LockTenant`.
+- Lifting a limit for one business is an operator override (`orion admin set-override`); moving a
+  design partner to `early_access` needs a plan-change command that does not exist yet (B2.8).
+
 ### 4.6 Tenant plan fields (Phase 0, first migration)
 
 On `tenant`, per ADR 0007:
@@ -1290,7 +1308,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | Id | Task | Size |
 |---|---|---|
 | B2.1 | ✅ Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
-| B2.2 | Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
+| B2.2 | ✅ Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
 | B2.3 | CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit as a job | 4d |
 | B2.4 | Gateway integration behind the `Gateway` interface: doit.id (6.5.1): tenant sub-merchant onboarding, dynamic QRIS (e-wallets pay by scanning it), webhooks, reconciliation jobs | 6d |
 | B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |

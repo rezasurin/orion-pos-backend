@@ -67,10 +67,17 @@ type OutletSettings struct {
 	ReceiptFooter        string
 }
 
+// Plans a tenant can be created on.
+const (
+	PlanEarlyAccess = "early_access" // unrestricted (ADR 0007): operator-made tenants and design partners
+	PlanFree        = "free"         // self-serve signups: 1 outlet, 2 devices, 5 staff
+)
+
 // NewTenant is what CreateTenant needs: the business and its first outlet.
 type NewTenant struct {
 	Name   string
 	Slug   string // generated from the name when empty (signup)
+	Plan   string // PlanEarlyAccess when empty
 	Outlet NewOutlet
 }
 
@@ -105,6 +112,9 @@ func (s *Service) CreateTenantWith(ctx context.Context, in NewTenant, then func(
 	if in.Slug == "" {
 		in.Slug = slugFor(in.Name)
 	}
+	if in.Plan == "" {
+		in.Plan = PlanEarlyAccess
+	}
 	if err := validateTenant(in); err != nil {
 		return Tenant{}, Outlet{}, err
 	}
@@ -119,7 +129,7 @@ func (s *Service) CreateTenantWith(ctx context.Context, in NewTenant, then func(
 		var err error
 		// The new tenant row is locked by this insert and invisible to anyone else, so it is
 		// already the first lock this transaction holds (see kernel.LockTenant).
-		tenant, err = q.InsertTenant(ctx, db.InsertTenantParams{ID: tenantID, Name: in.Name, Slug: in.Slug})
+		tenant, err = q.InsertTenant(ctx, db.InsertTenantParams{ID: tenantID, Name: in.Name, Slug: in.Slug, PlanCode: in.Plan})
 		if err != nil {
 			return mapErr(err)
 		}
@@ -267,6 +277,9 @@ func validateTenant(in NewTenant) error {
 	}
 	if strings.TrimSpace(in.Outlet.Name) == "" {
 		problems = append(problems, "outlet name is required")
+	}
+	if in.Plan != PlanEarlyAccess && in.Plan != PlanFree {
+		problems = append(problems, "plan must be "+PlanEarlyAccess+" or "+PlanFree)
 	}
 	if !outletCodePattern.MatchString(in.Outlet.Code) {
 		problems = append(problems, "outlet code must be 2 to 6 uppercase letters or digits")

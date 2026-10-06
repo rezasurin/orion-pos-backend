@@ -117,7 +117,7 @@ list for one outlet.
 | `POST /v1/auth/verify-email` `{token}` | Public. The token comes in the email link. |
 | `POST /v1/auth/resend-verification` `{email}` | Public. Always `202`, whether or not the address exists. |
 | `GET /v1/me` | The user, the business (`subscription_status`), `is_owner`, `permissions[]`. Call after login to build the menu. |
-| `GET /v1/entitlements` | `items[]` of `{key, kind, category, value, source}`: modules on/off, limits (`-1` = unlimited), flags. Hide a module when its key is `0`. |
+| `GET /v1/entitlements` | `items[]` of `{key, kind, category, value, source}`: modules on/off, limits (`-1` = unlimited), flags. Hide a module when its key is `0`. A self-serve signup is on the **free plan**: `limit.outlets` 1, `limit.devices` 2 (paired, not revoked), `limit.staff` 5 (active staff, **the owner counts**), both modules off; its `subscription_status` is `active`. Businesses an operator creates are on early access (`early_access`, everything unlimited). Show "x of y used" from these values and expect `403 limit_reached` when full. |
 
 Staging and production send real email (Resend). Local development writes each email to the
 worker's log, so take the verification link from there. The seeded demo business
@@ -165,7 +165,7 @@ A change reaches tablets at their next pull. A deactivated person holds no permi
 | Call | Notes |
 |---|---|
 | `GET /v1/devices` | Paged. Each device has health fields (section 9). |
-| `POST /v1/devices/pair` `{outlet_id, name}` | Done on the tablet while an owner or manager is signed in. Returns `{device, device_secret}`. **The secret is shown once**: store it in the device's secure storage; the server keeps only a hash. Losing it means pairing again. `device.device_code` becomes part of receipt numbers and is never reused. |
+| `POST /v1/devices/pair` `{outlet_id, name}` | Done on the tablet while an owner or manager is signed in. Returns `{device, device_secret}`. **The secret is shown once**: store it in the device's secure storage; the server keeps only a hash. Losing it means pairing again. `device.device_code` becomes part of receipt numbers and is never reused. `403 limit_reached` when the plan's device limit is full; revoking a device frees its slot. |
 | `DELETE /v1/devices/{deviceId}` | Revoke. Idempotent. The tablet's next token exchange fails with `device_revoked`. |
 
 ### 3.5 Catalog (`catalog.manage`)

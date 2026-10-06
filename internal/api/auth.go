@@ -70,7 +70,7 @@ func (s *Server) Signup(ctx context.Context, req openapi.SignupRequestObject) (o
 	if b.OutletCode != nil {
 		outlet.Code = *b.OutletCode
 	}
-	_, _, err = s.Tenancy.CreateTenantWith(ctx, tenancy.NewTenant{Name: b.BusinessName, Outlet: outlet}, prepared.Insert)
+	_, _, err = s.Tenancy.CreateTenantWith(ctx, tenancy.NewTenant{Name: b.BusinessName, Plan: tenancy.PlanFree, Outlet: outlet}, prepared.Insert)
 	if err != nil && !errors.Is(err, identity.ErrEmailTaken) {
 		return nil, err
 	}

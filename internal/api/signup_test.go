@@ -120,3 +120,68 @@ func TestSignupIsRateLimitedByAddress(t *testing.T) {
 		t.Errorf("%d tenants, want 5", n)
 	}
 }
+
+// A signed-up business is on the free plan, and its limits hold: two tablets, five active staff
+// (the owner is one of them).
+func TestSignupGetsTheFreePlan(t *testing.T) {
+	e := newEnv(t)
+	if r := e.do(t, "POST", "/v1/auth/signup", "", signupBody("sari@senja.test")); r.Code != http.StatusAccepted {
+		t.Fatalf("signup: %d %s", r.Code, r.Body.String())
+	}
+	e.d.Exec(t, `UPDATE user_account SET email_verified_at = now() WHERE email = 'sari@senja.test'`)
+	tok := e.login(t, "sari@senja.test").AccessToken
+
+	var me struct {
+		Tenant struct {
+			SubscriptionStatus string `json:"subscription_status"`
+		} `json:"tenant"`
+	}
+	e.do(t, "GET", "/v1/me", tok, nil).decode(t, &me)
+	if me.Tenant.SubscriptionStatus != "active" {
+		t.Errorf("subscription_status = %q, want active", me.Tenant.SubscriptionStatus)
+	}
+	var ents struct {
+		Items []struct {
+			Key    string `json:"key"`
+			Value  int64  `json:"value"`
+			Source string `json:"source"`
+		} `json:"items"`
+	}
+	e.do(t, "GET", "/v1/entitlements", tok, nil).decode(t, &ents)
+	want := map[string]int64{"limit.outlets": 1, "limit.devices": 2, "limit.staff": 5, "module.inventory": 0, "module.restaurant": 0}
+	for _, it := range ents.Items {
+		if v, ok := want[it.Key]; ok && (it.Value != v || it.Source != "plan") {
+			t.Errorf("%s = %d from %s, want %d from plan", it.Key, it.Value, it.Source, v)
+		}
+		delete(want, it.Key)
+	}
+	if len(want) != 0 {
+		t.Errorf("entitlements missing: %v", want)
+	}
+
+	var outlets struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	e.do(t, "GET", "/v1/outlets", tok, nil).decode(t, &outlets)
+	outlet := outlets.Items[0].ID
+	e.pairDevice(t, tok, outlet, "Kasir 1")
+	e.pairDevice(t, tok, outlet, "Kasir 2")
+	e.do(t, "POST", "/v1/devices/pair", tok, map[string]string{"outlet_id": outlet, "name": "Kasir 3"}).
+		problem(t, http.StatusForbidden, "limit_reached")
+
+	cashier := e.roles(t, tok)["Cashier"].ID
+	staff := func(name string) response {
+		return e.do(t, "POST", "/v1/staff", tok, map[string]any{
+			"display_name": name, "pin": "4821",
+			"outlet_roles": []map[string]string{{"outlet_id": outlet, "role_id": cashier}},
+		})
+	}
+	for i := range 4 {
+		if r := staff(fmt.Sprintf("Barista %d", i)); r.Code != http.StatusCreated {
+			t.Fatalf("staff %d: %d %s", i, r.Code, r.Body.String())
+		}
+	}
+	staff("Barista 5").problem(t, http.StatusForbidden, "limit_reached")
+}

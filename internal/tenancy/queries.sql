@@ -1,9 +1,10 @@
 -- name: InsertTenant :one
--- Every new tenant starts on the early_access plan (ADR 0007).
-INSERT INTO tenant (id, name, slug, plan_id)
-SELECT @id, @name, @slug, p.id
+-- Early access tenants have the early_access status (ADR 0007); any other plan starts active.
+INSERT INTO tenant (id, name, slug, plan_id, subscription_status)
+SELECT @id, @name, @slug, p.id,
+       CASE WHEN p.code = 'early_access' THEN 'early_access' ELSE 'active' END::subscription_status
 FROM plan p
-WHERE p.code = 'early_access'
+WHERE p.code = @plan_code
 RETURNING *;
 
 -- name: GetTenant :one

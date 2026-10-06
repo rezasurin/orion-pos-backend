@@ -212,22 +212,29 @@ func (q *Queries) InsertOutletSettings(ctx context.Context, arg InsertOutletSett
 }
 
 const insertTenant = `-- name: InsertTenant :one
-INSERT INTO tenant (id, name, slug, plan_id)
-SELECT $1, $2, $3, p.id
+INSERT INTO tenant (id, name, slug, plan_id, subscription_status)
+SELECT $1, $2, $3, p.id,
+       CASE WHEN p.code = 'early_access' THEN 'early_access' ELSE 'active' END::subscription_status
 FROM plan p
-WHERE p.code = 'early_access'
+WHERE p.code = $4
 RETURNING id, name, slug, plan_id, subscription_status, trial_ends_at, paid_until, billing_starts_at, suspended_at, change_seq, created_at, updated_at
 `
 
 type InsertTenantParams struct {
-	ID   uuid.UUID
-	Name string
-	Slug string
+	ID       uuid.UUID
+	Name     string
+	Slug     string
+	PlanCode string
 }
 
-// Every new tenant starts on the early_access plan (ADR 0007).
+// Early access tenants have the early_access status (ADR 0007); any other plan starts active.
 func (q *Queries) InsertTenant(ctx context.Context, arg InsertTenantParams) (Tenant, error) {
-	row := q.db.QueryRow(ctx, insertTenant, arg.ID, arg.Name, arg.Slug)
+	row := q.db.QueryRow(ctx, insertTenant,
+		arg.ID,
+		arg.Name,
+		arg.Slug,
+		arg.PlanCode,
+	)
 	var i Tenant
 	err := row.Scan(
 		&i.ID,
