@@ -1149,6 +1149,39 @@ fields are ignored so a newer app may add fields within a version.
   - Sub-merchant / platform onboarding depends on the gateway's model (roadmap open question). Keep
     per-tenant gateway credentials or sub-account ids in `tenant_payment_account`, encrypted.
 
+#### 6.5.1 Gateway choice: doit.id (decided 2026-10-06)
+
+The owner chose [doit.id](https://doit.id/docs/). It is a merchant aggregator. The Bank
+Indonesia licence is held by its partner Manjo (licence no. 25/594/DKSP/Srt/B.). Facts from its
+docs that change the plan above:
+
+- **Platform model fits tenants.** We use one parent API key. Each tenant is a sub-merchant
+  (`POST /v1/submerchants`, with KYC through doit.id's `onboarding_url` or our own form), and we
+  route a payment to it with the `for-sub-merchant: <id>` header. Doit.id pays the net amount
+  straight to the tenant's bank account, so we never hold funds. `tenant_payment_account` stores
+  only the sub-merchant id and its onboarding status. Nothing secret is stored per tenant.
+- **No separate e-wallet charge.** Customers pay with any e-wallet by scanning a dynamic QRIS
+  (`POST /v1/payments` with `rail: "qris"`, which returns `qr_content`). Drop `CreateEwalletCharge`
+  from the interface.
+- **The QR goes stale after about 10 minutes.** After that `qr_content` is null even though the
+  payment is still pending. The POS creates a fresh intent instead of showing a stale QR.
+- **The fee may be added on top** (`total_amount = amount + fee_amount`). Before building B2.4,
+  confirm that the merchant can absorb the fee. The customer must pay exactly the bill total
+  that `internal/pricing` calculated.
+- **Webhooks:** signature header `PayBridge-Signature: t=<unix>,v1=<hex>`, computed as
+  `HMAC-SHA256(secret, t + "." + rawBody)`. Reject a stale `t`. Deduplicate on the event `id`.
+  Event types: `payment.paid`, `payment.expired`, `refund.succeeded` and `refund.failed`. Retries
+  run for 24 hours. Two flags need handling as review flags: `bayar_telat` (paid after expiry)
+  and `bayar_ganda` (paid twice).
+- **One rate limit for every tenant:** 120 requests per minute on the parent key. Devices never
+  poll doit.id. They poll our intent, which webhooks keep up to date. The reconcile job is
+  throttled to stay under the limit.
+- Every POST needs an `Idempotency-Key`. Use the `payment_intent` id.
+- **Refunds:** `POST /v1/payments/{id}/refunds`, partial or full, only for paid payments (B2.5).
+- **Daily reconciliation:** compare `GET /v1/submerchants/{id}/settlements` and
+  `GET /v1/payments?status=paid` against our recorded payments.
+- **Sandbox:** `pb_test_` keys. The fake `Gateway` is still what the tests use.
+
 ### 6.6 Inventory (Phase 3)
 
 The existing back-office pages (item library, UoM categories, transaction types, stock opname,
@@ -1310,7 +1343,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.1 | ✅ (see 6.1.1) Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
 | B2.2 | Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
 | B2.3 | CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit as a job | 4d |
-| B2.4 | Gateway integration behind the `Gateway` interface: dynamic QRIS and e-wallets, webhooks, reconciliation jobs (6.5) | 6d |
+| B2.4 | Gateway integration behind the `Gateway` interface: doit.id (6.5.1): tenant sub-merchant onboarding, dynamic QRIS (e-wallets pay by scanning it), webhooks, reconciliation jobs | 6d |
 | B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |
 | B2.6 | Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download | 3d |
 | B2.7 | Kitchen/bar tickets: station routing on items, included in pull; printing is client-side | 1d |
@@ -1435,7 +1468,7 @@ is decided.
 | PIN hashes on devices: accepted trade-off | Phase 0 | Write it up as an ADR (section 4.3) |
 | Pricing/tax rounding rules | Before Phase 1 pilot | Draft in 4.8; confirm with an accountant |
 | Hosting provider and region | Phase 0 | Jakarta region, managed Postgres |
-| Payment gateway | Phase 2 (apply in Phase 0) | Choose by sub-merchant/platform support and QRIS MDR; code behind the `Gateway` interface either way |
+| Payment gateway | Phase 2 (apply in Phase 0) | **Decided: doit.id** (platform sub-merchants, QRIS; see 6.5.1). Open: who pays the fee |
 | Open-bill concurrency model | Phase 4 | Event-sourced orders, connectivity required for shared bills |
 | Pricing unit (per outlet / device / tier) | Phase 5 | Schema supports all; decide commercially |
 
