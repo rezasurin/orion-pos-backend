@@ -31,7 +31,7 @@ new since you last looked.
 | Absent vs null | Optional fields are omitted or `null`; treat both as "not set". In a `PATCH`, a field you leave out is unchanged. |
 | Request id | Error bodies carry `request_id`; quote it when reporting a problem. |
 | Health | `GET /healthz` (alive), `GET /readyz` (database reachable). |
-| CORS | The server sets **no CORS headers yet**. A browser app on another origin needs a reverse proxy on the same origin, or a backend change. Ask before assuming. |
+| CORS | Browser apps on another origin work when that origin is on the server's allowlist (`ORION_CORS_ALLOWED_ORIGINS`; locally the origin of `ORION_PUBLIC_URL`, by default `http://localhost:5173`). Matching is exact (scheme, host and port, no wildcard). Allowed: `GET POST PUT PATCH DELETE`, headers `Authorization` and `Content-Type`, **no cookies or credentials** (do not send `credentials: "include"`; tokens go in the `Authorization` header). `Retry-After` is readable from JavaScript. Preflight (`OPTIONS`) is answered before authentication, so it never returns 401. An origin that is not listed is not told it is refused: the browser simply blocks the response, so a CORS error in the console on a deployed environment means the origin is missing from the list. |
 
 ### Errors
 
@@ -96,6 +96,7 @@ the permissions to drive the UI; the server still enforces them, so the UI is on
 | Owner | all of them, at every outlet |
 | Manager | all except `settings.manage` |
 | Cashier | `sale.create`, `shift.open`, `shift.close` |
+| Kitchen | `kitchen.view` |
 
 Roles are assigned **per outlet** (`outlet_roles`), so a person can be manager at one outlet and
 cashier at another. `permissions` in `/v1/me` is the union over outlets; the roster gives the
@@ -109,13 +110,39 @@ list for one outlet.
 
 | Call | Notes |
 |---|---|
+| `POST /v1/signup` `{business_name, owner_name, email, password, outlet_name?, outlet_code?, timezone?, locale?, website?}` | Public. The sign-up form (see below). Always `202` with **no body**. |
 | `POST /v1/auth/login` `{email, password, tenant_id?}` | Public. Returns a `Session` (`access_token`, `refresh_token`, expiry times, `tenant_id`, `user_id`). `409 tenant_required` when `tenant_id` is needed. `403 email_not_verified` before verification. |
 | `POST /v1/auth/refresh` `{refresh_token}` | Public. Returns a new `Session`. **Every refresh token works once**: store the new pair before using it, and serialise refreshes (two tabs refreshing at once will trip `token_reused` and sign the user out). Refresh when the access token is about to expire or on the first `401 invalid_token`. |
 | `POST /v1/auth/logout` `{refresh_token}` | Public, idempotent (always `204`). |
 | `POST /v1/auth/verify-email` `{token}` | Public. The token comes in the email link. |
-| `POST /v1/auth/resend-verification` `{email}` | Public. Always `204`, whether or not the address exists. |
+| `POST /v1/auth/resend-verification` `{email}` | Public. Always `202`, whether or not the address exists. Repeats within five minutes are dropped. |
 | `GET /v1/me` | The user, the business (`subscription_status`), `is_owner`, `permissions[]`. Call after login to build the menu. |
 | `GET /v1/entitlements` | `items[]` of `{key, kind, category, value, source}`: modules on/off, limits (`-1` = unlimited), flags. Hide a module when its key is `0`. |
+
+**Sign-up flow.** The form posts to `/v1/signup`; the server creates the business (early access plan),
+its four roles, its first outlet and the owner in one transaction and emails a verification link;
+the owner cannot sign in until they open it. So the screen after submitting is always "check your
+email", and the flow is: sign up, open the link, `POST /v1/auth/verify-email {token}`, sign in.
+
+* **The response never says whether the address was already registered.** If it was, nothing is
+  created and the existing owner gets an email instead (the verification link again if the address
+  was never verified, otherwise a notice pointing at sign-in). Do not build a "this email is taken"
+  message: it cannot be shown, by design.
+* **Links in emails** are `{ORION_PUBLIC_URL}/verify-email?token=<token>` and
+  `{ORION_PUBLIC_URL}/login`. The front end must serve those two routes. Tokens work once and
+  expire in 24 hours; "send it again" is `resend-verification`.
+* **Honeypot**: add a text input named `website` that people never see (hidden with CSS, not
+  `type=hidden`, `tabindex=-1`, `autocomplete=off`) and send its value. Bots fill it; a filled
+  value is accepted and silently ignored.
+* **Defaults**: `outlet_name` is the business name; `outlet_code` is up to four letters of the
+  outlet name followed by `1` (`Kopi Senja` becomes `KOPI1`); it is the receipt-number prefix and
+  cannot be changed later, so offer it for editing if the owner cares; `timezone` is `Asia/Jakarta`;
+  `locale` is `id-ID`. `password` is 10 to 128 characters.
+* **Limits**: five sign-ups per caller address, then one every two minutes; three per email address,
+  then one every ten (`429 rate_limited` with `Retry-After`); invalid forms count too.
+* The business `slug` is generated (`kopi-senja-x7k2`); there is nothing to choose.
+* **Not yet**: accepting the terms of service (`terms_acceptance`, B2.10; a required field will be
+  added then), a CAPTCHA, and password reset (so "forgot password" has no endpoint yet).
 
 Staging and production send real email (Resend). Local development writes each email to the
 worker's log, so take the verification link from there. The seeded demo business
@@ -504,7 +531,7 @@ shift).
 So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display,
 customers, loyalty, refunds beyond voids, payment gateways (QRIS dynamic, e-wallets: the methods
 exist as labels only), receipt printing endpoints, file/image upload (an item's `image_url` is a
-plain URL you host), CORS, and webhooks. The roadmap is in
+plain URL you host), and webhooks. The roadmap is in
 `docs/BACKEND_PLAN.md`.
 
 ## 11. Local development

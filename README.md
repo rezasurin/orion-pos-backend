@@ -39,6 +39,7 @@ Building a client? Read [`docs/API_CONTRACT.md`](./docs/API_CONTRACT.md) first. 
 | `internal/kernel` | Shared basics: UUIDv7 ids, integer money, clock, tenant transactions |
 | `internal/tenancy` | Tenants, outlets and outlet settings (queries in `queries.sql`, generated into `db/`) |
 | `internal/identity` | Users, sessions (JWT access tokens, rotating refresh tokens), email verification, roles, staff and PINs, device pairing and the roster; its background jobs |
+| `internal/signup` | The public sign-up form: a business, its first outlet and its owner in one transaction, without revealing which email addresses are registered |
 | `internal/catalog` | Categories, items with variants, modifier groups, per-outlet prices and availability, with their change log entries |
 | `internal/sales` | Shifts, cash, sales, payments, voids and review flags, written only by projecting pushed events |
 | `internal/reporting` | End-of-shift and end-of-day reports, computed live from the sales tables |

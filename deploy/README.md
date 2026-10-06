@@ -58,6 +58,23 @@ its SPF, DKIM and DMARC records). A missing key or From address stops `orion` at
 default, `ORION_EMAIL_PROVIDER=log`, writes each message, including verification links, to the log,
 so `orion worker` refuses it when `ORION_ENV=production`. Setup steps: `docs/guides/email-provider.md`.
 
+## Sign-up
+
+`POST /v1/signup` is public and creates businesses, so it is rate limited by caller address. That
+address is the real one only when `ORION_TRUST_PROXY` matches your setup (exactly one proxy that
+appends to `X-Forwarded-For`); get it wrong and either every visitor shares one limit or the limit
+can be dodged. The verification and "account exists" emails link to `ORION_PUBLIC_URL`
+(`/verify-email?token=...` and `/login`).
+
+## CORS
+
+A browser app on another origin can call the API only if its origin is listed in
+`ORION_CORS_ALLOWED_ORIGINS` (comma-separated, for example `https://app.orion.example`; exact
+scheme, host and port, no wildcard, no path). Without it the API answers same-origin requests only,
+which is right when a reverse proxy serves the app and the API from one hostname. In local
+development it defaults to `ORION_PUBLIC_URL`. The API uses bearer tokens, not cookies, so
+credentials are never allowed. A bad value stops the service from starting.
+
 ## Device health alerts
 
 `orion worker` runs a monitor every five minutes that emails a business's owners when a tablet holds

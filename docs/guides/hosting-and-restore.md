@@ -172,4 +172,4 @@ Then do the part a script cannot:
 - [ ] `docs/runbooks/restore.md` written and the first drill recorded **before the pilot**
 - [ ] Secrets in the secret manager; `ORION_SECRETS_KEY` backed up separately
 - [ ] Email provider live (`docs/guides/email-provider.md`)
-- [ ] CORS or same-origin proxy settled with the front end
+- [ ] `ORION_CORS_ALLOWED_ORIGINS` set to the real front-end origin(s) in staging and production

@@ -2,7 +2,8 @@
 
 Go modular monolith on PostgreSQL for a point-of-sale system (cafes and restaurants, Indonesia).
 Read `README.md` for the layout and `docs/BACKEND_PLAN.md` for the plan, phases and "as built"
-sections. Phase 0 and Phase 1 (B1.1 to B1.12) are done.
+sections. Phase 0 and Phase 1 (B1.1 to B1.12) are done; Phase 2 (early access) is under way: CORS and
+self-serve signup (B2.1) are built, the rest of the Phase 2 table is open.
 
 ## Standing rules
 
@@ -60,6 +61,8 @@ Tests use a real Postgres (testcontainers, or `ORION_TEST_DATABASE_URL`). Never 
   pilot). Email uses Resend (`ORION_EMAIL_PROVIDER=resend`); the sending domain's DNS and a real
   delivery test (steps 1, 7 and 8 of `docs/guides/email-provider.md`) are still to do.
 - Payment gateway: doit.id (BACKEND_PLAN.md 6.5.1); confirm the merchant can absorb the fee before B2.4.
-- Publishing the TypeScript client package (B0.3), CORS headers (none are set), and the
+- Phase 2 gaps from B2.1: no CAPTCHA, no cleanup of never-verified businesses (B2.1b), no terms
+  acceptance (B2.10), no password reset.
+- Publishing the TypeScript client package (B0.3), and the
   accountant's sign-off on per-bill half-up rounding before the pilot.
 - The pilot runbook is `docs/runbooks/pilot.md`.

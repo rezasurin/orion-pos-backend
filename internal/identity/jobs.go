@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,6 +24,14 @@ type VerifyEmailArgs struct {
 }
 
 func (VerifyEmailArgs) Kind() string { return "verify_email" }
+
+// AccountExistsArgs asks the worker to tell the owner of an account that someone tried to sign up
+// with their address.
+type AccountExistsArgs struct {
+	UserID uuid.UUID `json:"user_id"`
+}
+
+func (AccountExistsArgs) Kind() string { return "account_exists_notice" }
 
 // PurgeTokensArgs deletes expired refresh tokens and verification links.
 type PurgeTokensArgs struct{}
@@ -63,6 +72,7 @@ func NewJobs(d JobsDeps) *Jobs {
 // AddWorkers registers the job handlers.
 func (j *Jobs) AddWorkers(w *river.Workers) {
 	river.AddWorker(w, &verifyEmailWorker{j: j})
+	river.AddWorker(w, &accountExistsWorker{j: j})
 	river.AddWorker(w, &purgeTokensWorker{j: j})
 }
 
@@ -108,6 +118,30 @@ func (j *Jobs) SendVerificationEmail(ctx context.Context, args VerifyEmailArgs) 
 	subject, text := verificationEmail(u.Locale, verificationLink(j.PublicURL, token))
 	if err := j.Sender.Send(ctx, notify.Message{To: u.Email, Subject: subject, Text: text}); err != nil {
 		return fmt.Errorf("send verification email: %w", err)
+	}
+	return nil
+}
+
+type accountExistsWorker struct {
+	river.WorkerDefaults[AccountExistsArgs]
+	j *Jobs
+}
+
+func (w *accountExistsWorker) Work(ctx context.Context, job *river.Job[AccountExistsArgs]) error {
+	return w.j.SendAccountExistsEmail(ctx, job.Args)
+}
+
+// SendAccountExistsEmail tells the owner of an account that a signup was attempted with their
+// address. It changes nothing and carries no link that does anything: the person either did it
+// themselves and forgot, or someone else typed their address.
+func (j *Jobs) SendAccountExistsEmail(ctx context.Context, args AccountExistsArgs) error {
+	u, err := db.New(j.Platform).GetUserForEmail(ctx, args.UserID)
+	if err != nil {
+		return mapNoRowsCancel(err)
+	}
+	subject, text := accountExistsEmail(u.Locale, strings.TrimRight(j.PublicURL, "/")+"/login")
+	if err := j.Sender.Send(ctx, notify.Message{To: u.Email, Subject: subject, Text: text}); err != nil {
+		return fmt.Errorf("send account exists email: %w", err)
 	}
 	return nil
 }

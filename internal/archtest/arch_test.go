@@ -22,7 +22,7 @@ const composition = modulePath + "/internal/api"
 // Business modules from the plan. Packages under internal/ that are not listed here (kernel,
 // config, database, httpserver, testdb) are shared infrastructure.
 var businessModules = map[string]bool{
-	"platform": true, "tenancy": true, "identity": true, "entitlements": true,
+	"platform": true, "tenancy": true, "identity": true, "entitlements": true, "signup": true,
 	"catalog": true, "sales": true, "payments": true, "inventory": true, "sync": true,
 	"reporting": true, "billing": true, "notify": true,
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/reporting"
 	"github.com/rezasurin/orion-pos-backend/internal/sales"
+	"github.com/rezasurin/orion-pos-backend/internal/signup"
 	"github.com/rezasurin/orion-pos-backend/internal/sync"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
@@ -35,6 +36,7 @@ type Deps struct {
 	Sync      *sync.Service
 	Reporting *reporting.Service
 	Sales     *sales.Service
+	Signup    *signup.Service
 	Tenancy   *tenancy.Service
 	Logger    *slog.Logger
 }
@@ -54,6 +56,10 @@ type Server struct {
 	emailByAccount *httpserver.Limiter
 	pinByUser      *httpserver.Limiter
 	pairByUser     *httpserver.Limiter
+	// Sign-up is the one public endpoint that creates things: five forms from an address, then one
+	// every two minutes; three for one email address, then one every ten.
+	signupByIP    *httpserver.Limiter
+	signupByEmail *httpserver.Limiter
 
 	adminByIP        *httpserver.Limiter
 	adminByAccount   *httpserver.Limiter
@@ -82,6 +88,8 @@ func New(d Deps) (*Server, error) {
 		emailByAccount: httpserver.NewLimiter(5*time.Minute, 3),
 		pinByUser:      httpserver.NewLimiter(6*time.Second, 10),
 		pairByUser:     httpserver.NewLimiter(12*time.Second, 5),
+		signupByIP:     httpserver.NewLimiter(2*time.Minute, 5),
+		signupByEmail:  httpserver.NewLimiter(10*time.Minute, 3),
 
 		adminByIP:        httpserver.NewLimiter(6*time.Second, 10),
 		adminByAccount:   httpserver.NewLimiter(time.Minute, 5),
