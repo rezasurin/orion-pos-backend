@@ -41,7 +41,7 @@ func (s ResendSender) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("resend: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
 		// The error body names the problem (bad key, unverified domain, rate limit); it never echoes
 		// the message, whose text holds one-time links.
