@@ -55,10 +55,12 @@ Tests use a real Postgres (testcontainers, or `ORION_TEST_DATABASE_URL`). Never 
 
 ## Open items (not done)
 
-- Hosting and a real email provider are unchosen. They are written up as guides for the owner to
-  carry out: `docs/guides/hosting-and-restore.md` (B0.13 is marked done as a guide; the host, the
-  deploy workflow and the first restore drill, with `docs/runbooks/restore.md`, are still to do before
-  the pilot) and `docs/guides/email-provider.md` (email still goes to the log).
+- Hosting is unchosen. It is written up as a guide for the owner to carry out:
+  `docs/guides/hosting-and-restore.md` (B0.13 is marked done as a guide; the host, the deploy
+  workflow and the first restore drill, with `docs/runbooks/restore.md`, are still to do before the
+  pilot). Email uses Resend (`ORION_EMAIL_PROVIDER=resend`); the sending domain's DNS and a real
+  delivery test (steps 1, 7 and 8 of `docs/guides/email-provider.md`) are still to do.
+- Payment gateway: doit.id (BACKEND_PLAN.md 6.5.1); confirm the merchant can absorb the fee before B2.4.
 - Phase 2 gaps from B2.1: no CAPTCHA, no cleanup of never-verified businesses or CAPTCHA (B2.13), no terms
   acceptance (B2.10), no change-password-while-signed-in.
 - Publishing the TypeScript client package (B0.3), and the
