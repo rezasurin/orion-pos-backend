@@ -132,7 +132,7 @@ func parseImport(data []byte) ([]importRow, []ImportError, error) {
 		return nil, nil, fmt.Errorf("%w: the file is empty", kernel.ErrValidation)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: the file is not valid CSV: %v", kernel.ErrValidation, err)
+		return nil, nil, fmt.Errorf("%w: the file is not valid CSV: %w", kernel.ErrValidation, err)
 	}
 	col := map[string]int{}
 	for i, h := range header {
@@ -160,7 +160,7 @@ func parseImport(data []byte) ([]importRow, []ImportError, error) {
 			break
 		}
 		if err != nil {
-			return nil, nil, fmt.Errorf("%w: the file is not valid CSV: %v", kernel.ErrValidation, err)
+			return nil, nil, fmt.Errorf("%w: the file is not valid CSV: %w", kernel.ErrValidation, err)
 		}
 		get := func(f string) string {
 			if i, ok := col[f]; ok && i < len(rec) {
