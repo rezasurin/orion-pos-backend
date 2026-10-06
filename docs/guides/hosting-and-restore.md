@@ -61,8 +61,9 @@ Create `staging` (deployed from `main`, demo data, gateway sandbox later) and `p
    reachable).
 5. **First operator**: `orion admin create-operator --email you@example.com --reason bootstrap`
    and store what it prints.
-6. **Email**: `docs/guides/email-provider.md`. Until it exists, production cannot run the worker
-   (it refuses `ORION_EMAIL_PROVIDER=log`); for a private staging, set `ORION_ENV=staging`.
+6. **Email**: Resend, set up by `docs/guides/email-provider.md` (domain DNS, then
+   `ORION_EMAIL_PROVIDER=resend`, `ORION_EMAIL_API_KEY`, `ORION_EMAIL_FROM`). Production refuses
+   to run the worker with `ORION_EMAIL_PROVIDER=log`.
 
 ## 3. Deploy pipeline (on tag)
 

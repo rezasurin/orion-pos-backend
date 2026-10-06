@@ -144,8 +144,8 @@ email", and the flow is: sign up, open the link, `POST /v1/auth/verify-email {to
 * **Not yet**: accepting the terms of service (`terms_acceptance`, B2.10; a required field will be
   added then), a CAPTCHA, and password reset (so "forgot password" has no endpoint yet).
 
-Email delivery in this environment only writes to the server log (no real provider yet), so in
-development take the verification link from the worker's log. The seeded demo business
+Staging and production send real email (Resend). Local development writes each email to the
+worker's log, so take the verification link from there. The seeded demo business
 (`./bin/orion admin seed-demo`) is already verified: `owner@demo.orion.test` / `demo-password-1`.
 
 ### 3.2 Business, outlets and settings
@@ -531,14 +531,14 @@ shift).
 So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display,
 customers, loyalty, refunds beyond voids, payment gateways (QRIS dynamic, e-wallets: the methods
 exist as labels only), receipt printing endpoints, file/image upload (an item's `image_url` is a
-plain URL you host), real email delivery, and webhooks. The roadmap is in
+plain URL you host), and webhooks. The roadmap is in
 `docs/BACKEND_PLAN.md`.
 
 ## 11. Local development
 
 ```sh
 make db-up && make run           # API on :8080
-make worker                       # background jobs; emails go to the log
+make worker                       # background jobs; locally, emails go to the log
 ./bin/orion admin seed-demo       # demo business, menu, cashier PINs, a paired device
 ```
 

@@ -1,9 +1,13 @@
 # Guide: adding a real email provider
 
-Status: **not implemented.** Today every email (verification links, stuck-device alerts) goes to
-the log (`ORION_EMAIL_PROVIDER=log`), and the worker refuses to start with it when
-`ORION_ENV=production`. This guide is for whoever adds the first real provider. About half a day
-of work plus DNS.
+Status: **Resend is implemented** (`internal/notify/resend.go`, chosen 2026-10-06), selected with
+`ORION_EMAIL_PROVIDER=resend`, `ORION_EMAIL_API_KEY` and `ORION_EMAIL_FROM`; startup fails if
+either is missing. Steps 2 to 6 below are done. **Still to do by the owner:** step 1 (add the
+sending subdomain in Resend and publish its SPF, DKIM and DMARC records), step 7 (a real delivery
+test from staging to a Gmail and a local-ISP inbox) and step 8 (watch bounces and complaints in
+the Resend dashboard). Locally, `ORION_EMAIL_PROVIDER=log` still writes mail to the log.
+
+The rest of this guide is the original how-to, kept for adding or swapping a provider.
 
 ## What exists
 
