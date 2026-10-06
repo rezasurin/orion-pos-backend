@@ -253,6 +253,156 @@ func (q *Queries) GetShiftForReport(ctx context.Context, arg GetShiftForReportPa
 	return i, err
 }
 
+const refundsByDay = `-- name: RefundsByDay :many
+SELECT business_date, count(*)::bigint AS refunds, sum(amount)::bigint AS amount
+FROM refund
+WHERE tenant_id = $1 AND outlet_id = $2 AND business_date BETWEEN $3::date AND $4::date
+GROUP BY business_date ORDER BY business_date
+`
+
+type RefundsByDayParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+	FromDate pgtype.Date
+	ToDate   pgtype.Date
+}
+
+type RefundsByDayRow struct {
+	BusinessDate pgtype.Date
+	Refunds      int64
+	Amount       int64
+}
+
+func (q *Queries) RefundsByDay(ctx context.Context, arg RefundsByDayParams) ([]RefundsByDayRow, error) {
+	rows, err := q.db.Query(ctx, refundsByDay,
+		arg.TenantID,
+		arg.OutletID,
+		arg.FromDate,
+		arg.ToDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RefundsByDayRow
+	for rows.Next() {
+		var i RefundsByDayRow
+		if err := rows.Scan(&i.BusinessDate, &i.Refunds, &i.Amount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const refundsByItem = `-- name: RefundsByItem :many
+SELECT l.variant_id, v.item_id, i.name AS item_name, v.name AS variant_name,
+       sum(rl.quantity)::bigint AS quantity, sum(rl.amount)::bigint AS amount
+FROM refund r
+JOIN refund_line rl ON rl.tenant_id = r.tenant_id AND rl.refund_id = r.id
+JOIN sale_line l ON l.tenant_id = rl.tenant_id AND l.id = rl.sale_line_id
+JOIN variant v ON v.tenant_id = l.tenant_id AND v.id = l.variant_id
+JOIN item i ON i.tenant_id = v.tenant_id AND i.id = v.item_id
+WHERE r.tenant_id = $1 AND r.outlet_id = $2 AND r.business_date BETWEEN $3::date AND $4::date
+GROUP BY l.variant_id, v.item_id, i.name, v.name
+`
+
+type RefundsByItemParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+	FromDate pgtype.Date
+	ToDate   pgtype.Date
+}
+
+type RefundsByItemRow struct {
+	VariantID   uuid.UUID
+	ItemID      uuid.UUID
+	ItemName    string
+	VariantName string
+	Quantity    int64
+	Amount      int64
+}
+
+func (q *Queries) RefundsByItem(ctx context.Context, arg RefundsByItemParams) ([]RefundsByItemRow, error) {
+	rows, err := q.db.Query(ctx, refundsByItem,
+		arg.TenantID,
+		arg.OutletID,
+		arg.FromDate,
+		arg.ToDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RefundsByItemRow
+	for rows.Next() {
+		var i RefundsByItemRow
+		if err := rows.Scan(
+			&i.VariantID,
+			&i.ItemID,
+			&i.ItemName,
+			&i.VariantName,
+			&i.Quantity,
+			&i.Amount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const refundsByMethod = `-- name: RefundsByMethod :many
+SELECT method, count(*)::bigint AS refunds, sum(amount)::bigint AS amount
+FROM refund
+WHERE tenant_id = $1 AND outlet_id = $2 AND business_date BETWEEN $3::date AND $4::date
+GROUP BY method ORDER BY method
+`
+
+type RefundsByMethodParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+	FromDate pgtype.Date
+	ToDate   pgtype.Date
+}
+
+type RefundsByMethodRow struct {
+	Method  string
+	Refunds int64
+	Amount  int64
+}
+
+func (q *Queries) RefundsByMethod(ctx context.Context, arg RefundsByMethodParams) ([]RefundsByMethodRow, error) {
+	rows, err := q.db.Query(ctx, refundsByMethod,
+		arg.TenantID,
+		arg.OutletID,
+		arg.FromDate,
+		arg.ToDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RefundsByMethodRow
+	for rows.Next() {
+		var i RefundsByMethodRow
+		if err := rows.Scan(&i.Method, &i.Refunds, &i.Amount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const salesByDay = `-- name: SalesByDay :many
 
 SELECT d::date AS business_date,
@@ -442,8 +592,9 @@ const shiftCash = `-- name: ShiftCash :many
 SELECT s.id AS shift_id,
     coalesce((SELECT sum(p.amount) FROM sale sa JOIN payment p ON p.tenant_id = sa.tenant_id AND p.sale_id = sa.id
               WHERE sa.tenant_id = s.tenant_id AND sa.shift_id = s.id AND p.method = 'cash' AND p.status = 'confirmed'), 0)::bigint AS received,
-    coalesce((SELECT sum(p.amount) FROM void v JOIN payment p ON p.tenant_id = v.tenant_id AND p.sale_id = v.sale_id
-              WHERE v.tenant_id = s.tenant_id AND v.shift_id = s.id AND p.method = 'cash' AND p.status = 'confirmed'), 0)::bigint AS refunded,
+    (coalesce((SELECT sum(p.amount) FROM void v JOIN payment p ON p.tenant_id = v.tenant_id AND p.sale_id = v.sale_id
+               WHERE v.tenant_id = s.tenant_id AND v.shift_id = s.id AND p.method = 'cash' AND p.status = 'confirmed'), 0)
+     + coalesce((SELECT sum(r.amount) FROM refund r WHERE r.tenant_id = s.tenant_id AND r.shift_id = s.id AND r.method = 'cash'), 0))::bigint AS refunded,
     coalesce((SELECT sum(m.amount) FROM cash_movement m WHERE m.tenant_id = s.tenant_id AND m.shift_id = s.id AND m.kind = 'pay_in'), 0)::bigint AS pay_in,
     coalesce((SELECT sum(m.amount) FROM cash_movement m WHERE m.tenant_id = s.tenant_id AND m.shift_id = s.id AND m.kind = 'pay_out'), 0)::bigint AS pay_out,
     (SELECT count(*) FROM cash_movement m WHERE m.tenant_id = s.tenant_id AND m.shift_id = s.id AND m.kind = 'no_sale')::bigint AS no_sales
@@ -469,7 +620,8 @@ type ShiftCashRow struct {
 //
 //	received: cash applied to the bills of sales rung up in the shift (net of change given), whatever
 //	          became of the sale later;
-//	refunded: cash returned for sales voided in this shift, whichever shift sold them;
+//	refunded: cash returned for sales voided in this shift, whichever shift sold them, and cash
+//	          refunds made in this shift;
 //	pay in, pay out, and how many times the drawer was opened without a sale.
 func (q *Queries) ShiftCash(ctx context.Context, arg ShiftCashParams) ([]ShiftCashRow, error) {
 	rows, err := q.db.Query(ctx, shiftCash, arg.TenantID, arg.ShiftIds)
@@ -566,6 +718,45 @@ func (q *Queries) ShiftPaymentMethods(ctx context.Context, arg ShiftPaymentMetho
 	for rows.Next() {
 		var i ShiftPaymentMethodsRow
 		if err := rows.Scan(&i.Method, &i.Payments, &i.Amount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const shiftRefundsByMethod = `-- name: ShiftRefundsByMethod :many
+
+SELECT method, count(*)::bigint AS refunds, sum(amount)::bigint AS amount
+FROM refund WHERE tenant_id = $1 AND shift_id = $2
+GROUP BY method ORDER BY method
+`
+
+type ShiftRefundsByMethodParams struct {
+	TenantID uuid.UUID
+	ShiftID  uuid.UUID
+}
+
+type ShiftRefundsByMethodRow struct {
+	Method  string
+	Refunds int64
+	Amount  int64
+}
+
+// Refunds (B2.5) count where and when they were made: the shift, and the business date.
+func (q *Queries) ShiftRefundsByMethod(ctx context.Context, arg ShiftRefundsByMethodParams) ([]ShiftRefundsByMethodRow, error) {
+	rows, err := q.db.Query(ctx, shiftRefundsByMethod, arg.TenantID, arg.ShiftID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ShiftRefundsByMethodRow
+	for rows.Next() {
+		var i ShiftRefundsByMethodRow
+		if err := rows.Scan(&i.Method, &i.Refunds, &i.Amount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

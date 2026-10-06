@@ -62,13 +62,42 @@ UPDATE sale SET status = 'voided' WHERE tenant_id = @tenant_id AND id = @id AND 
 INSERT INTO void (id, tenant_id, outlet_id, sale_id, shift_id, staff_id, approved_by, reason, device_time, received_at, business_date)
 VALUES (@id, @tenant_id, @outlet_id, @sale_id, @shift_id, @staff_id, sqlc.narg(approved_by), @reason, @device_time, @received_at, @business_date);
 
+-- Refunds (refund.go).
+
+-- name: GetSaleForRefund :one
+-- Locks the sale, so two refunds of it check their caps one after the other.
+SELECT id, outlet_id, status, total, rounding_amount FROM sale WHERE tenant_id = @tenant_id AND id = @id FOR UPDATE;
+
+-- name: SaleLinesForRefund :many
+-- Each line of the sale with how much of it earlier refunds already gave back.
+SELECT l.id, l.line_no, l.quantity,
+       coalesce((SELECT sum(rl.quantity) FROM refund_line rl WHERE rl.tenant_id = l.tenant_id AND rl.sale_line_id = l.id), 0)::bigint AS refunded
+FROM sale_line l
+WHERE l.tenant_id = @tenant_id AND l.sale_id = @sale_id
+ORDER BY l.line_no;
+
+-- name: SaleRefundedTotal :one
+SELECT coalesce(sum(amount), 0)::bigint FROM refund WHERE tenant_id = @tenant_id AND sale_id = @sale_id;
+
+-- name: InsertRefund :exec
+INSERT INTO refund (id, tenant_id, outlet_id, sale_id, shift_id, staff_id, approved_by, method, amount, reason, device_time, received_at, business_date)
+VALUES (@id, @tenant_id, @outlet_id, @sale_id, @shift_id, @staff_id, sqlc.narg(approved_by), @method, @amount, @reason, @device_time, @received_at, @business_date);
+
+-- name: InsertRefundLines :exec
+INSERT INTO refund_line (tenant_id, refund_id, sale_line_id, quantity, amount)
+SELECT @tenant_id::uuid, @refund_id::uuid, a.sale_line_id, b.quantity, c.amount
+FROM unnest(@sale_line_ids::uuid[]) WITH ORDINALITY AS a(sale_line_id, n)
+JOIN unnest(@quantities::integer[]) WITH ORDINALITY AS b(quantity, n) ON b.n = a.n
+JOIN unnest(@amounts::bigint[]) WITH ORDINALITY AS c(amount, n) ON c.n = a.n;
+
 -- The back-office sales list and detail (read-only).
 
 -- name: ListSales :many
 -- Newest business day first, then newest sale by the device's clock, keyset-paged by
 -- (business_date, device_time, id). outlet_ids NULL means every outlet.
 SELECT s.id, s.outlet_id, s.device_id, s.shift_id, s.staff_id, s.receipt_number, s.device_time, s.received_at, s.business_date,
-       s.status, s.subtotal, s.discount_total, s.service_charge, s.tax, s.tax_included, s.rounding_amount, s.total
+       s.status, s.subtotal, s.discount_total, s.service_charge, s.tax, s.tax_included, s.rounding_amount, s.total,
+       coalesce((SELECT sum(r.amount) FROM refund r WHERE r.tenant_id = s.tenant_id AND r.sale_id = s.id), 0)::bigint AS refunded
 FROM sale s
 WHERE s.tenant_id = @tenant_id
   AND (sqlc.narg(outlet_ids)::uuid[] IS NULL OR s.outlet_id = ANY(sqlc.narg(outlet_ids)::uuid[]))
@@ -81,7 +110,10 @@ WHERE s.tenant_id = @tenant_id
         SELECT 1 FROM flag f WHERE f.tenant_id = s.tenant_id AND f.target_id = s.id
         UNION ALL
         SELECT 1 FROM flag f JOIN void v ON v.tenant_id = f.tenant_id AND v.id = f.target_id
-        WHERE f.tenant_id = s.tenant_id AND v.sale_id = s.id))
+        WHERE f.tenant_id = s.tenant_id AND v.sale_id = s.id
+        UNION ALL
+        SELECT 1 FROM flag f JOIN refund r ON r.tenant_id = f.tenant_id AND r.id = f.target_id
+        WHERE f.tenant_id = s.tenant_id AND r.sale_id = s.id))
   AND (sqlc.narg(after_date)::date IS NULL OR (s.business_date, s.device_time, s.id) < (sqlc.narg(after_date)::date, sqlc.narg(after_time)::timestamptz, sqlc.narg(after_id)::uuid))
 ORDER BY s.business_date DESC, s.device_time DESC, s.id DESC
 LIMIT @page_size;
@@ -92,11 +124,13 @@ WHERE tenant_id = @tenant_id AND sale_id = ANY(@sale_ids::uuid[])
 ORDER BY sale_id, id;
 
 -- name: ListFlagsBySales :many
--- The flags about each sale and about its void, in one query.
-SELECT f.id, f.code, f.target_type, f.target_id, f.detail, f.created_at, coalesce(v.sale_id, f.target_id)::uuid AS sale_id
+-- The flags about each sale, its void and its refunds, in one query.
+SELECT f.id, f.code, f.target_type, f.target_id, f.detail, f.created_at, coalesce(v.sale_id, r.sale_id, f.target_id)::uuid AS sale_id
 FROM flag f
 LEFT JOIN void v ON v.tenant_id = f.tenant_id AND v.id = f.target_id AND f.target_type = 'void'
-WHERE f.tenant_id = @tenant_id AND (f.target_id = ANY(@sale_ids::uuid[]) OR v.sale_id = ANY(@sale_ids::uuid[]))
+LEFT JOIN refund r ON r.tenant_id = f.tenant_id AND r.id = f.target_id AND f.target_type = 'refund'
+WHERE f.tenant_id = @tenant_id
+  AND (f.target_id = ANY(@sale_ids::uuid[]) OR v.sale_id = ANY(@sale_ids::uuid[]) OR r.sale_id = ANY(@sale_ids::uuid[]))
 ORDER BY f.created_at, f.id;
 
 -- name: GetSale :one
@@ -120,3 +154,16 @@ ORDER BY d.id;
 
 -- name: GetVoidOfSale :one
 SELECT * FROM void WHERE tenant_id = @tenant_id AND sale_id = @sale_id;
+
+-- name: ListRefundsOfSale :many
+SELECT r.id, r.shift_id, r.staff_id, r.approved_by, r.method, r.amount, r.reason, r.device_time, r.received_at, r.business_date
+FROM refund r WHERE r.tenant_id = @tenant_id AND r.sale_id = @sale_id
+ORDER BY r.device_time, r.id;
+
+-- name: ListRefundLinesOfSale :many
+SELECT rl.refund_id, l.line_no, rl.quantity, rl.amount
+FROM refund r
+JOIN refund_line rl ON rl.tenant_id = r.tenant_id AND rl.refund_id = r.id
+JOIN sale_line l ON l.tenant_id = rl.tenant_id AND l.id = rl.sale_line_id
+WHERE r.tenant_id = @tenant_id AND r.sale_id = @sale_id
+ORDER BY rl.refund_id, l.line_no;

@@ -82,6 +82,39 @@ func (q *Queries) GetSale(ctx context.Context, arg GetSaleParams) (Sale, error) 
 	return i, err
 }
 
+const getSaleForRefund = `-- name: GetSaleForRefund :one
+
+SELECT id, outlet_id, status, total, rounding_amount FROM sale WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+`
+
+type GetSaleForRefundParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+type GetSaleForRefundRow struct {
+	ID             uuid.UUID
+	OutletID       uuid.UUID
+	Status         string
+	Total          int64
+	RoundingAmount int64
+}
+
+// Refunds (refund.go).
+// Locks the sale, so two refunds of it check their caps one after the other.
+func (q *Queries) GetSaleForRefund(ctx context.Context, arg GetSaleForRefundParams) (GetSaleForRefundRow, error) {
+	row := q.db.QueryRow(ctx, getSaleForRefund, arg.TenantID, arg.ID)
+	var i GetSaleForRefundRow
+	err := row.Scan(
+		&i.ID,
+		&i.OutletID,
+		&i.Status,
+		&i.Total,
+		&i.RoundingAmount,
+	)
+	return i, err
+}
+
 const getSaleForVoid = `-- name: GetSaleForVoid :one
 
 SELECT id, outlet_id, shift_id, status FROM sale WHERE tenant_id = $1 AND id = $2 FOR UPDATE
@@ -236,6 +269,73 @@ func (q *Queries) InsertCashMovement(ctx context.Context, arg InsertCashMovement
 	return err
 }
 
+const insertRefund = `-- name: InsertRefund :exec
+INSERT INTO refund (id, tenant_id, outlet_id, sale_id, shift_id, staff_id, approved_by, method, amount, reason, device_time, received_at, business_date)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+`
+
+type InsertRefundParams struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	OutletID     uuid.UUID
+	SaleID       uuid.UUID
+	ShiftID      uuid.UUID
+	StaffID      uuid.UUID
+	ApprovedBy   *uuid.UUID
+	Method       string
+	Amount       int64
+	Reason       string
+	DeviceTime   time.Time
+	ReceivedAt   time.Time
+	BusinessDate pgtype.Date
+}
+
+func (q *Queries) InsertRefund(ctx context.Context, arg InsertRefundParams) error {
+	_, err := q.db.Exec(ctx, insertRefund,
+		arg.ID,
+		arg.TenantID,
+		arg.OutletID,
+		arg.SaleID,
+		arg.ShiftID,
+		arg.StaffID,
+		arg.ApprovedBy,
+		arg.Method,
+		arg.Amount,
+		arg.Reason,
+		arg.DeviceTime,
+		arg.ReceivedAt,
+		arg.BusinessDate,
+	)
+	return err
+}
+
+const insertRefundLines = `-- name: InsertRefundLines :exec
+INSERT INTO refund_line (tenant_id, refund_id, sale_line_id, quantity, amount)
+SELECT $1::uuid, $2::uuid, a.sale_line_id, b.quantity, c.amount
+FROM unnest($3::uuid[]) WITH ORDINALITY AS a(sale_line_id, n)
+JOIN unnest($4::integer[]) WITH ORDINALITY AS b(quantity, n) ON b.n = a.n
+JOIN unnest($5::bigint[]) WITH ORDINALITY AS c(amount, n) ON c.n = a.n
+`
+
+type InsertRefundLinesParams struct {
+	TenantID    uuid.UUID
+	RefundID    uuid.UUID
+	SaleLineIds []uuid.UUID
+	Quantities  []int32
+	Amounts     []int64
+}
+
+func (q *Queries) InsertRefundLines(ctx context.Context, arg InsertRefundLinesParams) error {
+	_, err := q.db.Exec(ctx, insertRefundLines,
+		arg.TenantID,
+		arg.RefundID,
+		arg.SaleLineIds,
+		arg.Quantities,
+		arg.Amounts,
+	)
+	return err
+}
+
 const insertSale = `-- name: InsertSale :exec
 
 INSERT INTO sale (id, tenant_id, outlet_id, device_id, shift_id, staff_id, receipt_number, receipt_device_code, receipt_counter,
@@ -371,10 +471,12 @@ func (q *Queries) InsertVoid(ctx context.Context, arg InsertVoidParams) error {
 }
 
 const listFlagsBySales = `-- name: ListFlagsBySales :many
-SELECT f.id, f.code, f.target_type, f.target_id, f.detail, f.created_at, coalesce(v.sale_id, f.target_id)::uuid AS sale_id
+SELECT f.id, f.code, f.target_type, f.target_id, f.detail, f.created_at, coalesce(v.sale_id, r.sale_id, f.target_id)::uuid AS sale_id
 FROM flag f
 LEFT JOIN void v ON v.tenant_id = f.tenant_id AND v.id = f.target_id AND f.target_type = 'void'
-WHERE f.tenant_id = $1 AND (f.target_id = ANY($2::uuid[]) OR v.sale_id = ANY($2::uuid[]))
+LEFT JOIN refund r ON r.tenant_id = f.tenant_id AND r.id = f.target_id AND f.target_type = 'refund'
+WHERE f.tenant_id = $1
+  AND (f.target_id = ANY($2::uuid[]) OR v.sale_id = ANY($2::uuid[]) OR r.sale_id = ANY($2::uuid[]))
 ORDER BY f.created_at, f.id
 `
 
@@ -393,7 +495,7 @@ type ListFlagsBySalesRow struct {
 	SaleID     uuid.UUID
 }
 
-// The flags about each sale and about its void, in one query.
+// The flags about each sale, its void and its refunds, in one query.
 func (q *Queries) ListFlagsBySales(ctx context.Context, arg ListFlagsBySalesParams) ([]ListFlagsBySalesRow, error) {
 	rows, err := q.db.Query(ctx, listFlagsBySales, arg.TenantID, arg.SaleIds)
 	if err != nil {
@@ -462,6 +564,107 @@ func (q *Queries) ListPaymentsBySales(ctx context.Context, arg ListPaymentsBySal
 			&i.Change,
 			&i.Reference,
 			&i.Status,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRefundLinesOfSale = `-- name: ListRefundLinesOfSale :many
+SELECT rl.refund_id, l.line_no, rl.quantity, rl.amount
+FROM refund r
+JOIN refund_line rl ON rl.tenant_id = r.tenant_id AND rl.refund_id = r.id
+JOIN sale_line l ON l.tenant_id = rl.tenant_id AND l.id = rl.sale_line_id
+WHERE r.tenant_id = $1 AND r.sale_id = $2
+ORDER BY rl.refund_id, l.line_no
+`
+
+type ListRefundLinesOfSaleParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+type ListRefundLinesOfSaleRow struct {
+	RefundID uuid.UUID
+	LineNo   int32
+	Quantity int32
+	Amount   int64
+}
+
+func (q *Queries) ListRefundLinesOfSale(ctx context.Context, arg ListRefundLinesOfSaleParams) ([]ListRefundLinesOfSaleRow, error) {
+	rows, err := q.db.Query(ctx, listRefundLinesOfSale, arg.TenantID, arg.SaleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRefundLinesOfSaleRow
+	for rows.Next() {
+		var i ListRefundLinesOfSaleRow
+		if err := rows.Scan(
+			&i.RefundID,
+			&i.LineNo,
+			&i.Quantity,
+			&i.Amount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRefundsOfSale = `-- name: ListRefundsOfSale :many
+SELECT r.id, r.shift_id, r.staff_id, r.approved_by, r.method, r.amount, r.reason, r.device_time, r.received_at, r.business_date
+FROM refund r WHERE r.tenant_id = $1 AND r.sale_id = $2
+ORDER BY r.device_time, r.id
+`
+
+type ListRefundsOfSaleParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+type ListRefundsOfSaleRow struct {
+	ID           uuid.UUID
+	ShiftID      uuid.UUID
+	StaffID      uuid.UUID
+	ApprovedBy   *uuid.UUID
+	Method       string
+	Amount       int64
+	Reason       string
+	DeviceTime   time.Time
+	ReceivedAt   time.Time
+	BusinessDate pgtype.Date
+}
+
+func (q *Queries) ListRefundsOfSale(ctx context.Context, arg ListRefundsOfSaleParams) ([]ListRefundsOfSaleRow, error) {
+	rows, err := q.db.Query(ctx, listRefundsOfSale, arg.TenantID, arg.SaleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRefundsOfSaleRow
+	for rows.Next() {
+		var i ListRefundsOfSaleRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ShiftID,
+			&i.StaffID,
+			&i.ApprovedBy,
+			&i.Method,
+			&i.Amount,
+			&i.Reason,
+			&i.DeviceTime,
+			&i.ReceivedAt,
+			&i.BusinessDate,
 		); err != nil {
 			return nil, err
 		}
@@ -609,7 +812,8 @@ func (q *Queries) ListSaleLines(ctx context.Context, arg ListSaleLinesParams) ([
 const listSales = `-- name: ListSales :many
 
 SELECT s.id, s.outlet_id, s.device_id, s.shift_id, s.staff_id, s.receipt_number, s.device_time, s.received_at, s.business_date,
-       s.status, s.subtotal, s.discount_total, s.service_charge, s.tax, s.tax_included, s.rounding_amount, s.total
+       s.status, s.subtotal, s.discount_total, s.service_charge, s.tax, s.tax_included, s.rounding_amount, s.total,
+       coalesce((SELECT sum(r.amount) FROM refund r WHERE r.tenant_id = s.tenant_id AND r.sale_id = s.id), 0)::bigint AS refunded
 FROM sale s
 WHERE s.tenant_id = $1
   AND ($2::uuid[] IS NULL OR s.outlet_id = ANY($2::uuid[]))
@@ -622,7 +826,10 @@ WHERE s.tenant_id = $1
         SELECT 1 FROM flag f WHERE f.tenant_id = s.tenant_id AND f.target_id = s.id
         UNION ALL
         SELECT 1 FROM flag f JOIN void v ON v.tenant_id = f.tenant_id AND v.id = f.target_id
-        WHERE f.tenant_id = s.tenant_id AND v.sale_id = s.id))
+        WHERE f.tenant_id = s.tenant_id AND v.sale_id = s.id
+        UNION ALL
+        SELECT 1 FROM flag f JOIN refund r ON r.tenant_id = f.tenant_id AND r.id = f.target_id
+        WHERE f.tenant_id = s.tenant_id AND r.sale_id = s.id))
   AND ($9::date IS NULL OR (s.business_date, s.device_time, s.id) < ($9::date, $10::timestamptz, $11::uuid))
 ORDER BY s.business_date DESC, s.device_time DESC, s.id DESC
 LIMIT $12
@@ -661,6 +868,7 @@ type ListSalesRow struct {
 	TaxIncluded    bool
 	RoundingAmount int64
 	Total          int64
+	Refunded       int64
 }
 
 // The back-office sales list and detail (read-only).
@@ -706,6 +914,7 @@ func (q *Queries) ListSales(ctx context.Context, arg ListSalesParams) ([]ListSal
 			&i.TaxIncluded,
 			&i.RoundingAmount,
 			&i.Total,
+			&i.Refunded,
 		); err != nil {
 			return nil, err
 		}
@@ -729,4 +938,66 @@ type MarkSaleVoidedParams struct {
 func (q *Queries) MarkSaleVoided(ctx context.Context, arg MarkSaleVoidedParams) error {
 	_, err := q.db.Exec(ctx, markSaleVoided, arg.TenantID, arg.ID)
 	return err
+}
+
+const saleLinesForRefund = `-- name: SaleLinesForRefund :many
+SELECT l.id, l.line_no, l.quantity,
+       coalesce((SELECT sum(rl.quantity) FROM refund_line rl WHERE rl.tenant_id = l.tenant_id AND rl.sale_line_id = l.id), 0)::bigint AS refunded
+FROM sale_line l
+WHERE l.tenant_id = $1 AND l.sale_id = $2
+ORDER BY l.line_no
+`
+
+type SaleLinesForRefundParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+type SaleLinesForRefundRow struct {
+	ID       uuid.UUID
+	LineNo   int32
+	Quantity int32
+	Refunded int64
+}
+
+// Each line of the sale with how much of it earlier refunds already gave back.
+func (q *Queries) SaleLinesForRefund(ctx context.Context, arg SaleLinesForRefundParams) ([]SaleLinesForRefundRow, error) {
+	rows, err := q.db.Query(ctx, saleLinesForRefund, arg.TenantID, arg.SaleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SaleLinesForRefundRow
+	for rows.Next() {
+		var i SaleLinesForRefundRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.LineNo,
+			&i.Quantity,
+			&i.Refunded,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const saleRefundedTotal = `-- name: SaleRefundedTotal :one
+SELECT coalesce(sum(amount), 0)::bigint FROM refund WHERE tenant_id = $1 AND sale_id = $2
+`
+
+type SaleRefundedTotalParams struct {
+	TenantID uuid.UUID
+	SaleID   uuid.UUID
+}
+
+func (q *Queries) SaleRefundedTotal(ctx context.Context, arg SaleRefundedTotalParams) (int64, error) {
+	row := q.db.QueryRow(ctx, saleRefundedTotal, arg.TenantID, arg.SaleID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }

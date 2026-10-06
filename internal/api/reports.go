@@ -33,9 +33,10 @@ func (s *Server) GetShiftReport(ctx context.Context, req openapi.GetShiftReportR
 	return openapi.GetShiftReport200JSONResponse{
 		Shift: toShiftInfo(r.Shift), Cash: toReportCash(r.Cash), Sales: toReportTotals(r.Sales),
 		PaymentMethods: toReportMethods(r.PaymentMethods), Discounts: openapi.ReportDiscounts{Count: r.Discounts.Count, Amount: r.Discounts.Amount},
-		VoidedSales:    openapi.ReportVoided{Count: r.VoidedSales.Count, Total: r.VoidedSales.Total},
-		VoidsRecorded:  openapi.ReportVoided{Count: r.VoidsRecorded.Count, Total: r.VoidsRecorded.Total},
-		NoSaleOpenings: r.NoSaleOpenings, Flags: r.Flags,
+		VoidedSales:     openapi.ReportVoided{Count: r.VoidedSales.Count, Total: r.VoidedSales.Total},
+		VoidsRecorded:   openapi.ReportVoided{Count: r.VoidsRecorded.Count, Total: r.VoidsRecorded.Total},
+		RefundsRecorded: toReportRefunds(r.RefundsRecorded),
+		NoSaleOpenings:  r.NoSaleOpenings, Flags: r.Flags,
 	}, nil
 }
 
@@ -58,6 +59,7 @@ func (s *Server) GetDayReport(ctx context.Context, req openapi.GetDayReportReque
 		OutletId: r.OutletID, Date: openapi_types.Date{Time: r.Date}, Sales: toReportTotals(r.Sales),
 		PaymentMethods: toReportMethods(r.PaymentMethods), Discounts: openapi.ReportDiscounts{Count: r.Discounts.Count, Amount: r.Discounts.Amount},
 		VoidedSales: openapi.ReportVoided{Count: r.VoidedSales.Count, Total: r.VoidedSales.Total},
+		Refunds:     toReportRefunds(r.Refunds),
 		OpenShifts:  r.OpenShifts, Cash: toReportCash(r.Cash), Flags: r.Flags,
 	}
 	out.CashMovements.PayIn, out.CashMovements.PayInCount = r.CashMovements.PayIn, r.CashMovements.PayIns
@@ -100,7 +102,7 @@ func (s *Server) GetSalesReport(ctx context.Context, req openapi.GetSalesReportR
 	case reporting.ByDay:
 		days := make([]openapi.SalesReportDay, len(r.Days))
 		for i, d := range r.Days {
-			days[i] = openapi.SalesReportDay{Date: openapi_types.Date{Time: d.Date}, Sales: toReportTotals(d.Sales)}
+			days[i] = openapi.SalesReportDay{Date: openapi_types.Date{Time: d.Date}, Sales: toReportTotals(d.Sales), Refunds: toReportRefunds(d.Refunds)}
 		}
 		out.Days = &days
 	case reporting.ByItem:
@@ -109,6 +111,7 @@ func (s *Server) GetSalesReport(ctx context.Context, req openapi.GetSalesReportR
 			items[i] = openapi.SalesReportItem{
 				ItemId: it.ItemID, VariantId: it.VariantID, ItemName: it.ItemName, VariantName: it.VariantName,
 				Quantity: it.Quantity, Gross: it.Gross, Discounts: it.Discounts, Net: it.Net,
+				RefundedQuantity: it.RefundedQuantity, Refunded: it.Refunded,
 			}
 		}
 		out.Items = &items
@@ -125,20 +128,22 @@ func salesReportCSV(r reporting.SalesReport) ([]byte, error) {
 	n := func(v int64) string { return strconv.FormatInt(v, 10) }
 	switch r.GroupBy {
 	case reporting.ByDay:
-		rows = append(rows, []string{"date", "sales", "subtotal", "discounts", "net", "service_charge", "tax", "total", "rounding"})
+		rows = append(rows, []string{"date", "sales", "subtotal", "discounts", "net", "service_charge", "tax", "total", "rounding", "refunds", "refunded"})
 		for _, d := range r.Days {
 			t := d.Sales
-			rows = append(rows, []string{d.Date.Format("2006-01-02"), n(t.Count), n(t.Subtotal), n(t.Discounts), n(t.Net), n(t.ServiceCharge), n(t.Tax), n(t.Total), n(t.Rounding)})
+			rows = append(rows, []string{d.Date.Format("2006-01-02"), n(t.Count), n(t.Subtotal), n(t.Discounts), n(t.Net), n(t.ServiceCharge), n(t.Tax), n(t.Total), n(t.Rounding),
+				n(d.Refunds.Count), n(d.Refunds.Total)})
 		}
 	case reporting.ByItem:
-		rows = append(rows, []string{"item_name", "variant_name", "quantity", "gross", "discounts", "net", "item_id", "variant_id"})
+		rows = append(rows, []string{"item_name", "variant_name", "quantity", "gross", "discounts", "net", "refunded_quantity", "refunded", "item_id", "variant_id"})
 		for _, it := range r.Items {
-			rows = append(rows, []string{csvText(it.ItemName), csvText(it.VariantName), n(it.Quantity), n(it.Gross), n(it.Discounts), n(it.Net), it.ItemID.String(), it.VariantID.String()})
+			rows = append(rows, []string{csvText(it.ItemName), csvText(it.VariantName), n(it.Quantity), n(it.Gross), n(it.Discounts), n(it.Net),
+				n(it.RefundedQuantity), n(it.Refunded), it.ItemID.String(), it.VariantID.String()})
 		}
 	case reporting.ByPaymentMethod:
-		rows = append(rows, []string{"method", "payments", "amount"})
+		rows = append(rows, []string{"method", "payments", "amount", "refunds", "refunded"})
 		for _, m := range r.PaymentMethods {
-			rows = append(rows, []string{m.Method, n(m.Payments), n(m.Amount)})
+			rows = append(rows, []string{m.Method, n(m.Payments), n(m.Amount), n(m.Refunds), n(m.Refunded)})
 		}
 	}
 	var buf bytes.Buffer
@@ -182,7 +187,11 @@ func toReportTotals(t reporting.Totals) openapi.ReportTotals {
 func toReportMethods(ms []reporting.MethodTotal) []openapi.ReportMethod {
 	out := make([]openapi.ReportMethod, len(ms))
 	for i, m := range ms {
-		out[i] = openapi.ReportMethod{Method: openapi.ReportMethodMethod(m.Method), Payments: m.Payments, Amount: m.Amount}
+		out[i] = openapi.ReportMethod{Method: openapi.ReportMethodMethod(m.Method), Payments: m.Payments, Amount: m.Amount, Refunds: m.Refunds, Refunded: m.Refunded}
 	}
 	return out
+}
+
+func toReportRefunds(r reporting.Refunds) openapi.ReportRefunds {
+	return openapi.ReportRefunds{Count: r.Count, Total: r.Total}
 }

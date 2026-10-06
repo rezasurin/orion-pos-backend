@@ -43,6 +43,14 @@ func (p *Projector) saleVoided(ctx context.Context, tx pgx.Tx, env sync.Env, ev 
 	if target.Status == "voided" {
 		return sync.Outcome{}, &bad{code: "already_voided", detail: "the sale was already voided"}
 	}
+	// A void gives the whole sale back; after a refund that would pay part of it twice.
+	refunded, err := q.SaleRefundedTotal(ctx, db.SaleRefundedTotalParams{TenantID: env.TenantID, SaleID: in.SaleID})
+	if err != nil {
+		return sync.Outcome{}, err
+	}
+	if refunded > 0 {
+		return sync.Outcome{}, &bad{code: "already_refunded", detail: "the sale has a refund; refund the rest instead of voiding it"}
+	}
 
 	shiftID := target.ShiftID
 	if in.ShiftID != nil {

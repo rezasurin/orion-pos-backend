@@ -23,6 +23,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -66,11 +68,19 @@ type Totals struct {
 	Rounding      int64 // cash rounding, positive or negative
 }
 
-// MethodTotal is what one payment method took.
+// MethodTotal is what one payment method took, and what was refunded through it.
 type MethodTotal struct {
 	Method   string
 	Payments int64
 	Amount   int64
+	Refunds  int64
+	Refunded int64
+}
+
+// Refunds are the refunds made in a shift or on a day, whichever sale they were of.
+type Refunds struct {
+	Count int64
+	Total int64
 }
 
 // Voided is sales that were voided, and what they came to.
@@ -107,8 +117,10 @@ type ShiftReport struct {
 	// VoidedSales are this shift's sales that were voided (in this shift or later).
 	VoidedSales Voided
 	// VoidsRecorded are the voids made during this shift, of any shift's sales.
-	VoidsRecorded  Voided
-	NoSaleOpenings int64
+	VoidsRecorded Voided
+	// RefundsRecorded are the refunds made during this shift, of any shift's sales.
+	RefundsRecorded Refunds
+	NoSaleOpenings  int64
 	// Flags counts the review flags raised about the shift and its sales.
 	Flags int64
 }
@@ -133,7 +145,9 @@ type DayReport struct {
 	PaymentMethods []MethodTotal
 	Discounts      DiscountTotals
 	// VoidedSales are the day's sales that were voided, whenever the void was made.
-	VoidedSales   Voided
+	VoidedSales Voided
+	// Refunds are the refunds made on this day, of any day's sales.
+	Refunds       Refunds
 	CashMovements CashMovements
 	// Shifts are the shifts opened on this business date, with their cash reconciliation, in the
 	// order they opened. OpenShifts counts those not yet closed.
@@ -181,6 +195,10 @@ func (s *Service) ShiftReport(ctx context.Context, tenantID, shiftID uuid.UUID) 
 		if err != nil {
 			return err
 		}
+		refunds, err := q.ShiftRefundsByMethod(ctx, db.ShiftRefundsByMethodParams{TenantID: tenantID, ShiftID: shiftID})
+		if err != nil {
+			return err
+		}
 		discounts, err := q.ShiftDiscounts(ctx, db.ShiftDiscountsParams{TenantID: tenantID, ShiftID: shiftID})
 		if err != nil {
 			return err
@@ -200,11 +218,13 @@ func (s *Service) ShiftReport(ctx context.Context, tenantID, shiftID uuid.UUID) 
 				Count: sales.Sales, Subtotal: sales.Subtotal, Discounts: sales.DiscountTotal, Net: sales.Subtotal - sales.DiscountTotal,
 				ServiceCharge: sales.ServiceCharge, Tax: sales.Tax, Total: sales.Total, Rounding: sales.Rounding,
 			},
-			PaymentMethods: methodTotals(len(methods), func(i int) (string, int64, int64) { return methods[i].Method, methods[i].Payments, methods[i].Amount }),
-			Discounts:      DiscountTotals{Count: discounts.Discounts, Amount: discounts.Amount},
-			VoidedSales:    Voided{Count: sales.Voided, Total: sales.VoidedTotal},
-			VoidsRecorded:  Voided{Count: voids.Voids, Total: voids.Total},
-			Flags:          flags,
+			PaymentMethods: withRefunds(methodTotals(len(methods), func(i int) (string, int64, int64) { return methods[i].Method, methods[i].Payments, methods[i].Amount }),
+				len(refunds), func(i int) (string, int64, int64) { return refunds[i].Method, refunds[i].Refunds, refunds[i].Amount }),
+			Discounts:       DiscountTotals{Count: discounts.Discounts, Amount: discounts.Amount},
+			VoidedSales:     Voided{Count: sales.Voided, Total: sales.VoidedTotal},
+			VoidsRecorded:   Voided{Count: voids.Voids, Total: voids.Total},
+			RefundsRecorded: sumRefunds(len(refunds), func(i int) (int64, int64) { return refunds[i].Refunds, refunds[i].Amount }),
+			Flags:           flags,
 		}
 		if len(cash) == 1 {
 			out.Cash = reconcile(sh.OpeningCash, sh.CountedCash, cash[0].Received, cash[0].Refunded, cash[0].PayIn, cash[0].PayOut)
@@ -227,6 +247,10 @@ func (s *Service) DayReport(ctx context.Context, tenantID, outletID uuid.UUID, d
 			return err
 		}
 		methods, err := q.DayPaymentMethods(ctx, db.DayPaymentMethodsParams{TenantID: tenantID, OutletID: outletID, BusinessDate: day})
+		if err != nil {
+			return err
+		}
+		refunds, err := q.RefundsByMethod(ctx, db.RefundsByMethodParams{TenantID: tenantID, OutletID: outletID, FromDate: day, ToDate: day})
 		if err != nil {
 			return err
 		}
@@ -263,7 +287,9 @@ func (s *Service) DayReport(ctx context.Context, tenantID, outletID uuid.UUID, d
 			Count: sales.Sales, Subtotal: sales.Subtotal, Discounts: sales.DiscountTotal, Net: sales.Subtotal - sales.DiscountTotal,
 			ServiceCharge: sales.ServiceCharge, Tax: sales.Tax, Total: sales.Total, Rounding: sales.Rounding,
 		}
-		out.PaymentMethods = methodTotals(len(methods), func(i int) (string, int64, int64) { return methods[i].Method, methods[i].Payments, methods[i].Amount })
+		out.PaymentMethods = withRefunds(methodTotals(len(methods), func(i int) (string, int64, int64) { return methods[i].Method, methods[i].Payments, methods[i].Amount }),
+			len(refunds), func(i int) (string, int64, int64) { return refunds[i].Method, refunds[i].Refunds, refunds[i].Amount })
+		out.Refunds = sumRefunds(len(refunds), func(i int) (int64, int64) { return refunds[i].Refunds, refunds[i].Amount })
 		out.Discounts = DiscountTotals{Count: discounts.Discounts, Amount: discounts.Amount}
 		out.VoidedSales = Voided{Count: sales.Voided, Total: sales.VoidedTotal}
 		for _, m := range moves {
@@ -320,8 +346,9 @@ const MaxReportDays = 366
 
 // DaySales is one business date of the sales report.
 type DaySales struct {
-	Date  time.Time
-	Sales Totals
+	Date    time.Time
+	Sales   Totals
+	Refunds Refunds // made on this day, of any day's sales
 }
 
 // ItemSales is one variant of the sales report. Discounts include the lines' share of bill
@@ -331,6 +358,8 @@ type ItemSales struct {
 	ItemName, VariantName string
 	Quantity              int64
 	Gross, Discounts, Net int64
+	// Refunds made in the range of this variant, whichever day it was sold.
+	RefundedQuantity, Refunded int64
 }
 
 // SalesReport is an outlet's completed sales from From to To (business dates, inclusive). Only the
@@ -365,9 +394,17 @@ func (s *Service) SalesReport(ctx context.Context, tenantID, outletID uuid.UUID,
 			if err != nil {
 				return err
 			}
+			refunds, err := q.RefundsByDay(ctx, db.RefundsByDayParams{TenantID: tenantID, OutletID: outletID, FromDate: f, ToDate: t})
+			if err != nil {
+				return err
+			}
+			byDate := make(map[time.Time]Refunds, len(refunds))
+			for _, r := range refunds {
+				byDate[r.BusinessDate.Time] = Refunds{Count: r.Refunds, Total: r.Amount}
+			}
 			out.Days = make([]DaySales, len(rows))
 			for i, r := range rows {
-				out.Days[i] = DaySales{Date: r.BusinessDate.Time, Sales: Totals{
+				out.Days[i] = DaySales{Date: r.BusinessDate.Time, Refunds: byDate[r.BusinessDate.Time], Sales: Totals{
 					Count: r.Sales, Subtotal: r.Subtotal, Discounts: r.DiscountTotal, Net: r.Subtotal - r.DiscountTotal,
 					ServiceCharge: r.ServiceCharge, Tax: r.Tax, Total: r.Total, Rounding: r.Rounding,
 				}}
@@ -377,19 +414,39 @@ func (s *Service) SalesReport(ctx context.Context, tenantID, outletID uuid.UUID,
 			if err != nil {
 				return err
 			}
+			refunds, err := q.RefundsByItem(ctx, db.RefundsByItemParams{TenantID: tenantID, OutletID: outletID, FromDate: f, ToDate: t})
+			if err != nil {
+				return err
+			}
 			out.Items = make([]ItemSales, len(rows))
+			at := make(map[uuid.UUID]int, len(rows))
 			for i, r := range rows {
 				out.Items[i] = ItemSales{
 					ItemID: r.ItemID, VariantID: r.VariantID, ItemName: r.ItemName, VariantName: r.VariantName,
 					Quantity: r.Quantity, Gross: r.Gross, Discounts: r.Discounts, Net: r.Net,
 				}
+				at[r.VariantID] = i
+			}
+			// A variant refunded in the range but sold before it gets a row of its own, at the end.
+			for _, r := range refunds {
+				i, ok := at[r.VariantID]
+				if !ok {
+					i = len(out.Items)
+					out.Items = append(out.Items, ItemSales{ItemID: r.ItemID, VariantID: r.VariantID, ItemName: r.ItemName, VariantName: r.VariantName})
+				}
+				out.Items[i].RefundedQuantity, out.Items[i].Refunded = r.Quantity, r.Amount
 			}
 		case ByPaymentMethod:
 			rows, err := q.SalesByPaymentMethod(ctx, db.SalesByPaymentMethodParams{TenantID: tenantID, OutletID: outletID, FromDate: f, ToDate: t})
 			if err != nil {
 				return err
 			}
-			out.PaymentMethods = methodTotals(len(rows), func(i int) (string, int64, int64) { return rows[i].Method, rows[i].Payments, rows[i].Amount })
+			refunds, err := q.RefundsByMethod(ctx, db.RefundsByMethodParams{TenantID: tenantID, OutletID: outletID, FromDate: f, ToDate: t})
+			if err != nil {
+				return err
+			}
+			out.PaymentMethods = withRefunds(methodTotals(len(rows), func(i int) (string, int64, int64) { return rows[i].Method, rows[i].Payments, rows[i].Amount }),
+				len(refunds), func(i int) (string, int64, int64) { return refunds[i].Method, refunds[i].Refunds, refunds[i].Amount })
 		default:
 			return fmt.Errorf("%w: group_by must be day, item or payment_method", kernel.ErrValidation)
 		}
@@ -421,6 +478,32 @@ func methodTotals(n int, at func(i int) (method string, payments, amount int64))
 	out := make([]MethodTotal, n)
 	for i := range out {
 		out[i].Method, out[i].Payments, out[i].Amount = at(i)
+	}
+	return out
+}
+
+// withRefunds adds the refunds made through each method to what it took; a method that only gave
+// money back gets a row of its own. The result stays ordered by method.
+func withRefunds(ms []MethodTotal, n int, at func(i int) (method string, refunds, amount int64)) []MethodTotal {
+	for i := range n {
+		method, count, amount := at(i)
+		j := slices.IndexFunc(ms, func(m MethodTotal) bool { return m.Method == method })
+		if j < 0 {
+			ms = append(ms, MethodTotal{Method: method})
+			j = len(ms) - 1
+		}
+		ms[j].Refunds, ms[j].Refunded = count, amount
+	}
+	slices.SortFunc(ms, func(a, b MethodTotal) int { return strings.Compare(a.Method, b.Method) })
+	return ms
+}
+
+func sumRefunds(n int, at func(i int) (count, amount int64)) Refunds {
+	var out Refunds
+	for i := range n {
+		c, a := at(i)
+		out.Count += c
+		out.Total += a
 	}
 	return out
 }

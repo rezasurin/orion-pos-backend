@@ -62,6 +62,7 @@ type SaleSummary struct {
 	TaxIncluded    bool
 	RoundingAmount int64
 	Total          int64
+	Refunded       int64 // given back by refunds so far; the amounts above stay as rung up
 	Payments       []Payment
 	FlagCodes      []string
 }
@@ -118,7 +119,29 @@ type VoidInfo struct {
 	BusinessDate time.Time
 }
 
-// FlagInfo is a review flag about a sale or its void.
+// RefundInfo is money given back for some of a sale.
+type RefundInfo struct {
+	ID           uuid.UUID
+	ShiftID      uuid.UUID
+	StaffID      uuid.UUID
+	ApprovedBy   *uuid.UUID
+	Method       string
+	Amount       int64
+	Reason       string
+	DeviceTime   time.Time
+	ReceivedAt   time.Time
+	BusinessDate time.Time
+	Lines        []RefundLine
+}
+
+// RefundLine is what came back of one sale line.
+type RefundLine struct {
+	LineNo   int
+	Quantity int
+	Amount   int64
+}
+
+// FlagInfo is a review flag about a sale, its void or one of its refunds.
 type FlagInfo struct {
 	Code       string
 	TargetType string // sale or void
@@ -135,6 +158,7 @@ type SaleDetail struct {
 	Lines          []SaleLine
 	Discounts      []SaleDiscount
 	Void           *VoidInfo
+	Refunds        []RefundInfo
 	Flags          []FlagInfo
 }
 
@@ -241,7 +265,7 @@ func (s *Service) ListSales(ctx context.Context, tenantID uuid.UUID, f SaleFilte
 				ID: r.ID, OutletID: r.OutletID, DeviceID: r.DeviceID, ShiftID: r.ShiftID, StaffID: r.StaffID, ReceiptNumber: r.ReceiptNumber,
 				DeviceTime: r.DeviceTime, ReceivedAt: r.ReceivedAt, BusinessDate: r.BusinessDate.Time, Status: r.Status,
 				Subtotal: r.Subtotal, DiscountTotal: r.DiscountTotal, ServiceCharge: r.ServiceCharge, Tax: r.Tax, TaxIncluded: r.TaxIncluded,
-				RoundingAmount: r.RoundingAmount, Total: r.Total, Payments: orEmpty(paysOf[r.ID]), FlagCodes: orEmpty(flagsOf[r.ID]),
+				RoundingAmount: r.RoundingAmount, Total: r.Total, Refunded: r.Refunded, Payments: orEmpty(paysOf[r.ID]), FlagCodes: orEmpty(flagsOf[r.ID]),
 			}
 		}
 		if more {
@@ -331,6 +355,27 @@ func (s *Service) GetSale(ctx context.Context, tenantID, saleID uuid.UUID) (Sale
 		for i, fl := range flags {
 			out.Flags[i] = FlagInfo{Code: fl.Code, TargetType: fl.TargetType, Detail: fl.Detail, CreatedAt: fl.CreatedAt}
 			out.FlagCodes = append(out.FlagCodes, fl.Code)
+		}
+		refunds, err := q.ListRefundsOfSale(ctx, db.ListRefundsOfSaleParams{TenantID: tenantID, SaleID: saleID})
+		if err != nil {
+			return err
+		}
+		refundLines, err := q.ListRefundLinesOfSale(ctx, db.ListRefundLinesOfSaleParams{TenantID: tenantID, SaleID: saleID})
+		if err != nil {
+			return err
+		}
+		linesOf := map[uuid.UUID][]RefundLine{}
+		for _, l := range refundLines {
+			linesOf[l.RefundID] = append(linesOf[l.RefundID], RefundLine{LineNo: int(l.LineNo), Quantity: int(l.Quantity), Amount: l.Amount})
+		}
+		out.Refunds = make([]RefundInfo, len(refunds))
+		for i, rf := range refunds {
+			out.Refunds[i] = RefundInfo{
+				ID: rf.ID, ShiftID: rf.ShiftID, StaffID: rf.StaffID, ApprovedBy: rf.ApprovedBy, Method: rf.Method, Amount: rf.Amount,
+				Reason: rf.Reason, DeviceTime: rf.DeviceTime, ReceivedAt: rf.ReceivedAt, BusinessDate: rf.BusinessDate.Time,
+				Lines: orEmpty(linesOf[rf.ID]),
+			}
+			out.Refunded += rf.Amount
 		}
 		v, err := q.GetVoidOfSale(ctx, db.GetVoidOfSaleParams{TenantID: tenantID, SaleID: saleID})
 		switch {

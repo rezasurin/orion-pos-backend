@@ -20,6 +20,7 @@ const (
 	TypeCashMovement  = "cash.movement"
 	TypeSaleCompleted = "sale.completed"
 	TypeSaleVoided    = "sale.voided"
+	TypeRefundIssued  = "refund.issued"
 )
 
 // bad is a payload the module cannot make sense of: the event is rejected with its code.

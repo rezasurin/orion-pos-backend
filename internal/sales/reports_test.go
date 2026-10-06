@@ -46,6 +46,7 @@ type bkSale struct {
 	discounts int64            // number of discounts
 	lines     []lineSpec
 	voided    bool
+	refunded  bool // a refunded sale can no longer be voided
 }
 
 func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
@@ -66,6 +67,9 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 	byDay := make([][]*bkSale, 7)
 
 	voidsMade, crossDayVoids := 0, 0
+	type bkRefunds struct{ count, total int64 }
+	refundsByDay := make([]bkRefunds, 7)
+	refundsByMethod := map[string]int64{}
 	menu := []lineSpec{f.espressoLine(1), f.latte(1), {Variant: f.latteIced, Name: "Latte (Iced)", Price: 30000, Qty: 1}}
 	randomSale := func(dev identity.Principal, shift *bkShift, day int, at time.Time) (syncsrv.Event, *bkSale) {
 		spec := saleSpec{Shift: shift.id, Dev: dev, CatalogSeq: f.seq()}
@@ -166,7 +170,7 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 			}
 			for k := 0; k < 2; k++ {
 				target := candidates[rng.Intn(len(candidates))]
-				if target.voided {
+				if target.voided || target.refunded {
 					continue
 				}
 				ev := f.event(f.manager, sales.TypeSaleVoided, map[string]any{
@@ -181,6 +185,37 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 				if target.day != day {
 					crossDayVoids++
 				}
+			}
+		}
+
+		// Refunds of one unit of a line of today's or yesterday's sales, in cash or by QRIS: they
+		// count today, and cash ones leave today's drawer.
+		for di, dev := range devices {
+			shift := dayShifts[di]
+			candidates := append([]*bkSale{}, byDay[day]...)
+			if day > 0 {
+				candidates = append(candidates, byDay[day-1]...)
+			}
+			target := candidates[rng.Intn(len(candidates))]
+			if target.voided || target.refunded {
+				continue
+			}
+			line := target.res.Lines[0]
+			amount := int64(line.Total) / target.lines[0].Qty
+			method := []string{"cash", "qris_manual"}[rng.Intn(2)]
+			ev := f.event(f.manager, sales.TypeRefundIssued, map[string]any{
+				"sale_id": target.id, "shift_id": shift.id, "method": method, "reason": "cold",
+				"lines": []map[string]any{{"line_no": 0, "quantity": 1, "amount": amount}},
+			}, start.Add(17*time.Hour))
+			if res := f.one(dev, ev); res.Status != syncsrv.StatusAccepted || res.Code != "" || len(f.flags(ev.ID)) != 0 {
+				t.Fatalf("refund: %+v %v", res, f.flags(ev.ID))
+			}
+			target.refunded = true
+			refundsByDay[day].count++
+			refundsByDay[day].total += amount
+			refundsByMethod[method] += amount
+			if method == "cash" {
+				shift.refunds += amount
 			}
 		}
 
@@ -203,6 +238,13 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 	}
 
 	// The week has to be big enough to mean something.
+	var refundsMade int64
+	for _, r := range refundsByDay {
+		refundsMade += r.count
+	}
+	if refundsMade < 5 {
+		t.Fatalf("a thin week: %d refunds", refundsMade)
+	}
 	if len(all) < 150 || voidsMade < 15 || crossDayVoids < 3 {
 		t.Fatalf("a thin week: %d sales, %d voids (%d of an earlier day's sale)", len(all), voidsMade, crossDayVoids)
 	}
@@ -250,6 +292,9 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 		}
 		if got.VoidedSales != voided {
 			t.Errorf("day %d voided: got %+v, want %+v", day, got.VoidedSales, voided)
+		}
+		if want := (reporting.Refunds{Count: refundsByDay[day].count, Total: refundsByDay[day].total}); got.Refunds != want {
+			t.Errorf("day %d refunds: got %+v, want %+v", day, got.Refunds, want)
 		}
 		if got.Discounts != discounts {
 			t.Errorf("day %d discounts: got %+v, want %+v", day, got.Discounts, discounts)
@@ -325,7 +370,7 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := byDayRep.Days[day+1]; got.Sales != d.Sales || !got.Date.Equal(d.Date) {
+		if got := byDayRep.Days[day+1]; got.Sales != d.Sales || got.Refunds != d.Refunds || !got.Date.Equal(d.Date) {
 			t.Errorf("by day, day %d: %+v, the day report says %+v", day, got, d.Sales)
 		}
 		weekNet += d.Sales.Net
@@ -371,9 +416,15 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotMethods := map[string]int64{}
+	gotMethods, gotRefunded := map[string]int64{}, map[string]int64{}
 	for _, m := range byMethod.PaymentMethods {
 		gotMethods[m.Method] = m.Amount
+		if m.Refunded != 0 {
+			gotRefunded[m.Method] = m.Refunded
+		}
+	}
+	if fmt.Sprint(gotRefunded) != fmt.Sprint(refundsByMethod) {
+		t.Errorf("refunded by method: got %v, want %v", gotRefunded, refundsByMethod)
 	}
 	if fmt.Sprint(gotMethods) != fmt.Sprint(wantMethods) {
 		t.Errorf("by payment method: got %v, want %v", gotMethods, wantMethods)

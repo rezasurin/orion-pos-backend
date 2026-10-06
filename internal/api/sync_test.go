@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -419,11 +420,11 @@ func TestReportsOverHTTP(t *testing.T) {
 		t.Errorf("by item = %+v", byItem)
 	}
 	csvBody := e.do(t, "GET", salesPath+"&group_by=item&format=csv", owner, nil)
-	wantCSV := "item_name,variant_name,quantity,gross,discounts,net,item_id,variant_id\n'=Espresso,,2,36000,0,36000," + item.ID + "," + item.Variants[0].ID + "\n"
+	wantCSV := "item_name,variant_name,quantity,gross,discounts,net,refunded_quantity,refunded,item_id,variant_id\n'=Espresso,,2,36000,0,36000,0,0," + item.ID + "," + item.Variants[0].ID + "\n"
 	if csvBody.Code != http.StatusOK || csvBody.Header().Get("Content-Type") != "text/csv" || csvBody.Body.String() != wantCSV {
 		t.Errorf("CSV: %d %q\n%s", csvBody.Code, csvBody.Header().Get("Content-Type"), csvBody.Body.String())
 	}
-	if r := e.do(t, "GET", salesPath+"&group_by=payment_method&format=csv", owner, nil); r.Body.String() != "method,payments,amount\ncash,1,36000\n" {
+	if r := e.do(t, "GET", salesPath+"&group_by=payment_method&format=csv", owner, nil); r.Body.String() != "method,payments,amount,refunds,refunded\ncash,1,36000,0,0\n" {
 		t.Errorf("payment methods CSV: %q", r.Body.String())
 	}
 	e.do(t, "GET", salesPath+"&group_by=day", cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
@@ -438,6 +439,82 @@ func TestReportsOverHTTP(t *testing.T) {
 			e.do(t, "GET", outlet+q, owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
 		})
 	}
+	// One espresso comes back in cash: the drawer, the day and the sales report show it; the sale
+	// stays as rung up.
+	refund := p.event("refund.issued", map[string]any{
+		"sale_id": sale["id"], "shift_id": shift["id"], "method": "cash", "reason": "cold",
+		"lines": []map[string]any{{"line_no": 0, "quantity": 1, "amount": 18000}},
+	})
+	var pushed pushBody
+	p.push(t, refund).decode(t, &pushed)
+	if pushed.Results[0].Status != "accepted" {
+		t.Fatalf("refund: %+v", pushed.Results)
+	}
+	sr = struct {
+		Shift struct {
+			ID       string  `json:"id"`
+			ClosedAt *string `json:"closed_at"`
+		} `json:"shift"`
+		Cash           reportCashBody `json:"cash"`
+		Sales          totalsBody     `json:"sales"`
+		PaymentMethods []struct {
+			Method string `json:"method"`
+			Amount int64  `json:"amount"`
+		} `json:"payment_methods"`
+	}{}
+	e.do(t, "GET", path, owner, nil).decode(t, &sr)
+	if sr.Cash.Expected != 118000 || sr.Cash.Refunded != 18000 || sr.Sales.Total != 36000 {
+		t.Errorf("shift after the refund: %+v", sr)
+	}
+	var dayRefunds struct {
+		Refunds struct {
+			Count int64 `json:"count"`
+			Total int64 `json:"total"`
+		} `json:"refunds"`
+		Sales totalsBody `json:"sales"`
+	}
+	e.do(t, "GET", dayPath, owner, nil).decode(t, &dayRefunds)
+	if dayRefunds.Refunds.Count != 1 || dayRefunds.Refunds.Total != 18000 || dayRefunds.Sales.Total != 36000 {
+		t.Errorf("day after the refund: %+v", dayRefunds)
+	}
+	if r := e.do(t, "GET", salesPath+"&group_by=payment_method&format=csv", owner, nil); r.Body.String() != "method,payments,amount,refunds,refunded\ncash,1,36000,1,18000\n" {
+		t.Errorf("payment methods CSV after the refund: %q", r.Body.String())
+	}
+	if r := e.do(t, "GET", salesPath+"&group_by=item&format=csv", owner, nil); !strings.Contains(r.Body.String(), ",2,36000,0,36000,1,18000,") {
+		t.Errorf("items CSV after the refund: %q", r.Body.String())
+	}
+
+	// The sale shows what came back, and the refund (by a cashier, without sale.refund) is flagged
+	// on it, so the "flagged" list finds the sale.
+	var detail struct {
+		Total    int64    `json:"total"`
+		Refunded int64    `json:"refunded"`
+		Flags    []string `json:"flag_codes"`
+		Refunds  []struct {
+			Method string `json:"method"`
+			Amount int64  `json:"amount"`
+			Lines  []struct {
+				LineNo   int   `json:"line_no"`
+				Quantity int   `json:"quantity"`
+				Amount   int64 `json:"amount"`
+			} `json:"lines"`
+		} `json:"refunds"`
+	}
+	e.do(t, "GET", "/v1/sales/"+sale["id"].(string), owner, nil).decode(t, &detail)
+	if detail.Total != 36000 || detail.Refunded != 18000 || len(detail.Refunds) != 1 || detail.Refunds[0].Method != "cash" ||
+		len(detail.Refunds[0].Lines) != 1 || detail.Refunds[0].Lines[0].Quantity != 1 || fmt.Sprint(detail.Flags) != "[permission_missing]" {
+		t.Errorf("sale detail after the refund: %+v", detail)
+	}
+	var flagged struct {
+		Items []struct {
+			Refunded int64 `json:"refunded"`
+		} `json:"items"`
+	}
+	e.do(t, "GET", "/v1/sales?flagged=true", owner, nil).decode(t, &flagged)
+	if len(flagged.Items) != 1 || flagged.Items[0].Refunded != 18000 {
+		t.Errorf("flagged sales: %+v", flagged)
+	}
+
 	var year struct{ Days []any }
 	e.do(t, "GET", outlet+"&from=2025-01-01&to=2026-01-01&group_by=day", owner, nil).decode(t, &year)
 	if len(year.Days) != 366 {

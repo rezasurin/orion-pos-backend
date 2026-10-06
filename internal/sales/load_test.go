@@ -223,6 +223,9 @@ func TestTheReportsHaveTheIndexesTheyReadThrough(t *testing.T) {
 		{"shift", "(tenant_id, outlet_id, business_date)", "the shifts of a day"},
 		{"shift", "WHERE (closed_at IS NULL)", "the monitor's open shifts"},
 		{"flag", "(tenant_id, target_id)", "the flags of a sale"},
+		{"refund", "(tenant_id, sale_id)", "the refunds of a sale"},
+		{"refund", "(tenant_id, shift_id)", "the refunds made in a shift"},
+		{"refund", "(tenant_id, outlet_id, business_date)", "the refunds of a day"},
 		{"sync_inbox", "(tenant_id, depends_on)", "releasing parked events"},
 	}
 	for _, w := range want {

@@ -439,6 +439,30 @@ type RefreshToken struct {
 	RevokedAt *time.Time
 }
 
+type Refund struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	OutletID     uuid.UUID
+	SaleID       uuid.UUID
+	ShiftID      uuid.UUID
+	StaffID      uuid.UUID
+	ApprovedBy   *uuid.UUID
+	Method       string
+	Amount       int64
+	Reason       string
+	DeviceTime   time.Time
+	ReceivedAt   time.Time
+	BusinessDate pgtype.Date
+}
+
+type RefundLine struct {
+	TenantID   uuid.UUID
+	RefundID   uuid.UUID
+	SaleLineID uuid.UUID
+	Quantity   int32
+	Amount     int64
+}
+
 type RiverJob struct {
 	ID           int64
 	State        RiverJobState

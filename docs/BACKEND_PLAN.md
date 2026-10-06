@@ -1082,7 +1082,7 @@ price (6.4), so a later rename never changes a receipt.
 | `sale_discount` | `sale_id`, `sale_line_id null`, `kind` (percent, amount), `value`, `amount`, `reason`, `approved_by` |
 | `payment` | `sale_id`, `method` (cash, qris_manual, qris_dynamic, ewallet, card_manual), `amount`, `tendered`, `change`, `reference`, `status` |
 | `void` | `sale_id`, `staff_id`, `approved_by`, `reason`, `device_time` |
-| `refund` (Phase 2) | `sale_id`, lines and amounts, `method`, `reason`, `staff_id`, `approved_by` |
+| `refund` (Phase 2, 6.4.5) | `sale_id`, `shift_id`, `method`, `amount`, `reason`, `staff_id`, `approved_by`, `business_date`; lines in `refund_line` |
 | `sale_flag` | `sale_id`, `code` (total_mismatch, permission_missing, stale_price), `detail` |
 | `sync_inbox` | `tenant_id`, `device_id`, `idempotency_key` (unique together), `event_type`, `payload_hash`, `payload jsonb`, `status`, `result jsonb`, `received_at` |
 
@@ -1180,6 +1180,25 @@ fields are ignored so a newer app may add fields within a version.
   of a foreign key, so each is justified in the file. B1.11 runs `EXPLAIN` on each report against a
   busy week.
 
+#### 6.4.3 Sales list and detail as built (B1.9)
+
+- `GET /v1/sales` and `GET /v1/sales/{saleId}`, read-only, needing `report.view` at the outlet(s).
+  Without `outlet_id` the list covers the outlets where the caller holds `report.view` (all of them
+  for an owner); with it, an outlet of another business is `404` and one the caller may not see is
+  `403`. A sale id of another business is `404`.
+- **Order and paging.** Newest business day first, then newest by the device's clock, then id,
+  keyset-paged by `(business_date, device_time, id)` with an opaque `next_cursor`. Ordering by the
+  device clock (not the id) keeps the list chronological even for a client that does not send
+  UUIDv7 ids. Filters: `from` and `to` (business dates, inclusive), `status`, exact
+  `receipt_number`, `staff_id`, and `flagged` (a flag on the sale or on its void).
+- **List items** carry the amounts as recorded, the payments and the codes of the review flags,
+  from two extra queries however many sales are on the page (tested at 2 and 60). **Detail** adds the
+  lines with their modifiers (names and prices as on the receipt), the discounts (null `line_no`
+  for a bill discount), the void with its reason and approver, the flags with their detail, the
+  calculation settings the device used and the catalog change number it priced against.
+- The sales list and the reports use indexes from migration 00012; B1.11 checks the plans with
+  `EXPLAIN` on a busy week.
+
 #### 6.4.4 Sales reports as built (B2.6)
 
 - `GET /v1/reports/sales?outlet_id=&from=&to=&group_by=day|item|payment_method[&format=csv]`,
@@ -1201,24 +1220,31 @@ fields are ignored so a newer app may add fields within a version.
   `'`, so a name typed by someone with catalog access cannot run as a formula in the owner's
   spreadsheet.
 
-#### 6.4.3 Sales list and detail as built (B1.9)
+#### 6.4.5 Refunds as built (B2.5, without the gateway)
 
-- `GET /v1/sales` and `GET /v1/sales/{saleId}`, read-only, needing `report.view` at the outlet(s).
-  Without `outlet_id` the list covers the outlets where the caller holds `report.view` (all of them
-  for an owner); with it, an outlet of another business is `404` and one the caller may not see is
-  `403`. A sale id of another business is `404`.
-- **Order and paging.** Newest business day first, then newest by the device's clock, then id,
-  keyset-paged by `(business_date, device_time, id)` with an opaque `next_cursor`. Ordering by the
-  device clock (not the id) keeps the list chronological even for a client that does not send
-  UUIDv7 ids. Filters: `from` and `to` (business dates, inclusive), `status`, exact
-  `receipt_number`, `staff_id`, and `flagged` (a flag on the sale or on its void).
-- **List items** carry the amounts as recorded, the payments and the codes of the review flags,
-  from two extra queries however many sales are on the page (tested at 2 and 60). **Detail** adds the
-  lines with their modifiers (names and prices as on the receipt), the discounts (null `line_no`
-  for a bill discount), the void with its reason and approver, the flags with their detail, the
-  calculation settings the device used and the catalog change number it priced against.
-- The sales list and the reports use indexes from migration 00012; B1.11 checks the plans with
-  `EXPLAIN` on a busy week.
+- **`refund.issued`** (schema 1): `{sale_id, shift_id, method, reason, approved_by?, lines[{line_no,
+  quantity, amount}]}`, own event id, projected into `refund` and `refund_line` (migration 00020,
+  insert-only, RLS, indexed by sale, shift and outlet day). It waits for its sale and its shift.
+- **The tablet decides the amounts** (decided 2026-10-06): the server records them as sent and
+  flags `refund_over_quantity` (a line's units over all the sale's refunds exceed what was sold) and
+  `refund_over_paid` (the refunds' money exceeds `total + rounding_amount`; only a refund that gives
+  money back is blamed). `permission_missing` without `sale.refund` from the refunder or approver.
+  Malformed lines (unknown or repeated `line_no`, zero units, no lines) are `invalid_payload`. The
+  sale row is locked while the caps are checked, so two refunds of one sale check one after the
+  other. The contract suggests a rule for the amount (a line's share of what was paid).
+- **Refund or void, not both.** A voided sale cannot be refunded (`already_voided`); a sale with a
+  refund cannot be voided (`already_refunded`), since a void gives the whole sale back again.
+- **Reports.** A refund leaves its sale as rung up and counts where it was made: cash refunds come
+  out of their shift's expected cash; the shift report has `refunds_recorded`, the day report
+  `refunds`, every payment-method row `refunds` and `refunded` (a method that only gave money back
+  gets its own row); the sales report's days have `refunds`, its items `refunded_quantity` and
+  `refunded` (a variant refunded but not sold in the range comes last), all in the CSV too. The sale
+  list and detail show `refunded`, and the detail its refunds by line. Refund flags count for the
+  sale's "flagged" filter and flag list. The week-long reconciliation test refunds sales of the same
+  and the previous day, in cash and QRIS, and checks the drawers, days and ranges against its own
+  bookkeeping.
+- **Not built yet:** the gateway refund for `qris_dynamic` (B2.4); the event is recorded, but no money
+  moves through doit.id.
 
 ### 6.5 Payments (Phase 1 manual, Phase 2 gateway)
 
@@ -1433,7 +1459,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.2 | ✅ Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
 | B2.3 | ✅ CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit (synchronously, see 6.3.2) | 4d |
 | B2.4 | Gateway integration behind the `Gateway` interface: doit.id (6.5.1): tenant sub-merchant onboarding, dynamic QRIS (e-wallets pay by scanning it), webhooks, reconciliation jobs | 6d |
-| B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |
+| B2.5 | ◐ Refunds: `refund.issued` event, permission, partial refunds by line, negative report entries are done (see 6.4.5). **Still open:** the gateway refund for gateway payments, with B2.4 | 3d |
 | B2.6 | ✅ Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download (see 6.4.4) | 3d |
 | B2.7 | ✅ Kitchen/bar tickets: station routing on items, included in pull; printing is client-side (see 6.3.3) | 1d |
 | B2.8 | ✅ Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer (see 6.2.1) | 5d |

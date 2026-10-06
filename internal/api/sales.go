@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -101,7 +102,7 @@ func (s *Server) GetSale(ctx context.Context, req openapi.GetSaleRequestObject) 
 		FlagCodes: sm.FlagCodes, Id: sm.Id, OutletId: sm.OutletId, Payments: sm.Payments, ReceiptNumber: sm.ReceiptNumber,
 		ReceivedAt: sm.ReceivedAt, RoundingAmount: sm.RoundingAmount, ServiceCharge: sm.ServiceCharge, ShiftId: sm.ShiftId,
 		StaffId: sm.StaffId, Status: openapi.SaleDetailStatus(sm.Status), Subtotal: sm.Subtotal, Tax: sm.Tax,
-		TaxIncluded: sm.TaxIncluded, Total: sm.Total,
+		TaxIncluded: sm.TaxIncluded, Total: sm.Total, Refunded: sm.Refunded,
 		PricingVersion: d.PricingVersion, CatalogSeq: d.CatalogSeq, Pricing: rawObject(d.Pricing),
 		Lines: make([]openapi.SaleLine, len(d.Lines)),
 		Discounts: make([]struct {
@@ -142,6 +143,18 @@ func (s *Server) GetSale(ctx context.Context, req openapi.GetSaleRequestObject) 
 		out.Flags[i].Code, out.Flags[i].CreatedAt, out.Flags[i].Detail = fl.Code, fl.CreatedAt, rawObject(fl.Detail)
 		out.Flags[i].TargetType = openapi.SaleDetailFlagsTargetType(fl.TargetType)
 	}
+	// The refunds' element type is an anonymous struct in the generated code; Grow gives n of them.
+	out.Refunds = slices.Grow(out.Refunds, len(d.Refunds))[:len(d.Refunds)]
+	for i, rf := range d.Refunds {
+		r := &out.Refunds[i]
+		r.Id, r.ShiftId, r.StaffId, r.ApprovedBy, r.Method = rf.ID, rf.ShiftID, rf.StaffID, rf.ApprovedBy, openapi.SaleDetailRefundsMethod(rf.Method)
+		r.Amount, r.Reason, r.DeviceTime, r.ReceivedAt = rf.Amount, rf.Reason, rf.DeviceTime, rf.ReceivedAt
+		r.BusinessDate = openapi_types.Date{Time: rf.BusinessDate}
+		r.Lines = slices.Grow(r.Lines, len(rf.Lines))[:len(rf.Lines)]
+		for j, l := range rf.Lines {
+			r.Lines[j].LineNo, r.Lines[j].Quantity, r.Lines[j].Amount = l.LineNo, l.Quantity, l.Amount
+		}
+	}
 	if v := d.Void; v != nil {
 		out.Void = &struct {
 			ApprovedBy   *openapi_types.UUID `json:"approved_by,omitempty"`
@@ -165,7 +178,7 @@ func toSaleSummary(s sales.SaleSummary) openapi.SaleSummary {
 		Id: s.ID, OutletId: s.OutletID, DeviceId: s.DeviceID, ShiftId: s.ShiftID, StaffId: s.StaffID, ReceiptNumber: s.ReceiptNumber,
 		DeviceTime: s.DeviceTime, ReceivedAt: s.ReceivedAt, BusinessDate: openapi_types.Date{Time: s.BusinessDate},
 		Status: openapi.SaleSummaryStatus(s.Status), Subtotal: s.Subtotal, DiscountTotal: s.DiscountTotal, ServiceCharge: s.ServiceCharge,
-		Tax: s.Tax, TaxIncluded: s.TaxIncluded, RoundingAmount: s.RoundingAmount, Total: s.Total, FlagCodes: s.FlagCodes,
+		Tax: s.Tax, TaxIncluded: s.TaxIncluded, RoundingAmount: s.RoundingAmount, Total: s.Total, Refunded: s.Refunded, FlagCodes: s.FlagCodes,
 		Payments: make([]openapi.SalePayment, len(s.Payments)),
 	}
 	for i, p := range s.Payments {

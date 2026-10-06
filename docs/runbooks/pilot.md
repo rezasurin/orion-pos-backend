@@ -12,7 +12,7 @@ never changes the money.
 
 Flags show up on `GET /v1/sales?flagged=true` (the `flag_codes` list on each row) and in full on
 `GET /v1/sales/{saleId}` (`flags[]` with a `detail` object). Voids, shifts and cash movements carry
-flags too; `target_type` says which.
+flags too, and so do refunds; `target_type` says which.
 
 | Code | What it means | What to do |
 |---|---|---|
@@ -26,6 +26,8 @@ flags too; `target_type` says which.
 | `shift_other_device` | On a shift that another device opened. | Fine if the cafe shares a shift between tablets; otherwise ask who used which tablet. |
 | `device_time_ahead` | The device's clock was more than 10 minutes ahead of the server when the event arrived. | The tablet's clock is wrong. Fix the clock; the business date may be affected (see below). |
 | `after_shift_close` | A cash movement after the shift closed. | It is not in that shift's expected cash. Check with the manager. |
+| `refund_over_quantity` | Over all the sale's refunds, more units of a line were given back than were sold. `detail` has the line and the counts. | Usually the same refund entered twice. Ask the cashier; the money stands as given back, so a real double refund is a drawer or customer matter. |
+| `refund_over_paid` | Over all the sale's refunds, more money went back than the sale took. `detail` has `paid` and the refunded amounts. | Check the drawer of the refund's shift and the sale detail's `refunds[]`. Treat as a cash difference. |
 
 Events the server **rejected** (not flagged) are a different thing: they were not stored. The
 device sees the code in the push result. The usual codes are `malformed`, `invalid_payload`,

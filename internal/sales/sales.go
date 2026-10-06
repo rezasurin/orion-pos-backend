@@ -1,6 +1,7 @@
-// Package sales owns shifts, cash movements, sales, payments, voids and the review flags raised
-// about them (BACKEND_PLAN.md sections 5.1 and 6.4). It writes them only by projecting the events a
-// device pushes, through the sync module's Projector interface; nothing else creates a sale.
+// Package sales owns shifts, cash movements, sales, payments, voids, refunds and the review flags
+// raised about them (BACKEND_PLAN.md sections 5.1 and 6.4). It writes them only by projecting the
+// events a device pushes, through the sync module's Projector interface; nothing else creates a
+// sale.
 //
 // Two rules shape everything here. A sale is recorded as the device rang it up: the amounts are
 // what the customer was charged, and the server never rewrites them. And only malformed events are
@@ -41,6 +42,10 @@ const (
 	FlagShiftOtherDevice  = "shift_other_device" // on a shift another device opened
 	FlagDeviceTimeAhead   = "device_time_ahead"  // the device's clock was ahead of the server's
 	FlagAfterShiftClose   = "after_shift_close"  // a cash movement after the shift closed
+	// A refund that gives back more of a line than was sold, or more money than the sale took, over
+	// all of the sale's refunds.
+	FlagRefundOverQuantity = "refund_over_quantity"
+	FlagRefundOverPaid     = "refund_over_paid"
 )
 
 // maxClockAhead is how far a device's clock may be ahead of the server's when the event arrives
@@ -57,7 +62,7 @@ type Deps struct {
 	Catalog  *catalog.Service
 }
 
-// Projector projects the Phase 1 event types. It implements sync.Projector.
+// Projector projects the event types in Handles. It implements sync.Projector.
 type Projector struct {
 	ids *identity.Service
 	ten *tenancy.Service
@@ -73,7 +78,7 @@ func NewProjector(d Deps) *Projector {
 
 // Handles implements sync.Projector.
 func (p *Projector) Handles() map[string]int {
-	return map[string]int{TypeShiftOpened: 1, TypeShiftClosed: 1, TypeCashMovement: 1, TypeSaleCompleted: 1, TypeSaleVoided: 1}
+	return map[string]int{TypeShiftOpened: 1, TypeShiftClosed: 1, TypeCashMovement: 1, TypeSaleCompleted: 1, TypeSaleVoided: 1, TypeRefundIssued: 1}
 }
 
 // Project implements sync.Projector.
@@ -91,6 +96,8 @@ func (p *Projector) Project(ctx context.Context, tx pgx.Tx, env sync.Env, ev syn
 		out, err = p.cashMovement(ctx, tx, env, ev)
 	case TypeSaleCompleted:
 		out, err = p.saleCompleted(ctx, tx, env, ev)
+	case TypeRefundIssued:
+		out, err = p.refundIssued(ctx, tx, env, ev)
 	case TypeSaleVoided:
 		out, err = p.saleVoided(ctx, tx, env, ev)
 	default:

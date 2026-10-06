@@ -235,22 +235,25 @@ sale shows up the next time you fetch.
 
 | Call | Notes |
 |---|---|
-| `GET /v1/reports/shifts/{shiftId}` | End of shift: `cash` (opening, received, refunded, pay_in, pay_out, `expected`, and once closed `counted` and `difference`), `sales` totals, `payment_methods[]`, `discounts`, `voided_sales`, `voids_recorded`, `no_sale_openings`, `flags`. |
-| `GET /v1/reports/days/{date}?outlet_id=` | End of day for one outlet by **business date**: the same sections, plus `cash_movements`, `shifts[]` with each one's reconciliation, `open_shifts`, and `flags` by code. |
-| `GET /v1/reports/sales?outlet_id=&from=&to=&group_by=` | Completed sales of one outlet over business dates `from`..`to` (inclusive, at most 366 days). `group_by=day`: `days[]`, one per date **including days without sales** (zeros), each with the end-of-day `sales` totals. `group_by=item`: `items[]`, one per variant sold, highest `net` first, with `item_name`/`variant_name` as in the catalog **now** (a renamed item shows its new name), `quantity`, `gross`, `discounts` (its own and its share of bill discounts) and `net`; the `net` column adds up to the range's net sales. `group_by=payment_method`: `payment_methods[]`. Only the list for `group_by` is present. `format=csv` returns the same rows as `text/csv` (header row, comma separated, whole rupiah) for a "Download" button: fetch it with the token and save the blob. In the CSV a name starting with `=`, `+`, `-` or `@` is prefixed with `'` so a spreadsheet does not run it as a formula. |
+| `GET /v1/reports/shifts/{shiftId}` | End of shift: `cash` (opening, received, refunded, pay_in, pay_out, `expected`, and once closed `counted` and `difference`), `sales` totals, `payment_methods[]`, `discounts`, `voided_sales`, `voids_recorded`, `refunds_recorded` (refunds made in this shift), `no_sale_openings`, `flags`. |
+| `GET /v1/reports/days/{date}?outlet_id=` | End of day for one outlet by **business date**: the same sections, plus `refunds` (made that day, of any day's sales), `cash_movements`, `shifts[]` with each one's reconciliation, `open_shifts`, and `flags` by code. |
+| `GET /v1/reports/sales?outlet_id=&from=&to=&group_by=` | Completed sales of one outlet over business dates `from`..`to` (inclusive, at most 366 days). `group_by=day`: `days[]`, one per date **including days without sales** (zeros), each with the end-of-day `sales` totals. `group_by=item`: `items[]`, one per variant sold, highest `net` first, with `item_name`/`variant_name` as in the catalog **now** (a renamed item shows its new name), `quantity`, `gross`, `discounts` (its own and its share of bill discounts) and `net`; the `net` column adds up to the range's net sales; `refunded_quantity` and `refunded` are refunds made in the range (a variant only refunded, not sold, in the range comes last with zero sales). Each day also has `refunds {count, total}`, and each payment method `refunds` and `refunded`. `group_by=payment_method`: `payment_methods[]`. Only the list for `group_by` is present. `format=csv` returns the same rows as `text/csv` (header row, comma separated, whole rupiah) for a "Download" button: fetch it with the token and save the blob. In the CSV a name starting with `=`, `+`, `-` or `@` is prefixed with `'` so a spreadsheet does not run it as a formula. |
 | `GET /v1/sales` | Newest first. Filters: `outlet_id`, `from`, `to` (business dates, inclusive), `status` (`completed`, `voided`), `receipt_number` (exact), `staff_id`, `flagged`, plus `cursor`, `limit`. Without `outlet_id` it covers every outlet the caller can see. |
-| `GET /v1/sales/{saleId}` | Everything: lines with modifiers, discounts, payments, the void, flags with their `detail`, and the settings the device priced with. |
+| `GET /v1/sales/{saleId}` | Everything: lines with modifiers, discounts, payments, the void, `refunds[]` (each with its `lines[]` by `line_no`), flags with their `detail` (`target_type` sale, void or refund), and the settings the device priced with. Every sale in the list and detail has `refunded`, the total given back so far. |
 
 How to read the numbers:
 
-* **Expected cash** = opening cash + cash received − cash refunded for voids made in this shift +
-  pay-ins − pay-outs. `difference` = `counted − expected`; **negative means the drawer is short**.
+* **Expected cash** = opening cash + cash received − cash given back in this shift (for voids made
+  in it, and cash refunds made in it) + pay-ins − pay-outs. `difference` = `counted − expected`; **negative means the drawer is short**.
   Both are absent while the shift is open.
 * Cash `received` is net of change given. A cash sale of 47,000 paid with a 50,000 note counts 47,000.
 * `sales.total` is the bill **before cash rounding**; `sales.rounding` is the cash rounding (positive
   or negative). What actually went into the drawer for cash is `total + rounding`.
 * A sale belongs to the business date it was **rung up** on; a void made later removes it from
   that day's totals but the void itself is counted in the shift it happened in (`voids_recorded`).
+* A **refund** leaves its sale as rung up, in its own day; it counts on the day and in the shift it
+  was made (`refunds`, `refunds_recorded`, `payment_methods[].refunded`). Net takings for a day are
+  the sales totals minus the day's refunds.
 * Amounts are as on the receipt: a sale is stored exactly as the device charged it.
 
 **Review flags** (`flag_codes` on a sale, `flags` on reports). A flag asks a person to look; it
@@ -268,6 +271,8 @@ never changes the money or blocks a sale. Show them as a badge and link to the s
 | `shift_other_device` | On a shift another tablet opened. |
 | `device_time_ahead` | The tablet's clock was more than 10 minutes ahead. |
 | `after_shift_close` | A cash movement after the shift closed. |
+| `refund_over_quantity` | Over all its refunds, more of a line was given back than was sold. |
+| `refund_over_paid` | Over all its refunds, more money was given back than the sale took. |
 
 The runbook `docs/runbooks/pilot.md` tells the operator what to do about each.
 
@@ -324,7 +329,7 @@ pair (once)  →  token  →  pull (snapshot)  →  work offline: shift, sales, 
 |---|---|
 | `accepted` | Done. Delete it from the outbox. With `code: "pending_dependency"` the server parked it until a record it refers to arrives (for example a void that got ahead of its sale); **still delete it**, the server will apply it by itself. |
 | `duplicate` | Already accepted earlier (a lost response). Delete it. Nothing was applied twice. |
-| `rejected` | Malformed, will never be applied. **Do not resend.** Move it to a "problem events" list, keep it for support, and tell the user. Codes: `unknown_type`, `unsupported_schema_version`, `unknown_staff`, `wrong_outlet`, `malformed`, `invalid_payload`, `invalid_receipt_number`, `duplicate_receipt_number`, `unknown_reference`, `invalid_value`, `already_voided`, `already_closed`, `idempotency_conflict`, `id_conflict`, `device_revoked`, `abandoned`. `detail` says which field. |
+| `rejected` | Malformed, will never be applied. **Do not resend.** Move it to a "problem events" list, keep it for support, and tell the user. Codes: `unknown_type`, `unsupported_schema_version`, `unknown_staff`, `wrong_outlet`, `malformed`, `invalid_payload`, `invalid_receipt_number`, `duplicate_receipt_number`, `unknown_reference`, `invalid_value`, `already_voided`, `already_refunded`, `already_closed`, `idempotency_conflict`, `id_conflict`, `device_revoked`, `abandoned`. `detail` says which field. |
 | `retry` | A server fault; nothing was recorded. Keep it and send again later with backoff. |
 
 Rules that matter:
@@ -383,7 +388,7 @@ while a shift is open), and when connectivity returns.
   switch, not a security boundary: the server re-checks permissions when events arrive and flags
   violations. A PIN of someone with no hash yet (`pin_hash: null`) cannot sign in.
 * **Permissions to enforce on the tablet**: `sale.create` to ring up, `discount.apply_manual` for a
-  manual discount (or a manager's approval, named in `approved_by`), `sale.void` to void (or approval),
+  manual discount (or a manager's approval, named in `approved_by`), `sale.void` to void and `sale.refund` to refund (or approval),
   `shift.open`, `shift.close`, `drawer.open_no_sale` for pay-ins, pay-outs and no-sale openings.
 * **Rung-up prices come from the local catalog**, the one at your `catalog_seq` (section 6.4). If a
   price changed on the server after your last pull, the sale is accepted and shows `stale_price`:
@@ -477,12 +482,33 @@ All amounts are integer rupiah (non-negative unless stated).
 **`sale.voided`** `{ sale_id, reason, approved_by?, shift_id? }`. `shift_id` is the shift the void
 happened in (default: the sale's own shift). `approved_by` is a manager who approved it, if the
 voider lacks `sale.void`. A sale voids once (`already_voided`). It may arrive before its sale; the
-server parks it (`pending_dependency`) and applies it when the sale arrives.
+server parks it (`pending_dependency`) and applies it when the sale arrives. A sale that has a
+refund cannot be voided (`already_refunded`): refund the rest instead.
+
+**`refund.issued`** `{ sale_id, shift_id, method, reason, approved_by?, lines: [{ line_no, quantity, amount }] }`.
+Money given back for some or all of a completed sale; the event id is the refund's id. `shift_id`
+is the shift open now (a cash refund leaves its drawer); `method` is how the money went back (`cash`,
+`qris_manual`, `card_manual`, `ewallet`; `qris_dynamic` is recorded but the gateway refund itself
+arrives with the gateway). `lines` names each sale line by its `line_no` with the units and rupiah
+returned; the refund's amount is the sum of the lines.
+
+* **You decide the amounts**, and the server records them as sent. Suggested rule: a line's share of
+  what the customer paid, `round_half_up(line.total × (sale.total + sale.rounding_amount) / net)`
+  for the whole line, where `net` is the sum of the line totals, then the same share per unit for a
+  part of the line; show it to the cashier before confirming.
+* The server flags `refund_over_quantity` when the sale's refunds give back more units of a line than
+  were sold, and `refund_over_paid` when they give back more money than the sale took. It never
+  rejects a refund for that.
+* Needs `sale.refund` (Owner and Manager by default) from the cashier or the `approved_by` manager;
+  otherwise `permission_missing`. Do not offer refund on a voided sale (`already_voided`), and do not
+  offer void once a sale has a refund.
+* It may arrive before its sale or shift; it waits (`pending_dependency`) like a void. A line number
+  that is not on the sale, a line listed twice, no lines, or a quantity of 0 is `invalid_payload`.
 
 ### 6.3 Ordering
 
 Events may reach the server out of order (two tablets, a retry, a long-offline day). The server
-handles it: a close, movement or sale waits for its shift; a void waits for its sale. You do not
+handles it: a close, movement or sale waits for its shift; a void or refund waits for its sale. You do not
 need to order across event types, but **do** send oldest first and do not hold back events
 because an earlier one was parked.
 
@@ -556,7 +582,7 @@ shift).
 
 So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display (and
 ticket status; kitchen tickets themselves are printed by the POS, see 3.5),
-customers, loyalty, refunds beyond voids, payment gateways (QRIS dynamic, e-wallets: the methods
+customers, loyalty, gateway refunds, payment gateways (QRIS dynamic, e-wallets: the methods
 exist as labels only), receipt printing endpoints, file/image upload (an item's `image_url` is a
 plain URL you host), CORS, and webhooks. The roadmap is in
 `docs/BACKEND_PLAN.md`.

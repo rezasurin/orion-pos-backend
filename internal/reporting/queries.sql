@@ -16,13 +16,15 @@ ORDER BY opened_at, id;
 -- The cash that moved through each shift's drawer, for many shifts at once.
 --   received: cash applied to the bills of sales rung up in the shift (net of change given), whatever
 --             became of the sale later;
---   refunded: cash returned for sales voided in this shift, whichever shift sold them;
+--   refunded: cash returned for sales voided in this shift, whichever shift sold them, and cash
+--             refunds made in this shift;
 --   pay in, pay out, and how many times the drawer was opened without a sale.
 SELECT s.id AS shift_id,
     coalesce((SELECT sum(p.amount) FROM sale sa JOIN payment p ON p.tenant_id = sa.tenant_id AND p.sale_id = sa.id
               WHERE sa.tenant_id = s.tenant_id AND sa.shift_id = s.id AND p.method = 'cash' AND p.status = 'confirmed'), 0)::bigint AS received,
-    coalesce((SELECT sum(p.amount) FROM void v JOIN payment p ON p.tenant_id = v.tenant_id AND p.sale_id = v.sale_id
-              WHERE v.tenant_id = s.tenant_id AND v.shift_id = s.id AND p.method = 'cash' AND p.status = 'confirmed'), 0)::bigint AS refunded,
+    (coalesce((SELECT sum(p.amount) FROM void v JOIN payment p ON p.tenant_id = v.tenant_id AND p.sale_id = v.sale_id
+               WHERE v.tenant_id = s.tenant_id AND v.shift_id = s.id AND p.method = 'cash' AND p.status = 'confirmed'), 0)
+     + coalesce((SELECT sum(r.amount) FROM refund r WHERE r.tenant_id = s.tenant_id AND r.shift_id = s.id AND r.method = 'cash'), 0))::bigint AS refunded,
     coalesce((SELECT sum(m.amount) FROM cash_movement m WHERE m.tenant_id = s.tenant_id AND m.shift_id = s.id AND m.kind = 'pay_in'), 0)::bigint AS pay_in,
     coalesce((SELECT sum(m.amount) FROM cash_movement m WHERE m.tenant_id = s.tenant_id AND m.shift_id = s.id AND m.kind = 'pay_out'), 0)::bigint AS pay_out,
     (SELECT count(*) FROM cash_movement m WHERE m.tenant_id = s.tenant_id AND m.shift_id = s.id AND m.kind = 'no_sale')::bigint AS no_sales
@@ -145,3 +147,33 @@ FROM sale sa JOIN payment p ON p.tenant_id = sa.tenant_id AND p.sale_id = sa.id
 WHERE sa.tenant_id = @tenant_id AND sa.outlet_id = @outlet_id AND sa.status = 'completed' AND p.status = 'confirmed'
   AND sa.business_date BETWEEN @from_date::date AND @to_date::date
 GROUP BY p.method ORDER BY p.method;
+
+-- Refunds (B2.5) count where and when they were made: the shift, and the business date.
+
+-- name: ShiftRefundsByMethod :many
+SELECT method, count(*)::bigint AS refunds, sum(amount)::bigint AS amount
+FROM refund WHERE tenant_id = @tenant_id AND shift_id = @shift_id
+GROUP BY method ORDER BY method;
+
+-- name: RefundsByMethod :many
+SELECT method, count(*)::bigint AS refunds, sum(amount)::bigint AS amount
+FROM refund
+WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id AND business_date BETWEEN @from_date::date AND @to_date::date
+GROUP BY method ORDER BY method;
+
+-- name: RefundsByDay :many
+SELECT business_date, count(*)::bigint AS refunds, sum(amount)::bigint AS amount
+FROM refund
+WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id AND business_date BETWEEN @from_date::date AND @to_date::date
+GROUP BY business_date ORDER BY business_date;
+
+-- name: RefundsByItem :many
+SELECT l.variant_id, v.item_id, i.name AS item_name, v.name AS variant_name,
+       sum(rl.quantity)::bigint AS quantity, sum(rl.amount)::bigint AS amount
+FROM refund r
+JOIN refund_line rl ON rl.tenant_id = r.tenant_id AND rl.refund_id = r.id
+JOIN sale_line l ON l.tenant_id = rl.tenant_id AND l.id = rl.sale_line_id
+JOIN variant v ON v.tenant_id = l.tenant_id AND v.id = l.variant_id
+JOIN item i ON i.tenant_id = v.tenant_id AND i.id = v.item_id
+WHERE r.tenant_id = @tenant_id AND r.outlet_id = @outlet_id AND r.business_date BETWEEN @from_date::date AND @to_date::date
+GROUP BY l.variant_id, v.item_id, i.name, v.name;

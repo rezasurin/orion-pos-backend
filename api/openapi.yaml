@@ -2785,7 +2785,7 @@ components:
       properties:
         opening_cash: {type: integer, format: int64}
         received: {type: integer, format: int64, description: Cash applied to the bills of the shift's sales, net of change.}
-        refunded: {type: integer, format: int64, description: Cash returned for voids made in the shift.}
+        refunded: {type: integer, format: int64, description: Cash returned in the shift, for voids and for cash refunds.}
         pay_in: {type: integer, format: int64}
         pay_out: {type: integer, format: int64}
         expected: {type: integer, format: int64, description: opening_cash + received - refunded + pay_in - pay_out}
@@ -2813,14 +2813,15 @@ components:
 
     SalesReportDay:
       type: object
-      required: [date, sales]
+      required: [date, sales, refunds]
       properties:
         date: {type: string, format: date}
         sales: {$ref: '#/components/schemas/ReportTotals'}
+        refunds: {$ref: '#/components/schemas/ReportRefunds', description: Made on this day, of any day's sales.}
 
     SalesReportItem:
       type: object
-      required: [item_id, variant_id, item_name, variant_name, quantity, gross, discounts, net]
+      required: [item_id, variant_id, item_name, variant_name, quantity, gross, discounts, net, refunded_quantity, refunded]
       properties:
         item_id: {type: string, format: uuid}
         variant_id: {type: string, format: uuid}
@@ -2830,6 +2831,8 @@ components:
         gross: {type: integer, format: int64, description: (unit price + modifiers) x quantity}
         discounts: {type: integer, format: int64, description: Line discounts and the lines' share of bill discounts.}
         net: {type: integer, format: int64, description: gross - discounts}
+        refunded_quantity: {type: integer, format: int64, description: Units refunded in the range, whenever they were sold.}
+        refunded: {type: integer, format: int64}
 
     ReportTotals:
       type: object
@@ -2846,11 +2849,20 @@ components:
 
     ReportMethod:
       type: object
-      required: [method, payments, amount]
+      required: [method, payments, amount, refunds, refunded]
       properties:
         method: {type: string, enum: [cash, qris_manual, qris_dynamic, ewallet, card_manual]}
         payments: {type: integer, format: int64}
-        amount: {type: integer, format: int64}
+        amount: {type: integer, format: int64, description: What the method took for completed sales.}
+        refunds: {type: integer, format: int64, description: Refunds made through it in the same shift, day or range.}
+        refunded: {type: integer, format: int64}
+
+    ReportRefunds:
+      type: object
+      required: [count, total]
+      properties:
+        count: {type: integer, format: int64}
+        total: {type: integer, format: int64, description: Rupiah given back.}
 
     ReportVoided:
       type: object
@@ -2881,7 +2893,7 @@ components:
 
     ShiftReport:
       type: object
-      required: [shift, cash, sales, payment_methods, discounts, voided_sales, voids_recorded, no_sale_openings, flags]
+      required: [shift, cash, sales, payment_methods, discounts, voided_sales, voids_recorded, refunds_recorded, no_sale_openings, flags]
       properties:
         shift: {$ref: '#/components/schemas/ReportShiftInfo'}
         cash: {$ref: '#/components/schemas/ReportCash'}
@@ -2892,12 +2904,13 @@ components:
         discounts: {$ref: '#/components/schemas/ReportDiscounts'}
         voided_sales: {$ref: '#/components/schemas/ReportVoided', description: This shift's sales that were voided, in this shift or later.}
         voids_recorded: {$ref: '#/components/schemas/ReportVoided', description: Voids made during this shift, of any shift's sales.}
+        refunds_recorded: {$ref: '#/components/schemas/ReportRefunds', description: Refunds made during this shift, of any shift's sales. Cash ones are in cash.refunded.}
         no_sale_openings: {type: integer, format: int64}
         flags: {type: integer, format: int64, description: Review flags raised about the shift and its sales.}
 
     DayReport:
       type: object
-      required: [outlet_id, date, sales, payment_methods, discounts, voided_sales, cash_movements, shifts, open_shifts, cash, flags]
+      required: [outlet_id, date, sales, payment_methods, discounts, voided_sales, refunds, cash_movements, shifts, open_shifts, cash, flags]
       properties:
         outlet_id: {type: string, format: uuid}
         date: {type: string, format: date}
@@ -2907,6 +2920,7 @@ components:
           items: {$ref: '#/components/schemas/ReportMethod'}
         discounts: {$ref: '#/components/schemas/ReportDiscounts'}
         voided_sales: {$ref: '#/components/schemas/ReportVoided', description: The day's sales that were voided, whenever the void was made.}
+        refunds: {$ref: '#/components/schemas/ReportRefunds', description: Refunds made on this day, of any day's sales. The day's sales stay as rung up.}
         cash_movements:
           type: object
           required: [pay_in, pay_in_count, pay_out, pay_out_count, no_sale_openings]
@@ -2945,7 +2959,7 @@ components:
 
     SaleSummary:
       type: object
-      required: [id, outlet_id, device_id, shift_id, staff_id, receipt_number, device_time, received_at, business_date, status, subtotal, discount_total, service_charge, tax, tax_included, rounding_amount, total, payments, flag_codes]
+      required: [id, outlet_id, device_id, shift_id, staff_id, receipt_number, device_time, received_at, business_date, status, subtotal, discount_total, service_charge, tax, tax_included, rounding_amount, total, refunded, payments, flag_codes]
       properties:
         id: {type: string, format: uuid}
         outlet_id: {type: string, format: uuid}
@@ -2964,6 +2978,7 @@ components:
         tax_included: {type: boolean}
         rounding_amount: {type: integer, format: int64}
         total: {type: integer, format: int64, description: Before cash rounding.}
+        refunded: {type: integer, format: int64, description: Given back by refunds so far. The amounts above stay as rung up.}
         payments:
           type: array
           items: {$ref: '#/components/schemas/SalePayment'}
@@ -3006,7 +3021,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/SaleSummary'
         - type: object
-          required: [pricing_version, pricing, catalog_seq, lines, discounts, flags]
+          required: [pricing_version, pricing, catalog_seq, lines, discounts, refunds, flags]
           properties:
             pricing_version: {type: integer}
             pricing:
@@ -3042,6 +3057,32 @@ components:
                 device_time: {type: string, format: date-time}
                 received_at: {type: string, format: date-time}
                 business_date: {type: string, format: date}
+            refunds:
+              type: array
+              description: Oldest first.
+              items:
+                type: object
+                required: [id, shift_id, staff_id, method, amount, reason, device_time, received_at, business_date, lines]
+                properties:
+                  id: {type: string, format: uuid}
+                  shift_id: {type: string, format: uuid}
+                  staff_id: {type: string, format: uuid}
+                  approved_by: {type: string, format: uuid, nullable: true}
+                  method: {type: string, enum: [cash, qris_manual, qris_dynamic, ewallet, card_manual]}
+                  amount: {type: integer, format: int64}
+                  reason: {type: string}
+                  device_time: {type: string, format: date-time}
+                  received_at: {type: string, format: date-time}
+                  business_date: {type: string, format: date}
+                  lines:
+                    type: array
+                    items:
+                      type: object
+                      required: [line_no, quantity, amount]
+                      properties:
+                        line_no: {type: integer}
+                        quantity: {type: integer}
+                        amount: {type: integer, format: int64}
             flags:
               type: array
               items:
@@ -3049,7 +3090,7 @@ components:
                 required: [code, target_type, detail, created_at]
                 properties:
                   code: {type: string}
-                  target_type: {type: string, enum: [sale, void]}
+                  target_type: {type: string, enum: [sale, void, refund]}
                   detail: {type: object, additionalProperties: true}
                   created_at: {type: string, format: date-time}
 
