@@ -144,3 +144,22 @@ func parseCutoff(s string) (time.Duration, error) {
 	}
 	return time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute, nil
 }
+
+func (s *Server) ListAnnouncements(ctx context.Context, _ openapi.ListAnnouncementsRequestObject) (openapi.ListAnnouncementsResponseObject, error) {
+	p := principalFrom(ctx)
+	me, err := s.Identity.GetMe(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	as, err := s.Tenancy.Announcements(ctx, p.TenantID, me.User.Locale, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	out := openapi.ListAnnouncements200JSONResponse{Items: make([]openapi.TenantAnnouncement, len(as))}
+	for i, a := range as {
+		out.Items[i] = openapi.TenantAnnouncement{
+			Id: a.ID, Severity: openapi.TenantAnnouncementSeverity(a.Severity), Title: a.Title, Body: a.Body, StartsAt: a.StartsAt, EndsAt: a.EndsAt,
+		}
+	}
+	return out, nil
+}

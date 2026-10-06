@@ -12,6 +12,7 @@ import (
 
 	openapi "github.com/rezasurin/orion-pos-backend/gen/openapi"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/platform"
 )
 
 // The isolation suite (B0.11). Two businesses, every tenant-side operation, tenant B reaching for
@@ -233,6 +234,23 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 			w.gone(t, "GetSalesReport", e.do(t, "GET", "/v1/reports/sales?outlet_id="+aOutlet+q, ub, nil), http.StatusNotFound, "not_found")
 			w.noLeak(t, "GetSalesReport/own", e.do(t, "GET", "/v1/reports/sales?outlet_id="+w.b.outlet.ID.String()+q, ub, nil))
 		},
+		"ListAnnouncements": func(t *testing.T) {
+			// An announcement to A alone never reaches B.
+			op, err := e.platform.CreateOperator(context.Background(), platform.Actor{}, "iso@orion.test", "bootstrap")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.platform.CreateAnnouncement(context.Background(), platform.Actor{OperatorID: &op.Operator.ID}, platform.NewAnnouncement{
+				TenantID: &w.a.tenant.ID, Severity: "warning", Title: map[string]string{"id": "A's secret notice"}, Body: map[string]string{"id": "x"},
+			}, "test"); err != nil {
+				t.Fatal(err)
+			}
+			r := e.do(t, "GET", "/v1/announcements", ub, nil)
+			w.noLeak(t, "ListAnnouncements", r)
+			if strings.Contains(r.Body.String(), "secret notice") {
+				t.Errorf("B sees A's announcement: %s", r.Body.String())
+			}
+		},
 		"PullChanges": func(t *testing.T) {
 			// B's tablet pulls everything it can: nothing of A's, from a snapshot or from cursor zero.
 			w.noLeak(t, "PullChanges", e.do(t, "GET", "/v1/sync/pull", db, nil))
@@ -363,6 +381,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"AdminListTenants": "operator", "AdminGetTenant": "operator", "AdminSuspendTenant": "operator", "AdminReinstateTenant": "operator",
 		"AdminSetTenantPlan": "operator", "AdminSetTenantEntitlement": "operator", "AdminRevokeDevice": "operator",
 		"AdminStoppedSyncing": "operator", "AdminListEntitlementKeys": "operator", "AdminSetFlagDefault": "operator",
+		"AdminListAnnouncements": "operator", "AdminCreateAnnouncement": "operator", "AdminEndAnnouncement": "operator",
 	}
 	covered := map[string]bool{}
 	for _, op := range []string{
@@ -370,7 +389,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListKitchenStations", "CreateKitchenStation", "UpdateKitchenStation", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem", "ImportCatalog", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "GetSalesReport", "ListSales", "GetSale",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "ImportCatalog", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "GetSalesReport", "ListAnnouncements", "ListSales", "GetSale",
 	} {
 		covered[op] = true
 	}
@@ -412,6 +431,18 @@ func TestEveryTenantTableIsolatesRows(t *testing.T) {
 	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil || len(tables) < 10 {
 		t.Fatalf("found %d tenant tables (%v)", len(tables), err)
+	}
+
+	// A row with no tenant: an announcement to every business, which a business may read but
+	// nobody may without a tenant in context.
+	op, err := w.e.platform.CreateOperator(ctx, platform.Actor{}, "sweep@orion.test", "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.e.platform.CreateAnnouncement(ctx, platform.Actor{OperatorID: &op.Operator.ID}, platform.NewAnnouncement{
+		Severity: "info", Title: map[string]string{"id": "Semua"}, Body: map[string]string{"id": "x"},
+	}, "test"); err != nil {
+		t.Fatal(err)
 	}
 
 	for _, table := range tables {

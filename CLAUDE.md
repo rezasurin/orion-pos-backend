@@ -2,7 +2,8 @@
 
 Go modular monolith on PostgreSQL for a point-of-sale system (cafes and restaurants, Indonesia).
 Read `README.md` for the layout and `docs/BACKEND_PLAN.md` for the plan, phases and "as built"
-sections. Phase 0 and Phase 1 (B1.1 to B1.12) are done.
+sections. Phase 0 and Phase 1 (B1.1 to B1.12) are done; in Phase 2, B2.1 to B2.3 and B2.6 to B2.10 are
+done, and B2.4, B2.5 and B2.11 wait on the gateway fee and on hosting.
 
 ## Standing rules
 

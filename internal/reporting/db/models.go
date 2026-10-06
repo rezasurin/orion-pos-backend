@@ -152,6 +152,18 @@ func (ns NullSubscriptionStatus) Value() (driver.Value, error) {
 	return string(ns.SubscriptionStatus), nil
 }
 
+type Announcement struct {
+	ID        uuid.UUID
+	TenantID  *uuid.UUID
+	Severity  string
+	Title     []byte
+	Body      []byte
+	StartsAt  time.Time
+	EndsAt    *time.Time
+	CreatedBy uuid.UUID
+	CreatedAt time.Time
+}
+
 type CashMovement struct {
 	ID           uuid.UUID
 	TenantID     uuid.UUID

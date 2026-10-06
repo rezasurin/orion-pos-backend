@@ -183,3 +183,19 @@ UPDATE device SET revoked_at = @now, revoked_by_operator_id = @operator_id WHERE
 -- The business's own audit log, for something Orion staff did to it.
 INSERT INTO tenant_audit_log (id, tenant_id, actor_type, action, target_type, target_id, detail)
 VALUES (@id, @tenant_id, 'system', @action, @target_type, @target_id, @detail);
+
+-- name: InsertAnnouncement :one
+INSERT INTO announcement (id, tenant_id, severity, title, body, starts_at, ends_at, created_by)
+VALUES (@id, sqlc.narg(tenant_id), @severity, @title, @body, @starts_at, sqlc.narg(ends_at), @created_by)
+RETURNING *;
+
+-- name: ListAnnouncements :many
+-- The most recent announcements, ended ones included.
+SELECT * FROM announcement ORDER BY starts_at DESC, id LIMIT 200;
+
+-- name: EndAnnouncement :one
+-- Ends it now; one that has not started yet ends before it begins, so it is moved to start now too.
+UPDATE announcement
+SET ends_at = sqlc.arg(now)::timestamptz, starts_at = least(starts_at, sqlc.arg(now)::timestamptz - interval '1 microsecond')
+WHERE id = sqlc.arg(id) AND (ends_at IS NULL OR ends_at > sqlc.arg(now)::timestamptz)
+RETURNING *;

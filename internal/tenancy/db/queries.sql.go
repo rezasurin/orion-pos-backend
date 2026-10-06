@@ -13,6 +13,50 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const activeAnnouncements = `-- name: ActiveAnnouncements :many
+SELECT id, severity, title, body, starts_at, ends_at FROM announcement
+WHERE starts_at <= $1 AND (ends_at IS NULL OR ends_at > $1)
+ORDER BY starts_at DESC, id
+LIMIT 20
+`
+
+type ActiveAnnouncementsRow struct {
+	ID       uuid.UUID
+	Severity string
+	Title    []byte
+	Body     []byte
+	StartsAt time.Time
+	EndsAt   *time.Time
+}
+
+// Row-level security limits this to the announcements to everyone and to the current tenant.
+func (q *Queries) ActiveAnnouncements(ctx context.Context, now time.Time) ([]ActiveAnnouncementsRow, error) {
+	rows, err := q.db.Query(ctx, activeAnnouncements, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActiveAnnouncementsRow
+	for rows.Next() {
+		var i ActiveAnnouncementsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Severity,
+			&i.Title,
+			&i.Body,
+			&i.StartsAt,
+			&i.EndsAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getOutletSettingsForUpdate = `-- name: GetOutletSettingsForUpdate :one
 SELECT outlet_id, tenant_id, timezone, business_day_cutoff, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer, created_at, updated_at FROM outlet_settings WHERE tenant_id = $1 AND outlet_id = $2 FOR UPDATE
 `

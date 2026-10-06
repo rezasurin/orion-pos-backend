@@ -204,6 +204,36 @@ func (q *Queries) CountOperators(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const endAnnouncement = `-- name: EndAnnouncement :one
+UPDATE announcement
+SET ends_at = $1::timestamptz, starts_at = least(starts_at, $1::timestamptz - interval '1 microsecond')
+WHERE id = $2 AND (ends_at IS NULL OR ends_at > $1::timestamptz)
+RETURNING id, tenant_id, severity, title, body, starts_at, ends_at, created_by, created_at
+`
+
+type EndAnnouncementParams struct {
+	Now time.Time
+	ID  uuid.UUID
+}
+
+// Ends it now; one that has not started yet ends before it begins, so it is moved to start now too.
+func (q *Queries) EndAnnouncement(ctx context.Context, arg EndAnnouncementParams) (Announcement, error) {
+	row := q.db.QueryRow(ctx, endAnnouncement, arg.Now, arg.ID)
+	var i Announcement
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Severity,
+		&i.Title,
+		&i.Body,
+		&i.StartsAt,
+		&i.EndsAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getDeviceForOperator = `-- name: GetDeviceForOperator :one
 SELECT id, tenant_id, outlet_id, device_code, name, revoked_at FROM device WHERE id = $1 FOR UPDATE
 `
@@ -328,6 +358,49 @@ func (q *Queries) GetParkedEventForUpdate(ctx context.Context, arg GetParkedEven
 	return i, err
 }
 
+const insertAnnouncement = `-- name: InsertAnnouncement :one
+INSERT INTO announcement (id, tenant_id, severity, title, body, starts_at, ends_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, tenant_id, severity, title, body, starts_at, ends_at, created_by, created_at
+`
+
+type InsertAnnouncementParams struct {
+	ID        uuid.UUID
+	TenantID  *uuid.UUID
+	Severity  string
+	Title     []byte
+	Body      []byte
+	StartsAt  time.Time
+	EndsAt    *time.Time
+	CreatedBy uuid.UUID
+}
+
+func (q *Queries) InsertAnnouncement(ctx context.Context, arg InsertAnnouncementParams) (Announcement, error) {
+	row := q.db.QueryRow(ctx, insertAnnouncement,
+		arg.ID,
+		arg.TenantID,
+		arg.Severity,
+		arg.Title,
+		arg.Body,
+		arg.StartsAt,
+		arg.EndsAt,
+		arg.CreatedBy,
+	)
+	var i Announcement
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Severity,
+		&i.Title,
+		&i.Body,
+		&i.StartsAt,
+		&i.EndsAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertAudit = `-- name: InsertAudit :exec
 INSERT INTO platform_audit_log (id, operator_id, action, target_type, target_id, tenant_id, before, after, reason, ip, user_agent)
 VALUES ($1, $2, $3, $4, $5, $6,
@@ -428,6 +501,41 @@ func (q *Queries) InsertTenantAuditAsSystem(ctx context.Context, arg InsertTenan
 		arg.Detail,
 	)
 	return err
+}
+
+const listAnnouncements = `-- name: ListAnnouncements :many
+SELECT id, tenant_id, severity, title, body, starts_at, ends_at, created_by, created_at FROM announcement ORDER BY starts_at DESC, id LIMIT 200
+`
+
+// The most recent announcements, ended ones included.
+func (q *Queries) ListAnnouncements(ctx context.Context) ([]Announcement, error) {
+	rows, err := q.db.Query(ctx, listAnnouncements)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Announcement
+	for rows.Next() {
+		var i Announcement
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Severity,
+			&i.Title,
+			&i.Body,
+			&i.StartsAt,
+			&i.EndsAt,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAudit = `-- name: ListAudit :many

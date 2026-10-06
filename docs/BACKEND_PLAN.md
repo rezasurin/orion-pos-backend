@@ -931,7 +931,7 @@ tables), `created_at`, `updated_at` where mutable.
 | `operator_recovery_code` | `operator_id`, `code_hash`, `used_at` |
 | `platform_audit_log` | section 4.7 |
 | `platform_setting` | `key`, `value jsonb` (for example the global `billing_starts_at` in Phase 5) |
-| `announcement` (Phase 2) | `audience` (all / tenant), `tenant_id null`, `title`, `body` per locale, `starts_at`, `ends_at` |
+| `announcement` (Phase 2, 6.2.1) | `tenant_id null` (everyone), `severity`, `title`, `body` per locale, `starts_at`, `ends_at`, `created_by` |
 
 TOTP secrets are encrypted at rest with a key from the secret store (AES-GCM via a small
 `kernel/secrets` helper), not just hashed, because they must be read back.
@@ -964,6 +964,12 @@ TOTP secrets are encrypted at rest with a key from the secret store (AES-GCM via
 - **Entitlement caching.** The resolver caches a business's entitlements for 30 seconds. The admin
   handlers drop that business's entry (a flag's default drops them all) in the serving process, so
   the change shows at once there and within 30 seconds anywhere else.
+- **Announcements** (migration 00019): `announcement (tenant_id null for everyone, severity, title
+  and body as jsonb per locale with Indonesian required, starts_at, ends_at, created_by)`. The
+  business reads its own and the global ones through `GET /v1/announcements` as `orion_app`; the
+  policy shows a global row only with a tenant in context, which the isolation sweep checks with
+  one. Back office only (decided 2026-10-06), not in the POS pull. Operators publish, list and end
+  them; both are audited. Editing is "end and publish again".
 
 ### 6.3 Catalog (Phase 1)
 
@@ -1430,7 +1436,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |
 | B2.6 | ✅ Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download (see 6.4.4) | 3d |
 | B2.7 | ✅ Kitchen/bar tickets: station routing on items, included in pull; printing is client-side (see 6.3.3) | 1d |
-| B2.8 | Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer | 5d |
+| B2.8 | ✅ Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer (see 6.2.1) | 5d |
 | B2.9 | ✅ `tenant_daily_metrics` aggregates, "stopped syncing" query (see 4.11.2) | 1d |
 | B2.10 | ✅ Legal plumbing: `terms_acceptance(user_id, version, accepted_at)`; signup requires the current version | 0.5d |
 | B2.11 | Security pass: rate limits, headers, dependency audit (`govulncheck` in CI), secret rotation runbook, operator account review | 2d |

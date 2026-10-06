@@ -71,3 +71,10 @@ SET plan_id = p.id,
     subscription_status = CASE WHEN p.code = 'early_access' THEN 'early_access' ELSE 'active' END::subscription_status
 FROM plan p
 WHERE tenant.id = @id AND p.code = @plan_code;
+
+-- name: ActiveAnnouncements :many
+-- Row-level security limits this to the announcements to everyone and to the current tenant.
+SELECT id, severity, title, body, starts_at, ends_at FROM announcement
+WHERE starts_at <= @now AND (ends_at IS NULL OR ends_at > @now)
+ORDER BY starts_at DESC, id
+LIMIT 20;

@@ -338,3 +338,76 @@ func toAdminTenant(t platform.AdminTenant) openapi.AdminTenant {
 		CreatedAt: t.CreatedAt, Outlets: t.Outlets, Devices: t.Devices, LastSyncAt: t.LastSyncAt, Sales7d: t.Sales7d, Events7d: t.Events7d,
 	}
 }
+
+func (s *Server) AdminListAnnouncements(ctx context.Context, _ openapi.AdminListAnnouncementsRequestObject) (openapi.AdminListAnnouncementsResponseObject, error) {
+	p, err := s.platformOrErr()
+	if err != nil {
+		return nil, err
+	}
+	as, err := p.ListAnnouncements(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := openapi.AdminListAnnouncements200JSONResponse{Items: make([]openapi.Announcement, len(as))}
+	for i, a := range as {
+		out.Items[i] = toAnnouncementBody(a)
+	}
+	return out, nil
+}
+
+func (s *Server) AdminCreateAnnouncement(ctx context.Context, req openapi.AdminCreateAnnouncementRequestObject) (openapi.AdminCreateAnnouncementResponseObject, error) {
+	p, err := s.platformOrErr()
+	if err != nil {
+		return nil, err
+	}
+	b := req.Body
+	if b == nil {
+		return nil, errBodyRequired
+	}
+	a, err := p.CreateAnnouncement(ctx, operatorActor(ctx), platform.NewAnnouncement{
+		TenantID: b.TenantId, Severity: string(b.Severity), Title: fromLocalized(b.Title), Body: fromLocalized(b.Body),
+		StartsAt: b.StartsAt, EndsAt: b.EndsAt,
+	}, b.Reason)
+	if err != nil {
+		return nil, err
+	}
+	return openapi.AdminCreateAnnouncement201JSONResponse(toAnnouncementBody(a)), nil
+}
+
+func (s *Server) AdminEndAnnouncement(ctx context.Context, req openapi.AdminEndAnnouncementRequestObject) (openapi.AdminEndAnnouncementResponseObject, error) {
+	p, err := s.platformOrErr()
+	if err != nil {
+		return nil, err
+	}
+	if req.Body == nil {
+		return nil, errBodyRequired
+	}
+	a, err := p.EndAnnouncement(ctx, operatorActor(ctx), req.AnnouncementId, req.Body.Reason)
+	if err != nil {
+		return nil, err
+	}
+	return openapi.AdminEndAnnouncement200JSONResponse(toAnnouncementBody(a)), nil
+}
+
+func fromLocalized(t openapi.LocalizedText) map[string]string {
+	m := map[string]string{"id": t.Id}
+	if t.En != nil {
+		m["en"] = *t.En
+	}
+	return m
+}
+
+func toLocalized(m map[string]string) openapi.LocalizedText {
+	t := openapi.LocalizedText{Id: m["id"]}
+	if v, ok := m["en"]; ok {
+		t.En = &v
+	}
+	return t
+}
+
+func toAnnouncementBody(a platform.Announcement) openapi.Announcement {
+	return openapi.Announcement{
+		Id: a.ID, TenantId: a.TenantID, Severity: openapi.AnnouncementSeverity(a.Severity), Title: toLocalized(a.Title),
+		Body: toLocalized(a.Body), StartsAt: a.StartsAt, EndsAt: a.EndsAt, CreatedBy: a.CreatedBy, CreatedAt: a.CreatedAt,
+	}
+}

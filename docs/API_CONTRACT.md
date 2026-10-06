@@ -116,7 +116,7 @@ list for one outlet.
 | `POST /v1/auth/logout` `{refresh_token}` | Public, idempotent (always `204`). |
 | `POST /v1/auth/verify-email` `{token}` | Public. The token comes in the email link. |
 | `POST /v1/auth/resend-verification` `{email}` | Public. Always `202`, whether or not the address exists. |
-| `GET /v1/me` | The user, the business (`subscription_status`), `is_owner`, `permissions[]`. Call after login to build the menu. |
+| `GET /v1/me` | The user, the business (`subscription_status`, and `suspended_at` while suspended: show a read-only banner), `is_owner`, `permissions[]`. Call after login to build the menu. |
 | `GET /v1/entitlements` | `items[]` of `{key, kind, category, value, source}`: modules on/off, limits (`-1` = unlimited), flags. Hide a module when its key is `0`. A self-serve signup is on the **free plan**: `limit.outlets` 1, `limit.devices` 2 (paired, not revoked), `limit.staff` 5 (active staff, **the owner counts**), both modules off; its `subscription_status` is `active`. Businesses an operator creates are on early access (`early_access`, everything unlimited). Show "x of y used" from these values and expect `403 limit_reached` when full. |
 
 Staging and production send real email (Resend). Local development writes each email to the
@@ -130,6 +130,7 @@ worker's log, so take the verification link from there. The seeded demo business
 | `GET /v1/outlets` | any user | Active outlets with settings, ordered by code. |
 | `GET /v1/outlets/{outletId}` | any user | One outlet. |
 | `PATCH /v1/outlets/{outletId}/settings` | `settings.manage` | Partial update. Sales already recorded keep their old amounts and business date. Devices get the change at their next pull. |
+| `GET /v1/announcements` | any user | Notices from Orion (maintenance, billing) in force now, to every business or to this one, newest first, in the user's locale. Show `warning` as a banner and `info` quietly; fetch after login and every few minutes. Works while suspended. |
 
 Outlet settings (all affect how a bill is calculated, see section 7):
 
@@ -528,7 +529,7 @@ settings, for checking printer layout and the calculation; it is not a sale.
 | Screen | Calls |
 |---|---|
 | Sign up | `auth/signup` → "check your inbox" (`auth/resend-verification`) → link → `auth/verify-email` → sign in |
-| Back office sign in | `auth/login` → `me` → `entitlements` |
+| Back office sign in | `auth/login` → `me` → `entitlements` → `announcements` |
 | Dashboard / end of day | `reports/days/{date}?outlet_id=` |
 | Sales reports (charts, best sellers, payment mix, CSV download) | `reports/sales?outlet_id=&from=&to=&group_by=day\|item\|payment_method[&format=csv]` |
 | Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |
@@ -589,6 +590,7 @@ user agent; a missing or blank reason is `400`.
 | `POST /admin/devices/{deviceId}/revoke` `{reason}` | For a lost or stolen tablet. The business sees it in its own audit log as done by Orion support. |
 | `GET /admin/devices/stopped-syncing?quiet_minutes=` | Tablets in use, across businesses, silent for longer than that (default 1440). |
 | `GET /admin/audit-log?tenant_id=` | Newest first; `tenant_id` narrows it to one business. |
+| `GET/POST /admin/announcements`, `POST /admin/announcements/{id}/end` `{reason}` | Publish to every business (no `tenant_id`) or one: `severity` (`info`, `warning`), `title` and `body` as `{id, en?}` (Indonesian required), optional `starts_at`/`ends_at`. Ending one takes it down now; the list shows the latest 200, ended ones included. |
 
 Changes to a plan, an override or a flag reach the business within 30 seconds at most (in this
 server process, at once).

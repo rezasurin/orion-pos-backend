@@ -5,6 +5,7 @@ package tenancy
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -360,4 +361,43 @@ func (s *Service) OutletInTx(ctx context.Context, tx pgx.Tx, tenantID, outletID 
 		return Outlet{}, mapErr(err)
 	}
 	return toOutlet(r.Outlet, r.OutletSetting), nil
+}
+
+// Announcement is a notice from Orion, in the reader's language.
+type Announcement struct {
+	ID          uuid.UUID
+	Severity    string // info or warning
+	Title, Body string
+	StartsAt    time.Time
+	EndsAt      *time.Time
+}
+
+// Announcements returns what Orion is telling this business now (to everyone, or to it), newest
+// first, in locale, or Indonesian when there is no text in that locale.
+func (s *Service) Announcements(ctx context.Context, tenantID uuid.UUID, locale string, now time.Time) ([]Announcement, error) {
+	var out []Announcement
+	err := kernel.TenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		rows, err := db.New(tx).ActiveAnnouncements(ctx, now)
+		if err != nil {
+			return err
+		}
+		out = make([]Announcement, len(rows))
+		for i, r := range rows {
+			out[i] = Announcement{
+				ID: r.ID, Severity: r.Severity, Title: localized(r.Title, locale), Body: localized(r.Body, locale),
+				StartsAt: r.StartsAt, EndsAt: r.EndsAt,
+			}
+		}
+		return nil
+	})
+	return out, err
+}
+
+func localized(raw []byte, locale string) string {
+	var m map[string]string
+	_ = json.Unmarshal(raw, &m)
+	if v := m[locale]; v != "" {
+		return v
+	}
+	return m["id"]
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 type adminTenantBody struct {
@@ -256,4 +257,83 @@ func TestOperatorsRollOutAFlag(t *testing.T) {
 		problem(t, http.StatusBadRequest, "validation_failed")
 	e.do(t, "PATCH", "/admin/entitlement-keys/flag.nope", ops, map[string]any{"default_value": 1, "reason": "x"}).
 		problem(t, http.StatusNotFound, "not_found")
+}
+
+func TestAnnouncementsReachTheRightBackOffices(t *testing.T) {
+	e := newEnv(t)
+	e.business(t, "kopi", "JKT1", "owner@kopi.test")
+	teh := e.business(t, "teh", "BDG1", "owner@teh.test")
+	ops := e.operatorSignIn(t, e.operator(t)).AccessToken
+	kopiOwner := e.login(t, "owner@kopi.test").AccessToken
+	tehOwner := e.login(t, "owner@teh.test").AccessToken
+
+	publish := func(body map[string]any) (out struct {
+		ID     string  `json:"id"`
+		EndsAt *string `json:"ends_at"`
+	}) {
+		t.Helper()
+		body["reason"] = "ops notice"
+		e.create(t, "/admin/announcements", ops, body, &out)
+		return out
+	}
+	everyone := publish(map[string]any{"severity": "info", "title": map[string]string{"id": "Pemeliharaan malam ini", "en": "Maintenance tonight"},
+		"body": map[string]string{"id": "Sinkronisasi berhenti 23:00-23:30."}})
+	publish(map[string]any{"severity": "warning", "tenant_id": teh.tenant.ID, "title": map[string]string{"id": "Tagihan"}, "body": map[string]string{"id": "Hubungi kami."}})
+	publish(map[string]any{"severity": "info", "title": map[string]string{"id": "Besok"}, "body": map[string]string{"id": "x"},
+		"starts_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339)})
+
+	type seen struct {
+		Items []struct {
+			Severity string `json:"severity"`
+			Title    string `json:"title"`
+			Body     string `json:"body"`
+		} `json:"items"`
+	}
+	read := func(tok string) seen {
+		t.Helper()
+		var s seen
+		e.do(t, "GET", "/v1/announcements", tok, nil).decode(t, &s)
+		return s
+	}
+	if s := read(kopiOwner); len(s.Items) != 1 || s.Items[0].Title != "Pemeliharaan malam ini" {
+		t.Errorf("kopi sees %+v", s)
+	}
+	if s := read(tehOwner); len(s.Items) != 2 || s.Items[0].Severity != "warning" || s.Items[1].Body != "Sinkronisasi berhenti 23:00-23:30." {
+		t.Errorf("teh sees %+v", s)
+	}
+	// In the reader's language when there is a text in it, Indonesian otherwise.
+	e.d.Exec(t, `UPDATE user_account SET locale = 'en' WHERE email = 'owner@teh.test'`)
+	if s := read(tehOwner); s.Items[0].Title != "Tagihan" || s.Items[1].Title != "Maintenance tonight" || s.Items[1].Body != "Sinkronisasi berhenti 23:00-23:30." {
+		t.Errorf("in English: %+v", s)
+	}
+
+	var ended struct {
+		EndsAt *string `json:"ends_at"`
+	}
+	e.do(t, "POST", "/admin/announcements/"+everyone.ID+"/end", ops, map[string]any{"reason": "done"}).decode(t, &ended)
+	if ended.EndsAt == nil || len(read(kopiOwner).Items) != 0 {
+		t.Errorf("ended = %+v; kopi still sees %+v", ended, read(kopiOwner))
+	}
+	e.do(t, "POST", "/admin/announcements/"+everyone.ID+"/end", ops, map[string]any{"reason": "again"}).problem(t, http.StatusNotFound, "not_found")
+	var all struct{ Items []any }
+	e.do(t, "GET", "/admin/announcements", ops, nil).decode(t, &all)
+	if len(all.Items) != 3 {
+		t.Errorf("the operator lists %d announcements, want 3", len(all.Items))
+	}
+
+	bad := func(body map[string]any) {
+		t.Helper()
+		body["reason"] = "x"
+		if r := e.do(t, "POST", "/admin/announcements", ops, body); r.Code != http.StatusBadRequest && r.Code != http.StatusNotFound {
+			t.Errorf("%v: %d %s", body, r.Code, r.Body.String())
+		}
+	}
+	bad(map[string]any{"severity": "info", "title": map[string]string{"en": "No Indonesian"}, "body": map[string]string{"id": "x"}})
+	bad(map[string]any{"severity": "loud", "title": map[string]string{"id": "x"}, "body": map[string]string{"id": "x"}})
+	bad(map[string]any{"severity": "info", "title": map[string]string{"id": "x"}, "body": map[string]string{"id": "x"}, "tenant_id": "00000000-0000-0000-0000-000000000001"})
+	bad(map[string]any{"severity": "info", "title": map[string]string{"id": "x"}, "body": map[string]string{"id": "x"},
+		"starts_at": "2026-01-02T00:00:00Z", "ends_at": "2026-01-01T00:00:00Z"})
+	if n := e.count(t, `SELECT count(*) FROM platform_audit_log WHERE action IN ('announcement.created', 'announcement.ended')`); n != 4 {
+		t.Errorf("%d audit entries, want 4", n)
+	}
 }

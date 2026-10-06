@@ -209,6 +209,25 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /v1/announcements:
+    get:
+      operationId: listAnnouncements
+      tags: [tenancy]
+      summary: What Orion is telling this business now
+      description: |
+        Active announcements to every business and to this one, newest first, at most 20, in the
+        user's locale (Indonesian when there is none). Show a `warning` prominently, an `info`
+        quietly. Readable while the business is suspended.
+      responses:
+        '200':
+          description: The announcements in force
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantAnnouncementList'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /v1/outlets:
     get:
       operationId: listOutlets
@@ -1665,6 +1684,78 @@ paths:
               $ref: '#/components/schemas/FlagDefaultChange'
       responses:
         '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/announcements:
+    get:
+      operationId: adminListAnnouncements
+      tags: [admin]
+      summary: The 200 most recent announcements, ended ones included
+      security:
+        - operatorAuth: []
+      responses:
+        '200':
+          description: Newest first by start
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementList'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    post:
+      operationId: adminCreateAnnouncement
+      tags: [admin]
+      summary: Publish an announcement to every business, or to one
+      description: |
+        Shown in the back office of the business (or of all of them) from `starts_at` (default now)
+        until `ends_at` or until ended. `title` and `body` map a locale (`id`, `en`) to text;
+        Indonesian is required and shown when the reader's locale has none.
+      security:
+        - operatorAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewAnnouncement'
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Announcement'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/announcements/{announcementId}/end:
+    post:
+      operationId: adminEndAnnouncement
+      tags: [admin]
+      summary: Take an announcement down now
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: announcementId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '200':
+          description: Ended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Announcement'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '503': {$ref: '#/components/responses/Unavailable'}
@@ -3156,6 +3247,67 @@ components:
       properties:
         default_value: {type: integer, format: int64, minimum: 0}
         reason: {type: string, minLength: 1, maxLength: 500}
+
+    LocalizedText:
+      type: object
+      required: [id]
+      description: Text per locale. Indonesian is required.
+      properties:
+        id: {type: string}
+        en: {type: string}
+
+    Announcement:
+      type: object
+      required: [id, severity, title, body, starts_at, created_by, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        tenant_id: {type: string, format: uuid, nullable: true, description: null for every business.}
+        severity: {type: string, enum: [info, warning]}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        body: {$ref: '#/components/schemas/LocalizedText'}
+        starts_at: {type: string, format: date-time}
+        ends_at: {type: string, format: date-time, nullable: true}
+        created_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+
+    AnnouncementList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Announcement'}
+
+    NewAnnouncement:
+      type: object
+      required: [severity, title, body, reason]
+      properties:
+        tenant_id: {type: string, format: uuid, description: Leave out for every business.}
+        severity: {type: string, enum: [info, warning]}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        body: {$ref: '#/components/schemas/LocalizedText'}
+        starts_at: {type: string, format: date-time}
+        ends_at: {type: string, format: date-time}
+        reason: {type: string, minLength: 1, maxLength: 500}
+
+    TenantAnnouncement:
+      type: object
+      required: [id, severity, title, body, starts_at]
+      properties:
+        id: {type: string, format: uuid}
+        severity: {type: string, enum: [info, warning]}
+        title: {type: string}
+        body: {type: string}
+        starts_at: {type: string, format: date-time}
+        ends_at: {type: string, format: date-time, nullable: true}
+
+    TenantAnnouncementList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/TenantAnnouncement'}
 
     AuditEntry:
       type: object
