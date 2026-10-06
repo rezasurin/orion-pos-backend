@@ -19,6 +19,13 @@ func RecordChange(ctx context.Context, tx pgx.Tx, entityType string, entityID uu
 	return seq, err
 }
 
+// RecordChanges is RecordChange for many entities of one type in one round trip, for bulk writes
+// such as the catalog import.
+func RecordChanges(ctx context.Context, tx pgx.Tx, entityType string, ids []uuid.UUID) error {
+	_, err := tx.Exec(ctx, "SELECT record_change($1, id, 'upsert', NULL) FROM unnest($2::uuid[]) AS id", entityType, ids)
+	return err
+}
+
 // Change is one entry of a tenant's change log.
 type Change struct {
 	Seq        int64

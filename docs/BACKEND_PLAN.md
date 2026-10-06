@@ -969,6 +969,32 @@ price (6.4), so a later rename never changes a receipt.
 - `orion admin seed-demo` creates a six-item cafe menu (with variants, a required and an optional
   modifier group) for front-end work.
 
+#### 6.3.2 CSV import as built (B2.3)
+
+- **`POST /v1/catalog/import?dry_run=`**, body `text/csv`, `catalog.manage`. Code in
+  `internal/catalog/import.go`; the contract (headers, price formats, flow) is in
+  `docs/API_CONTRACT.md` 3.5.
+- **Synchronous, not a job.** The plan named a `catalog_import` river job and `GET /v1/jobs/{id}`.
+  A file is capped at 2000 rows (and the server's 1 MB body limit), and the largest one commits in
+  about 0.4 s locally, in a fixed number of queries (a test compares 2 rows with 2000): one
+  `INSERT ... SELECT unnest` per table and one `record_change` statement per entity type
+  (`kernel.RecordChanges`). A synchronous answer is simpler for the client too, which shows the
+  dry run and then the result. Move it to a job if real files outgrow the cap.
+- **Moka compatibility** is by header name: Moka's item export (`Category`, `SKU`, `Items Name`,
+  `Variant Name`, `Basic - Price`, `Track Stock`, plus columns we ignore) imports as is, one row
+  per variant. Indonesian headers (`kategori`, `nama item`, `harga`, ...) and semicolon-separated
+  files with a byte order mark (Excel in an Indonesian locale) also work. Modifiers (Moka's
+  `Modifier` columns), images, stock and cost are not imported.
+- **Add only, all or nothing.** An item whose name is already live is a row error, so a repeated
+  upload adds nothing; categories are matched by name (ignoring case) and reused. SKUs and barcodes
+  are checked against the catalog and within the file, so the unique indexes never fail the
+  transaction. Any row error, or `dry_run`, writes nothing; the dry run runs the same checks
+  against the catalog without taking the tenant lock.
+- **Prices** are whole rupiah: `25000`, `25.000`, `25,000`, `Rp 25.000`, `25000.00`. Anything with
+  real cents or an ambiguous grouping is refused rather than guessed.
+- The commit writes `catalog.imported` to the audit log with the counts, and category and item
+  changes to the change log, so tablets get the menu in their next pull.
+
 ### 6.4 Sales and shifts (Phase 1)
 
 | Table | Key columns |
@@ -1227,7 +1253,7 @@ Paths under `/v1` are tenant-side (user or device tokens). Paths under `/admin` 
 |---|---|
 | 0 | `POST /v1/auth/login`, `/refresh`, `/logout`; `POST /v1/auth/verify-email`; `GET /v1/me`; `GET/PATCH /v1/outlets/{id}`; `GET/PUT /v1/outlets/{id}/settings`; `GET/POST/PATCH /v1/staff`; `PUT /v1/staff/{id}/pin`; `GET /v1/roles`; `POST /v1/devices/pair`; `POST /v1/devices/token`; `DELETE /v1/devices/{id}`; `GET /v1/entitlements`; `GET /v1/pos/receipt-test` (for the Phase 0 "print a test receipt from API data" exit); `POST /admin/auth/login`, `/totp/verify`; `GET /admin/audit-log` |
 | 1 | Catalog CRUD (`/v1/categories`, `/v1/items`, `/v1/items/{id}/variants`, `/v1/modifier-groups`, `/v1/outlets/{id}/prices`); `POST /v1/sync/push`; `GET /v1/sync/pull`; `GET /v1/reports/shift/{id}`; `GET /v1/reports/end-of-day?outlet_id&date`; `GET /v1/sales`, `GET /v1/sales/{id}` |
-| 2 | `POST /v1/signup`; onboarding (`POST /v1/outlets`, device pairing reused); `POST /v1/catalog/import` (CSV, async job, `GET /v1/jobs/{id}`); `POST /v1/pos/payment-intents`, `GET .../{id}`; `POST /webhooks/{gateway}`; refunds via sync; `GET /v1/reports/sales?group_by=day|item|payment_method`; `/admin/tenants`, `/admin/tenants/{id}`, `POST /admin/tenants/{id}/suspend|reinstate`, `DELETE /admin/devices/{id}`, `/admin/entitlements`, `/admin/flags`, `/admin/announcements`, `/admin/metrics` |
+| 2 | `POST /v1/signup`; onboarding (`POST /v1/outlets`, device pairing reused); `POST /v1/catalog/import` (CSV, synchronous, see 6.3.2); `POST /v1/pos/payment-intents`, `GET .../{id}`; `POST /webhooks/{gateway}`; refunds via sync; `GET /v1/reports/sales?group_by=day|item|payment_method`; `/admin/tenants`, `/admin/tenants/{id}`, `POST /admin/tenants/{id}/suspend|reinstate`, `DELETE /admin/devices/{id}`, `/admin/entitlements`, `/admin/flags`, `/admin/announcements`, `/admin/metrics` |
 | 3 | `/v1/uom-categories`, `/v1/ingredients`, `/v1/recipes`, `/v1/purchases`, `/v1/opnames` (+ `/post`), `/v1/waste`, `/v1/transfers`, `GET /v1/stock/balances`, `GET /v1/stock/movements` |
 | 4 | `/v1/floors`, `/v1/tables`, `/v1/kitchen-stations`; order events via sync; `GET /v1/kitchen/tickets` (KDS) |
 | 5 | `GET /v1/billing/subscription`, `GET /v1/billing/invoices`, `POST /v1/billing/invoices/{id}/pay`, `POST /v1/billing/promo-codes/redeem`, `GET /v1/export` (async); `/admin/billing/schedule`, `/admin/promos`, `/admin/plans`, `/admin/tenants/{id}/billing` |
@@ -1242,7 +1268,7 @@ Paths under `/v1` are tenant-side (user or device tokens). Paths under `/admin` 
 | `purge_expired_tokens`, `purge_idempotency_keys` | 0 | daily |
 | `retry_pending_dependency_events` | 1 | on sale insert + every 5 min |
 | `end_of_day_rollup` | 1 | per outlet, after local cutoff + grace; also computed on read so it is never a blocker |
-| `catalog_import` | 2 | on CSV upload |
+| `catalog_import` | 2 | not a job: the import is synchronous (6.3.2) |
 | `reconcile_payment_intents` | 2 | every minute for pending intents |
 | `reconcile_gateway_settlement` | 2 | daily |
 | `tenant_daily_metrics` | 2 | nightly aggregates for the admin console (sales counts only, no business data, ADR 0008) |
@@ -1309,7 +1335,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 |---|---|---|
 | B2.1 | ✅ Self-serve signup: tenant + owner + first outlet + system roles in one transaction; email verification; bot protection (rate limit + honeypot or Turnstile) | 3d |
 | B2.2 | ✅ Per-tenant limits enforced through entitlements (outlets, devices, staff) for the free tier | 1d |
-| B2.3 | CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit as a job | 4d |
+| B2.3 | ✅ CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit (synchronously, see 6.3.2) | 4d |
 | B2.4 | Gateway integration behind the `Gateway` interface: doit.id (6.5.1): tenant sub-merchant onboarding, dynamic QRIS (e-wallets pay by scanning it), webhooks, reconciliation jobs | 6d |
 | B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |
 | B2.6 | Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download | 3d |

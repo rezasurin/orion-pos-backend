@@ -62,7 +62,7 @@ either language. Show your own translated message per `code`.
 | 409 | `conflict` | The change clashes with current state (duplicate, already done). `detail` explains. |
 | 409 | `terms_outdated` | At signup: the accepted terms are not the current version. Reload the terms and ask again. |
 | 409 | `tenant_required` | At login: the account belongs to several businesses. `tenant_ids` lists them; ask which and login again with `tenant_id`. |
-| 413 | `payload_too_large` | Body over 1 MB. For a push, send fewer events. |
+| 413 | `payload_too_large` | Body over 1 MB. For a push, send fewer events; for a catalog import, split the file. |
 | 429 | `rate_limited` | Wait `Retry-After` seconds (header) and retry. Signup, login, token exchange, pairing and email endpoints are limited. |
 | 500 | `internal` | Our fault. Retry with backoff; quote `request_id` if it persists. |
 | 503 | `admin_disabled` | Operator console off. Not for the apps. |
@@ -185,6 +185,36 @@ What the business sells. Archived entries stay (old sales refer to them): list w
 
 The price a sale line uses is `price_override` if set, else `base_price`, plus the chosen
 modifiers' `price_delta`. The POS does this from its pulled copy, offline.
+
+#### Importing a menu from CSV
+
+`POST /v1/catalog/import?dry_run=true|false`. The body is the file itself: `Content-Type: text/csv`,
+UTF-8, at most 2000 rows and 1 MB. Comma or semicolon separated (Excel in an Indonesian locale
+writes semicolons); a byte order mark is fine. Columns are found by header, in any order, ignoring
+case, and other columns are ignored, so **Moka's item export imports as is**:
+
+| Field | Headers read | Notes |
+|---|---|---|
+| item name (required) | `item_name`, `Items Name`, `nama item`, `nama produk` | Rows with the same name (any case) are one item, one variant per row. |
+| price (required) | `price`, `Basic - Price`, `harga` | Whole rupiah: `25000`, `25.000`, `25,000`, `Rp 25.000`, `25000.00`. Cents are refused. |
+| variant name | `variant_name`, `Variant Name`, `nama varian` | Empty for a one-size item. Required to tell apart two rows of one item. |
+| category | `category`, `kategori` | Matched by name to an existing category, else created. One item, one category. |
+| sku, barcode | `sku`, `barcode` | Go on the variant; must not be in use already. |
+| track stock | `track_stock`, `Track Stock` | `yes`/`no` (`ya`/`tidak`, `true`/`false`, `1`/`0`). |
+
+Offer a template with the header `category,item_name,variant_name,price,sku,barcode,track_stock`.
+
+- **The import only adds.** An item whose name is already in the catalog is a row error, so
+  sending the same file twice adds nothing. Modifiers and images are not imported; add them in
+  the catalog manager afterwards.
+- **Flow:** send with `dry_run=true`, show `categories`, `items`, `variants` (what would be created)
+  and `errors`; when the owner confirms, send the same file with `dry_run=false`.
+- **All or nothing:** if any row has an error, nothing is written and `committed` is `false`.
+- Each error has `row` (the line in the file, header = 1), `column` (the field above) and a
+  `message` in English to show next to the row.
+- A problem with the whole file (empty, not CSV, not UTF-8, missing a required column, too many
+  rows) is `400 validation_failed`, with `detail` saying which. Over 1 MB is `413`.
+- Tablets get the new items in their next pull.
 
 ### 3.6 Reports and sales (`report.view`)
 
@@ -486,6 +516,7 @@ settings, for checking printer layout and the calculation; it is not a sale.
 | Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |
 | Sales list and search | `sales?…` → `sales/{saleId}` |
 | Catalog manager | `categories`, `items`, `modifier-groups`, `outlets/{id}/variants` |
+| Menu import | `catalog/import?dry_run=true` → show counts and row errors → `catalog/import` |
 | Staff manager | `roles`, `staff`, `staff/{id}/pin` |
 | Devices | `devices`, `devices/pair`, `devices/{id}` (revoke) |
 | Outlet settings | `outlets`, `outlets/{id}/settings` |

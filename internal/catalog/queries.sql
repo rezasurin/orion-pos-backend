@@ -216,3 +216,38 @@ ORDER BY variant_id;
 
 -- name: ListAllOutletVariants :many
 SELECT * FROM outlet_variant WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id ORDER BY variant_id;
+
+-- CSV import (import.go): what already exists, then one statement per table however many rows.
+
+-- name: ListLiveItemNames :many
+SELECT lower(name)::text FROM item WHERE tenant_id = @tenant_id AND archived_at IS NULL;
+
+-- name: ListLiveVariantCodes :many
+SELECT sku, barcode FROM variant
+WHERE tenant_id = @tenant_id AND archived_at IS NULL AND (sku IS NOT NULL OR barcode IS NOT NULL);
+
+-- name: ImportCategories :exec
+INSERT INTO category (id, tenant_id, name)
+SELECT a.id, @tenant_id::uuid, b.name
+FROM unnest(@ids::uuid[]) WITH ORDINALITY AS a(id, n)
+JOIN unnest(@names::text[]) WITH ORDINALITY AS b(name, n) ON b.n = a.n;
+
+-- name: ImportItems :exec
+-- An empty category id means uncategorised.
+INSERT INTO item (id, tenant_id, category_id, name, track_stock)
+SELECT a.id, @tenant_id::uuid, NULLIF(b.category_id, '')::uuid, c.name, d.track_stock
+FROM unnest(@ids::uuid[]) WITH ORDINALITY AS a(id, n)
+JOIN unnest(@category_ids::text[]) WITH ORDINALITY AS b(category_id, n) ON b.n = a.n
+JOIN unnest(@names::text[]) WITH ORDINALITY AS c(name, n) ON c.n = a.n
+JOIN unnest(@track_stocks::boolean[]) WITH ORDINALITY AS d(track_stock, n) ON d.n = a.n;
+
+-- name: ImportVariants :exec
+INSERT INTO variant (id, tenant_id, item_id, name, sku, barcode, base_price, sort_order)
+SELECT a.id, @tenant_id::uuid, b.item_id, c.name, NULLIF(d.sku, ''), NULLIF(e.barcode, ''), f.base_price, g.sort_order
+FROM unnest(@ids::uuid[]) WITH ORDINALITY AS a(id, n)
+JOIN unnest(@item_ids::uuid[]) WITH ORDINALITY AS b(item_id, n) ON b.n = a.n
+JOIN unnest(@names::text[]) WITH ORDINALITY AS c(name, n) ON c.n = a.n
+JOIN unnest(@skus::text[]) WITH ORDINALITY AS d(sku, n) ON d.n = a.n
+JOIN unnest(@barcodes::text[]) WITH ORDINALITY AS e(barcode, n) ON e.n = a.n
+JOIN unnest(@base_prices::bigint[]) WITH ORDINALITY AS f(base_price, n) ON f.n = a.n
+JOIN unnest(@sort_orders::integer[]) WITH ORDINALITY AS g(sort_order, n) ON g.n = a.n;

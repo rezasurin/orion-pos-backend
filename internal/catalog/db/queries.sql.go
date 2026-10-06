@@ -321,6 +321,90 @@ func (q *Queries) GetVariantForUpdate(ctx context.Context, arg GetVariantForUpda
 	return i, err
 }
 
+const importCategories = `-- name: ImportCategories :exec
+INSERT INTO category (id, tenant_id, name)
+SELECT a.id, $1::uuid, b.name
+FROM unnest($2::uuid[]) WITH ORDINALITY AS a(id, n)
+JOIN unnest($3::text[]) WITH ORDINALITY AS b(name, n) ON b.n = a.n
+`
+
+type ImportCategoriesParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+	Names    []string
+}
+
+func (q *Queries) ImportCategories(ctx context.Context, arg ImportCategoriesParams) error {
+	_, err := q.db.Exec(ctx, importCategories, arg.TenantID, arg.Ids, arg.Names)
+	return err
+}
+
+const importItems = `-- name: ImportItems :exec
+INSERT INTO item (id, tenant_id, category_id, name, track_stock)
+SELECT a.id, $1::uuid, NULLIF(b.category_id, '')::uuid, c.name, d.track_stock
+FROM unnest($2::uuid[]) WITH ORDINALITY AS a(id, n)
+JOIN unnest($3::text[]) WITH ORDINALITY AS b(category_id, n) ON b.n = a.n
+JOIN unnest($4::text[]) WITH ORDINALITY AS c(name, n) ON c.n = a.n
+JOIN unnest($5::boolean[]) WITH ORDINALITY AS d(track_stock, n) ON d.n = a.n
+`
+
+type ImportItemsParams struct {
+	TenantID    uuid.UUID
+	Ids         []uuid.UUID
+	CategoryIds []string
+	Names       []string
+	TrackStocks []bool
+}
+
+// An empty category id means uncategorised.
+func (q *Queries) ImportItems(ctx context.Context, arg ImportItemsParams) error {
+	_, err := q.db.Exec(ctx, importItems,
+		arg.TenantID,
+		arg.Ids,
+		arg.CategoryIds,
+		arg.Names,
+		arg.TrackStocks,
+	)
+	return err
+}
+
+const importVariants = `-- name: ImportVariants :exec
+INSERT INTO variant (id, tenant_id, item_id, name, sku, barcode, base_price, sort_order)
+SELECT a.id, $1::uuid, b.item_id, c.name, NULLIF(d.sku, ''), NULLIF(e.barcode, ''), f.base_price, g.sort_order
+FROM unnest($2::uuid[]) WITH ORDINALITY AS a(id, n)
+JOIN unnest($3::uuid[]) WITH ORDINALITY AS b(item_id, n) ON b.n = a.n
+JOIN unnest($4::text[]) WITH ORDINALITY AS c(name, n) ON c.n = a.n
+JOIN unnest($5::text[]) WITH ORDINALITY AS d(sku, n) ON d.n = a.n
+JOIN unnest($6::text[]) WITH ORDINALITY AS e(barcode, n) ON e.n = a.n
+JOIN unnest($7::bigint[]) WITH ORDINALITY AS f(base_price, n) ON f.n = a.n
+JOIN unnest($8::integer[]) WITH ORDINALITY AS g(sort_order, n) ON g.n = a.n
+`
+
+type ImportVariantsParams struct {
+	TenantID   uuid.UUID
+	Ids        []uuid.UUID
+	ItemIds    []uuid.UUID
+	Names      []string
+	Skus       []string
+	Barcodes   []string
+	BasePrices []int64
+	SortOrders []int32
+}
+
+func (q *Queries) ImportVariants(ctx context.Context, arg ImportVariantsParams) error {
+	_, err := q.db.Exec(ctx, importVariants,
+		arg.TenantID,
+		arg.Ids,
+		arg.ItemIds,
+		arg.Names,
+		arg.Skus,
+		arg.Barcodes,
+		arg.BasePrices,
+		arg.SortOrders,
+	)
+	return err
+}
+
 const insertCategory = `-- name: InsertCategory :one
 
 INSERT INTO category (id, tenant_id, name, sort_order)
@@ -1015,6 +1099,62 @@ func (q *Queries) ListItemsByIDs(ctx context.Context, arg ListItemsByIDsParams) 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLiveItemNames = `-- name: ListLiveItemNames :many
+
+SELECT lower(name)::text FROM item WHERE tenant_id = $1 AND archived_at IS NULL
+`
+
+// CSV import (import.go): what already exists, then one statement per table however many rows.
+func (q *Queries) ListLiveItemNames(ctx context.Context, tenantID uuid.UUID) ([]string, error) {
+	rows, err := q.db.Query(ctx, listLiveItemNames, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var column_1 string
+		if err := rows.Scan(&column_1); err != nil {
+			return nil, err
+		}
+		items = append(items, column_1)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLiveVariantCodes = `-- name: ListLiveVariantCodes :many
+SELECT sku, barcode FROM variant
+WHERE tenant_id = $1 AND archived_at IS NULL AND (sku IS NOT NULL OR barcode IS NOT NULL)
+`
+
+type ListLiveVariantCodesRow struct {
+	Sku     *string
+	Barcode *string
+}
+
+func (q *Queries) ListLiveVariantCodes(ctx context.Context, tenantID uuid.UUID) ([]ListLiveVariantCodesRow, error) {
+	rows, err := q.db.Query(ctx, listLiveVariantCodes, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLiveVariantCodesRow
+	for rows.Next() {
+		var i ListLiveVariantCodesRow
+		if err := rows.Scan(&i.Sku, &i.Barcode); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

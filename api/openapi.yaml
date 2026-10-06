@@ -1157,6 +1157,44 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /v1/catalog/import:
+    post:
+      operationId: importCatalog
+      tags: [catalog]
+      summary: Add categories, items and variants from a CSV file
+      description: |
+        The body is the CSV file itself (`Content-Type: text/csv`), comma or semicolon separated,
+        UTF-8, at most 2000 rows. Columns are found by header name, so Moka's item export works
+        as is; see docs/API_CONTRACT.md for the headers. Rows with the same item name become one
+        item with several variants. The import only adds: an item whose name is already in the
+        catalog is a row error.
+
+        With `dry_run=true` nothing is written. Without it, the file is written in one
+        transaction, all or nothing: if any row has an error nothing is written and `committed`
+        is false. Both return the same counts and row errors, so a client shows the dry run, then
+        sends the same file again to commit.
+      x-permission: catalog.manage
+      parameters:
+        - name: dry_run
+          in: query
+          description: Check the file and report what would be created, without writing.
+          schema: {type: boolean, default: false}
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: {type: string}
+      responses:
+        '200':
+          description: What was (or would be) created, and the row errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogImportResult'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /v1/outlets/{outletId}/variants:
     get:
       operationId: listOutletVariants
@@ -1840,6 +1878,27 @@ components:
           description: Cash rounding, applied to a cash tender only.
         cash_total: {type: integer, format: int64, description: total plus rounding_amount}
         pricing_version: {type: string, example: sample-0}
+
+    CatalogImportResult:
+      type: object
+      required: [committed, rows, categories, items, variants, errors]
+      properties:
+        committed: {type: boolean, description: True when the rows were written.}
+        rows: {type: integer, description: Data rows read (blank rows are skipped).}
+        categories: {type: integer, description: Categories created; existing ones are reused by name.}
+        items: {type: integer}
+        variants: {type: integer}
+        errors:
+          type: array
+          items: {$ref: '#/components/schemas/CatalogImportError'}
+
+    CatalogImportError:
+      type: object
+      required: [row, message]
+      properties:
+        row: {type: integer, description: Line number in the file; the header is line 1.}
+        column: {type: string, description: 'The field at fault: category, item_name, variant_name, price, sku, barcode or track_stock.'}
+        message: {type: string}
 
     Category:
       type: object

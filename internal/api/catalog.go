@@ -358,3 +358,24 @@ func toOutletVariantBody(v catalog.OutletVariant) openapi.OutletVariant {
 	}
 	return out
 }
+
+func (s *Server) ImportCatalog(ctx context.Context, req openapi.ImportCatalogRequestObject) (openapi.ImportCatalogResponseObject, error) {
+	if req.Body == nil {
+		return nil, errBodyRequired
+	}
+	res, err := s.Catalog.ImportCSV(ctx, principalFrom(ctx).TenantID, req.Body, flag(req.Params.DryRun))
+	if err != nil {
+		return nil, err
+	}
+	out := openapi.ImportCatalog200JSONResponse{
+		Committed: res.Committed, Rows: res.Rows, Categories: res.Categories, Items: res.Items, Variants: res.Variants,
+		Errors: make([]openapi.CatalogImportError, len(res.Errors)),
+	}
+	for i, e := range res.Errors {
+		out.Errors[i] = openapi.CatalogImportError{Row: e.Row, Message: e.Message}
+		if e.Column != "" {
+			out.Errors[i].Column = &e.Column
+		}
+	}
+	return out, nil
+}

@@ -50,8 +50,11 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		tenantRequired *identity.TenantRequiredError
 		forbidden      *identity.ForbiddenError
 		limited        *rateLimitError
+		tooBig         *http.MaxBytesError
 	)
 	switch {
+	case errors.As(err, &tooBig): // a handler that reads its own body, such as the catalog import
+		p.Status, p.Code, p.Detail = http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large"
 	case errors.As(err, &limited):
 		p.Status, p.Code = http.StatusTooManyRequests, "rate_limited"
 		p.Detail = "too many requests; try again later"

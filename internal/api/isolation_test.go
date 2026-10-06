@@ -274,6 +274,19 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 		"PairDevice": func(t *testing.T) {
 			w.gone(t, "PairDevice", e.do(t, "POST", "/v1/devices/pair", ub, map[string]string{"outlet_id": aOutlet, "name": "Intruder"}), http.StatusBadRequest, "validation_failed")
 		},
+		// A's item name, category and barcode do not clash with B's import: B cannot see them. A dry
+		// run, so B's catalog stays empty for the checks after the loop.
+		"ImportCatalog": func(t *testing.T) {
+			var res struct {
+				Categories int   `json:"categories"`
+				Items      int   `json:"items"`
+				Errors     []any `json:"errors"`
+			}
+			e.do(t, "POST", "/v1/catalog/import?dry_run=true", ub, "category,item_name,price,barcode\nSecret category,Secret blend,1,SECRET-BARCODE\n").decode(t, &res)
+			if res.Categories != 1 || res.Items != 1 || len(res.Errors) != 0 {
+				t.Errorf("B's import saw A's catalog: %+v", res)
+			}
+		},
 	}
 
 	for op, fn := range cases {
@@ -336,7 +349,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "ListSales", "GetSale",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "ImportCatalog", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "ListSales", "GetSale",
 	} {
 		covered[op] = true
 	}
