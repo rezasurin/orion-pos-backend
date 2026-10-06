@@ -36,7 +36,7 @@ VALUES (@id, sqlc.narg(operator_id), @action, @target_type, sqlc.narg(target_id)
 -- Newest first; the cursor is the id of the last row of the previous page.
 SELECT id, operator_id, action, target_type, target_id, tenant_id, before, after, reason, coalesce(host(ip), '')::text AS ip, user_agent, created_at
 FROM platform_audit_log
-WHERE id < @before
+WHERE id < @before AND (sqlc.narg(tenant_id)::uuid IS NULL OR tenant_id = sqlc.narg(tenant_id)::uuid)
 ORDER BY id DESC
 LIMIT @page_size;
 
@@ -152,3 +152,34 @@ WHERE d.revoked_at IS NULL AND t.suspended_at IS NULL
   AND coalesce(d.last_sync_at, d.paired_at) >= @window_start::timestamptz
 ORDER BY coalesce(d.last_sync_at, d.paired_at), d.id
 LIMIT 500;
+
+-- The operator console (console.go).
+
+-- name: AdminTenants :many
+-- A page of businesses with what an operator scans for: plan, state, size and the last week's use.
+-- With id set, that one business.
+SELECT t.id, t.slug, t.name, p.code AS plan_code, t.subscription_status::text AS subscription_status,
+       t.suspended_at, t.created_at,
+       (SELECT count(*) FROM outlet o WHERE o.tenant_id = t.id)::integer AS outlets,
+       (SELECT count(*) FROM device d WHERE d.tenant_id = t.id AND d.revoked_at IS NULL)::integer AS devices,
+       (SELECT d.last_sync_at FROM device d WHERE d.tenant_id = t.id AND d.last_sync_at IS NOT NULL
+        ORDER BY d.last_sync_at DESC LIMIT 1) AS last_sync_at,
+       coalesce((SELECT sum(m.sales) FROM tenant_daily_metrics m WHERE m.tenant_id = t.id AND m.day >= @since_day::date), 0)::integer AS sales_7d,
+       coalesce((SELECT sum(m.events) FROM tenant_daily_metrics m WHERE m.tenant_id = t.id AND m.day >= @since_day::date), 0)::integer AS events_7d
+FROM tenant t JOIN plan p ON p.id = t.plan_id
+WHERE t.id > @after
+  AND (sqlc.narg(id)::uuid IS NULL OR t.id = sqlc.narg(id)::uuid)
+  AND (@q::text = '' OR t.name ILIKE '%' || @q::text || '%' OR t.slug ILIKE '%' || @q::text || '%')
+ORDER BY t.id
+LIMIT @page_size;
+
+-- name: GetDeviceForOperator :one
+SELECT id, tenant_id, outlet_id, device_code, name, revoked_at FROM device WHERE id = @id FOR UPDATE;
+
+-- name: RevokeDeviceByOperator :exec
+UPDATE device SET revoked_at = @now, revoked_by_operator_id = @operator_id WHERE id = @id AND revoked_at IS NULL;
+
+-- name: InsertTenantAuditAsSystem :exec
+-- The business's own audit log, for something Orion staff did to it.
+INSERT INTO tenant_audit_log (id, tenant_id, actor_type, action, target_type, target_id, detail)
+VALUES (@id, @tenant_id, 'system', @action, @target_type, @target_id, @detail);

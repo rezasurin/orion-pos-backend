@@ -360,6 +360,9 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"Logout": "public: the token names its tenant", "VerifyEmail": "public: the token names its tenant",
 		"ResendVerification": "public: acts on an email address", "Signup": "public: creates its own tenant", "ExchangeDeviceToken": "public: the secret names its tenant",
 		"AdminLogin": "operator", "AdminVerifyTotp": "operator", "AdminListAuditLog": "operator",
+		"AdminListTenants": "operator", "AdminGetTenant": "operator", "AdminSuspendTenant": "operator", "AdminReinstateTenant": "operator",
+		"AdminSetTenantPlan": "operator", "AdminSetTenantEntitlement": "operator", "AdminRevokeDevice": "operator",
+		"AdminStoppedSyncing": "operator", "AdminListEntitlementKeys": "operator", "AdminSetFlagDefault": "operator",
 	}
 	covered := map[string]bool{}
 	for _, op := range []string{

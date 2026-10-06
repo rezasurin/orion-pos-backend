@@ -17,6 +17,7 @@ const supportWindow = 7 * 24 * time.Hour
 
 // SupportDevice is one tablet's health.
 type SupportDevice struct {
+	ID               uuid.UUID
 	Name             string
 	OutletCode       string
 	Code             int
@@ -78,7 +79,7 @@ type SupportReport struct {
 func (s *Service) SupportReport(ctx context.Context, a Actor, tenantSlug, reason string) (SupportReport, error) {
 	var out SupportReport
 	err := pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		t, err := s.Tenants.FindBySlug(ctx, tx, tenantSlug)
+		t, err := s.Tenants.Find(ctx, tx, tenantSlug)
 		if err != nil {
 			return err
 		}
@@ -114,7 +115,7 @@ func (s *Service) SupportReport(ctx context.Context, a Actor, tenantSlug, reason
 		}
 		for i, d := range devs {
 			out.Devices[i] = SupportDevice{
-				Name: d.Name, OutletCode: d.OutletCode, Code: int(d.DeviceCode), Revoked: d.RevokedAt != nil, LastSeenAt: d.LastSeenAt,
+				ID: d.ID, Name: d.Name, OutletCode: d.OutletCode, Code: int(d.DeviceCode), Revoked: d.RevokedAt != nil, LastSeenAt: d.LastSeenAt,
 				LastSyncAt: d.LastSyncAt, AppVersion: d.AppVersion, ClockSkewMs: d.ClockSkewMs, UnsyncedEvents: d.UnsyncedEvents,
 				OldestUnsyncedAt: d.OldestUnsyncedAt, OpenAlerts: d.OpenAlerts,
 			}
@@ -151,7 +152,7 @@ func (s *Service) SupportReport(ctx context.Context, a Actor, tenantSlug, reason
 // event's type and what it was waiting for.
 func (s *Service) AbandonParkedEvent(ctx context.Context, a Actor, tenantSlug string, eventID uuid.UUID, reason string) error {
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		t, err := s.Tenants.FindBySlug(ctx, tx, tenantSlug)
+		t, err := s.Tenants.Find(ctx, tx, tenantSlug)
 		if err != nil {
 			return err
 		}

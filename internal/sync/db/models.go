@@ -187,25 +187,26 @@ type ChangeLog struct {
 }
 
 type Device struct {
-	ID               uuid.UUID
-	TenantID         uuid.UUID
-	OutletID         uuid.UUID
-	DeviceCode       int32
-	Name             string
-	SecretHash       []byte
-	PairedBy         uuid.UUID
-	PairedAt         time.Time
-	RevokedAt        *time.Time
-	RevokedBy        *uuid.UUID
-	LastSeenAt       *time.Time
-	LastSyncAt       *time.Time
-	AppVersion       *string
-	ClockSkewMs      *int32
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	UnsyncedEvents   int32
-	OldestUnsyncedAt *time.Time
-	HealthReportedAt *time.Time
+	ID                  uuid.UUID
+	TenantID            uuid.UUID
+	OutletID            uuid.UUID
+	DeviceCode          int32
+	Name                string
+	SecretHash          []byte
+	PairedBy            uuid.UUID
+	PairedAt            time.Time
+	RevokedAt           *time.Time
+	RevokedBy           *uuid.UUID
+	LastSeenAt          *time.Time
+	LastSyncAt          *time.Time
+	AppVersion          *string
+	ClockSkewMs         *int32
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	UnsyncedEvents      int32
+	OldestUnsyncedAt    *time.Time
+	HealthReportedAt    *time.Time
+	RevokedByOperatorID *uuid.UUID
 }
 
 type DeviceAlert struct {

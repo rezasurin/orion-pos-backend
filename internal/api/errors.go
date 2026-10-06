@@ -102,7 +102,7 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		}
 	case errors.Is(err, identity.ErrForbidden):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "forbidden", "you do not have permission"
-	case errors.Is(err, kernel.ErrNotFound):
+	case errors.Is(err, kernel.ErrNotFound), errors.Is(err, entitlements.ErrUnknownKey):
 		p.Status, p.Code, p.Detail = http.StatusNotFound, "not_found", "not found"
 	case errors.Is(err, kernel.ErrConflict):
 		p.Status, p.Code = http.StatusConflict, "conflict"

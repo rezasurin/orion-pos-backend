@@ -62,7 +62,13 @@ in the last 30 days but not within `--quiet`, the longest silent first. "Seen si
 is running and talking to the server but its sync is failing: go to step 1. A business's daily
 usage (sales, voids, events, rejected events, tablets that synced, flags) is
 `orion admin metrics --operator you@orion.example --tenant SLUG [--days 14]`, computed nightly by
-`orion worker`.
+`orion worker`. The same views, and the changes below, are on the `/admin` API for a console
+(`docs/API_CONTRACT.md` section 12).
+
+A lost or stolen tablet the owner cannot reach is revoked with
+`orion admin revoke-device --operator you@orion.example --device ID --reason "..."` (the id is in
+`support-report`); the business sees it in its own audit log. A design partner moves to unlimited
+with `orion admin set-plan --operator you@orion.example --tenant SLUG --plan early_access --reason "..."`.
 
 Step 1: see what the server sees.
 

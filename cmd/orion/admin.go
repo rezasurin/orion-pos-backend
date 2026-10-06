@@ -32,7 +32,13 @@ every change is written to the platform audit log with --reason, attributed to -
   set-override      --operator E --tenant SLUG --key K --value N --reason R [--expires RFC3339]
   clear-override    --operator E --tenant SLUG --key K --reason R
   suspend-tenant    --operator E --tenant SLUG --reason R
+                    the business turns read-only; its tablets finish the open shift and stop
   reinstate-tenant  --operator E --tenant SLUG --reason R
+  set-plan          --operator E --tenant SLUG --plan CODE --reason R
+                    moves a business to another plan (free, early_access)
+  revoke-device     --operator E --device ID --reason R
+  set-flag-default  --operator E --key flag.K --value N --reason R
+                    changes a flag's default for every business without a plan value or override
   support-report    --operator E --tenant SLUG --reason R
                     prints a business's devices (last contact, clock skew, undelivered events, open
                     alerts), events parked waiting for a record, rejected events and review flags of
@@ -63,7 +69,8 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 		return errors.New("missing admin command")
 	}
 	switch args[0] {
-	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant", "support-report", "abandon-event", "metrics", "stopped-syncing":
+	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant", "support-report", "abandon-event", "metrics", "stopped-syncing",
+		"set-plan", "revoke-device", "set-flag-default":
 		return adminPlatform(ctx, cfg, logger, args)
 	}
 	if cfg.DatabaseURL == "" {
@@ -298,6 +305,8 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 	expires := fs.String("expires", "", "override expiry, RFC 3339")
 	event := fs.String("event", "", "sync event id")
 	days := fs.Int("days", 14, "how many days of metrics")
+	plan := fs.String("plan", "", "plan code")
+	device := fs.String("device", "", "device id")
 	quiet := fs.Duration("quiet", 24*time.Hour, "how long a tablet has been silent")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -399,6 +408,16 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 			fmt.Println("every tablet in use has synced within", *quiet)
 		}
 		return nil
+	case "set-plan":
+		return svc.SetTenantPlan(ctx, actor, *tenant, *plan, *reason)
+	case "revoke-device":
+		id, err := uuid.Parse(*device)
+		if err != nil {
+			return fmt.Errorf("--device: %w", err)
+		}
+		return svc.RevokeDevice(ctx, actor, id, *reason)
+	case "set-flag-default":
+		return svc.SetFlagDefault(ctx, actor, entitlements.Key(*key), *value, *reason)
 	case "suspend-tenant":
 		return svc.SetTenantSuspended(ctx, actor, *tenant, true, *reason)
 	default: // reinstate-tenant
@@ -435,8 +454,8 @@ func printSupportReport(r platform.SupportReport) {
 		if d.AppVersion != nil {
 			version = *d.AppVersion
 		}
-		fmt.Printf("  %s-%02d %-20s last sync %s, last seen %s, app %s, clock skew %s%s\n",
-			d.OutletCode, d.Code, d.Name, ago(d.LastSyncAt), ago(d.LastSeenAt), version, skew, status)
+		fmt.Printf("  %s-%02d %-20s last sync %s, last seen %s, app %s, clock skew %s%s\n        id %s\n",
+			d.OutletCode, d.Code, d.Name, ago(d.LastSyncAt), ago(d.LastSeenAt), version, skew, status, d.ID)
 		if d.UnsyncedEvents > 0 {
 			fmt.Printf("        %d events not delivered, the oldest from %s\n", d.UnsyncedEvents, ago(d.OldestUnsyncedAt))
 		}

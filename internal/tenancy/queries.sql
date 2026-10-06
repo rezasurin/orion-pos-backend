@@ -57,3 +57,17 @@ SET timezone = @timezone, business_day_cutoff = @business_day_cutoff, price_incl
     cash_rounding_mode = @cash_rounding_mode, receipt_header = @receipt_header, receipt_footer = @receipt_footer
 WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id
 RETURNING *;
+
+-- Operator tooling (admin.go), as orion_platform.
+
+-- name: GetTenantPlanCode :one
+SELECT p.code FROM tenant t JOIN plan p ON p.id = t.plan_id WHERE t.id = @id;
+
+-- name: SetTenantPlan :execrows
+-- Moving to early_access also restores its status; any other plan is an active subscription until
+-- billing (Phase 5) says otherwise.
+UPDATE tenant
+SET plan_id = p.id,
+    subscription_status = CASE WHEN p.code = 'early_access' THEN 'early_access' ELSE 'active' END::subscription_status
+FROM plan p
+WHERE tenant.id = @id AND p.code = @plan_code;

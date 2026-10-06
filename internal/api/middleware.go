@@ -42,7 +42,7 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 				return nil, err
 			}
 			httpserver.AddLogAttrs(ctx, slog.String("principal_type", "operator"), slog.String("principal_id", op.ID.String()))
-			return next(ctx, w, r, req)
+			return next(context.WithValue(ctx, operatorKey{}, op.ID), w, r, req)
 		}
 		p, err := s.Identity.Authenticate(pol.audience, bearer)
 		if err != nil {
@@ -89,7 +89,10 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 	}
 }
 
-type suspendedKey struct{}
+type (
+	suspendedKey struct{}
+	operatorKey  struct{}
+)
 
 // suspendedFrom says whether the caller's business is suspended, as authenticate found it.
 func suspendedFrom(ctx context.Context) bool {

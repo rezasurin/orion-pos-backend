@@ -70,6 +70,29 @@ func (q *Queries) GetEntitlement(ctx context.Context, arg GetEntitlementParams) 
 	return i, err
 }
 
+const getKeyForUpdate = `-- name: GetKeyForUpdate :one
+SELECT key, kind, category, default_value FROM entitlement_key WHERE key = $1 FOR UPDATE
+`
+
+type GetKeyForUpdateRow struct {
+	Key          string
+	Kind         string
+	Category     string
+	DefaultValue int64
+}
+
+func (q *Queries) GetKeyForUpdate(ctx context.Context, key string) (GetKeyForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getKeyForUpdate, key)
+	var i GetKeyForUpdateRow
+	err := row.Scan(
+		&i.Key,
+		&i.Kind,
+		&i.Category,
+		&i.DefaultValue,
+	)
+	return i, err
+}
+
 const getKeyKind = `-- name: GetKeyKind :one
 
 SELECT kind FROM entitlement_key WHERE key = $1
@@ -158,6 +181,147 @@ func (q *Queries) ListEntitlements(ctx context.Context, arg ListEntitlementsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const listKeys = `-- name: ListKeys :many
+SELECT key, kind, category, description, owner, is_temporary, default_value FROM entitlement_key ORDER BY key
+`
+
+type ListKeysRow struct {
+	Key          string
+	Kind         string
+	Category     string
+	Description  string
+	Owner        string
+	IsTemporary  bool
+	DefaultValue int64
+}
+
+func (q *Queries) ListKeys(ctx context.Context) ([]ListKeysRow, error) {
+	rows, err := q.db.Query(ctx, listKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListKeysRow
+	for rows.Next() {
+		var i ListKeysRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.Kind,
+			&i.Category,
+			&i.Description,
+			&i.Owner,
+			&i.IsTemporary,
+			&i.DefaultValue,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPlanValues = `-- name: ListPlanValues :many
+SELECT p.code AS plan_code, pe.key, pe.value
+FROM plan_entitlement pe JOIN plan p ON p.id = pe.plan_id
+ORDER BY p.code, pe.key
+`
+
+type ListPlanValuesRow struct {
+	PlanCode string
+	Key      string
+	Value    int64
+}
+
+func (q *Queries) ListPlanValues(ctx context.Context) ([]ListPlanValuesRow, error) {
+	rows, err := q.db.Query(ctx, listPlanValues)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPlanValuesRow
+	for rows.Next() {
+		var i ListPlanValuesRow
+		if err := rows.Scan(&i.PlanCode, &i.Key, &i.Value); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTenantEntitlementsAdmin = `-- name: ListTenantEntitlementsAdmin :many
+SELECT k.key, k.kind, k.category, k.default_value,
+       pe.value AS plan_value,
+       o.value AS override_value, o.reason AS override_reason, o.expires_at AS override_expires_at
+FROM entitlement_key k
+JOIN tenant t ON t.id = $1
+LEFT JOIN plan_entitlement pe ON pe.plan_id = t.plan_id AND pe.key = k.key
+LEFT JOIN tenant_entitlement_override o ON o.tenant_id = t.id AND o.key = k.key
+ORDER BY k.key
+`
+
+type ListTenantEntitlementsAdminRow struct {
+	Key               string
+	Kind              string
+	Category          string
+	DefaultValue      int64
+	PlanValue         *int64
+	OverrideValue     *int64
+	OverrideReason    *string
+	OverrideExpiresAt *time.Time
+}
+
+// Every key for one tenant with all its inputs, including an override that has expired, for the
+// operator console.
+func (q *Queries) ListTenantEntitlementsAdmin(ctx context.Context, tenantID uuid.UUID) ([]ListTenantEntitlementsAdminRow, error) {
+	rows, err := q.db.Query(ctx, listTenantEntitlementsAdmin, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListTenantEntitlementsAdminRow
+	for rows.Next() {
+		var i ListTenantEntitlementsAdminRow
+		if err := rows.Scan(
+			&i.Key,
+			&i.Kind,
+			&i.Category,
+			&i.DefaultValue,
+			&i.PlanValue,
+			&i.OverrideValue,
+			&i.OverrideReason,
+			&i.OverrideExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setKeyDefault = `-- name: SetKeyDefault :exec
+UPDATE entitlement_key SET default_value = $1 WHERE key = $2
+`
+
+type SetKeyDefaultParams struct {
+	DefaultValue int64
+	Key          string
+}
+
+func (q *Queries) SetKeyDefault(ctx context.Context, arg SetKeyDefaultParams) error {
+	_, err := q.db.Exec(ctx, setKeyDefault, arg.DefaultValue, arg.Key)
+	return err
 }
 
 const upsertOverride = `-- name: UpsertOverride :exec

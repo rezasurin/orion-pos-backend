@@ -36,6 +36,89 @@ func (q *Queries) AbandonParkedEvent(ctx context.Context, arg AbandonParkedEvent
 	return err
 }
 
+const adminTenants = `-- name: AdminTenants :many
+
+SELECT t.id, t.slug, t.name, p.code AS plan_code, t.subscription_status::text AS subscription_status,
+       t.suspended_at, t.created_at,
+       (SELECT count(*) FROM outlet o WHERE o.tenant_id = t.id)::integer AS outlets,
+       (SELECT count(*) FROM device d WHERE d.tenant_id = t.id AND d.revoked_at IS NULL)::integer AS devices,
+       (SELECT d.last_sync_at FROM device d WHERE d.tenant_id = t.id AND d.last_sync_at IS NOT NULL
+        ORDER BY d.last_sync_at DESC LIMIT 1) AS last_sync_at,
+       coalesce((SELECT sum(m.sales) FROM tenant_daily_metrics m WHERE m.tenant_id = t.id AND m.day >= $1::date), 0)::integer AS sales_7d,
+       coalesce((SELECT sum(m.events) FROM tenant_daily_metrics m WHERE m.tenant_id = t.id AND m.day >= $1::date), 0)::integer AS events_7d
+FROM tenant t JOIN plan p ON p.id = t.plan_id
+WHERE t.id > $2
+  AND ($3::uuid IS NULL OR t.id = $3::uuid)
+  AND ($4::text = '' OR t.name ILIKE '%' || $4::text || '%' OR t.slug ILIKE '%' || $4::text || '%')
+ORDER BY t.id
+LIMIT $5
+`
+
+type AdminTenantsParams struct {
+	SinceDay pgtype.Date
+	After    uuid.UUID
+	ID       *uuid.UUID
+	Q        string
+	PageSize int32
+}
+
+type AdminTenantsRow struct {
+	ID                 uuid.UUID
+	Slug               string
+	Name               string
+	PlanCode           string
+	SubscriptionStatus string
+	SuspendedAt        *time.Time
+	CreatedAt          time.Time
+	Outlets            int32
+	Devices            int32
+	LastSyncAt         *time.Time
+	Sales7d            int32
+	Events7d           int32
+}
+
+// The operator console (console.go).
+// A page of businesses with what an operator scans for: plan, state, size and the last week's use.
+// With id set, that one business.
+func (q *Queries) AdminTenants(ctx context.Context, arg AdminTenantsParams) ([]AdminTenantsRow, error) {
+	rows, err := q.db.Query(ctx, adminTenants,
+		arg.SinceDay,
+		arg.After,
+		arg.ID,
+		arg.Q,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminTenantsRow
+	for rows.Next() {
+		var i AdminTenantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Name,
+			&i.PlanCode,
+			&i.SubscriptionStatus,
+			&i.SuspendedAt,
+			&i.CreatedAt,
+			&i.Outlets,
+			&i.Devices,
+			&i.LastSyncAt,
+			&i.Sales7d,
+			&i.Events7d,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const advanceTOTP = `-- name: AdvanceTOTP :exec
 UPDATE operator SET totp_last_step = $1, totp_confirmed_at = coalesce(totp_confirmed_at, $2::timestamptz)
 WHERE id = $3
@@ -119,6 +202,33 @@ func (q *Queries) CountOperators(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const getDeviceForOperator = `-- name: GetDeviceForOperator :one
+SELECT id, tenant_id, outlet_id, device_code, name, revoked_at FROM device WHERE id = $1 FOR UPDATE
+`
+
+type GetDeviceForOperatorRow struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	OutletID   uuid.UUID
+	DeviceCode int32
+	Name       string
+	RevokedAt  *time.Time
+}
+
+func (q *Queries) GetDeviceForOperator(ctx context.Context, id uuid.UUID) (GetDeviceForOperatorRow, error) {
+	row := q.db.QueryRow(ctx, getDeviceForOperator, id)
+	var i GetDeviceForOperatorRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.DeviceCode,
+		&i.Name,
+		&i.RevokedAt,
+	)
+	return i, err
 }
 
 const getOperator = `-- name: GetOperator :one
@@ -293,16 +403,44 @@ func (q *Queries) InsertRecoveryCode(ctx context.Context, arg InsertRecoveryCode
 	return err
 }
 
+const insertTenantAuditAsSystem = `-- name: InsertTenantAuditAsSystem :exec
+INSERT INTO tenant_audit_log (id, tenant_id, actor_type, action, target_type, target_id, detail)
+VALUES ($1, $2, 'system', $3, $4, $5, $6)
+`
+
+type InsertTenantAuditAsSystemParams struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	Action     string
+	TargetType string
+	TargetID   *uuid.UUID
+	Detail     []byte
+}
+
+// The business's own audit log, for something Orion staff did to it.
+func (q *Queries) InsertTenantAuditAsSystem(ctx context.Context, arg InsertTenantAuditAsSystemParams) error {
+	_, err := q.db.Exec(ctx, insertTenantAuditAsSystem,
+		arg.ID,
+		arg.TenantID,
+		arg.Action,
+		arg.TargetType,
+		arg.TargetID,
+		arg.Detail,
+	)
+	return err
+}
+
 const listAudit = `-- name: ListAudit :many
 SELECT id, operator_id, action, target_type, target_id, tenant_id, before, after, reason, coalesce(host(ip), '')::text AS ip, user_agent, created_at
 FROM platform_audit_log
-WHERE id < $1
+WHERE id < $1 AND ($2::uuid IS NULL OR tenant_id = $2::uuid)
 ORDER BY id DESC
-LIMIT $2
+LIMIT $3
 `
 
 type ListAuditParams struct {
 	Before   uuid.UUID
+	TenantID *uuid.UUID
 	PageSize int32
 }
 
@@ -323,7 +461,7 @@ type ListAuditRow struct {
 
 // Newest first; the cursor is the id of the last row of the previous page.
 func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAuditRow, error) {
-	rows, err := q.db.Query(ctx, listAudit, arg.Before, arg.PageSize)
+	rows, err := q.db.Query(ctx, listAudit, arg.Before, arg.TenantID, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -395,6 +533,21 @@ func (q *Queries) ListDailyMetrics(ctx context.Context, arg ListDailyMetricsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const revokeDeviceByOperator = `-- name: RevokeDeviceByOperator :exec
+UPDATE device SET revoked_at = $1, revoked_by_operator_id = $2 WHERE id = $3 AND revoked_at IS NULL
+`
+
+type RevokeDeviceByOperatorParams struct {
+	Now        *time.Time
+	OperatorID *uuid.UUID
+	ID         uuid.UUID
+}
+
+func (q *Queries) RevokeDeviceByOperator(ctx context.Context, arg RevokeDeviceByOperatorParams) error {
+	_, err := q.db.Exec(ctx, revokeDeviceByOperator, arg.Now, arg.OperatorID, arg.ID)
+	return err
 }
 
 const stoppedSyncing = `-- name: StoppedSyncing :many

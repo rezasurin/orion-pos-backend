@@ -944,6 +944,26 @@ TOTP secrets are encrypted at rest with a key from the secret store (AES-GCM via
   refuses a sale; the pull's `suspended: true` tells the POS to let the open shift close and open no
   new one, and `GET /v1/me` shows `tenant.suspended_at` for the back office's banner. The device
   monitor and the stopped-syncing list skip suspended businesses.
+- **Endpoints** (operator session, `docs/API_CONTRACT.md` section 12): the business list (paged by
+  id, searchable, with plan, state, size, last sync and the last week's metrics in one query with a
+  subquery per column) and detail (entitlements with every input, devices, 30 days of metrics);
+  suspend and reinstate; plan change; per-business entitlement overrides (`value: null` clears);
+  every key with its plan values, and a flag's default (flags only: modules and limits belong to
+  plans); device revocation; the stopped-syncing list; the audit log, filterable by business.
+  Not built as separate endpoints: `/admin/flags` (flags are entitlement keys, so the two key
+  endpoints and the override cover them) and `/admin/metrics` (in the tenant list and detail).
+- **Every change is audited** with the operator, address, user agent and a required reason, in the
+  same transaction. Reading the list and detail is not (counts, settings and device metadata);
+  the support report, which shows sales, still is. Methods accept a tenant's id or slug, so the CLI
+  keeps using slugs: `orion admin set-plan`, `revoke-device` and `set-flag-default` joined the
+  existing commands.
+- **Operator revocation.** Operators are not users, so migration 00018 adds
+  `device.revoked_by_operator_id`, with a check that a revoked device names exactly one of the two.
+  The business's own audit log gets `device.revoked` as `actor_type = 'system'` with
+  `"by": "orion_support"`, and the platform log gets the operator and reason.
+- **Entitlement caching.** The resolver caches a business's entitlements for 30 seconds. The admin
+  handlers drop that business's entry (a flag's default drops them all) in the serving process, so
+  the change shows at once there and within 30 seconds anywhere else.
 
 ### 6.3 Catalog (Phase 1)
 

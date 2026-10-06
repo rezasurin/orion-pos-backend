@@ -104,27 +104,33 @@ func (s *Service) TenantMetrics(ctx context.Context, tenantSlug string, days int
 	}
 	var out []DailyMetrics
 	err := pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		t, err := s.Tenants.FindBySlug(ctx, tx, tenantSlug)
+		t, err := s.Tenants.Find(ctx, tx, tenantSlug)
 		if err != nil {
 			return err
 		}
-		today := dateIn(s.Clock.Now(), MetricsZone)
-		rows, err := db.New(tx).ListDailyMetrics(ctx, db.ListDailyMetricsParams{
-			TenantID: t.ID, FromDay: pgDate(today.AddDate(0, 0, -(days - 1))), ToDay: pgDate(today),
-		})
-		if err != nil {
-			return err
-		}
-		out = make([]DailyMetrics, len(rows))
-		for i, r := range rows {
-			out[i] = DailyMetrics{
-				Day: r.Day.Time, Sales: int(r.Sales), VoidedSales: int(r.VoidedSales), Events: int(r.Events),
-				RejectedEvents: int(r.RejectedEvents), DevicesSynced: int(r.DevicesSynced), Flags: int(r.Flags), ComputedAt: r.ComputedAt,
-			}
-		}
-		return nil
+		out, err = s.metrics(ctx, db.New(tx), t.ID, days)
+		return err
 	})
 	return out, err
+}
+
+// metrics reads a tenant's last `days` days of metrics, oldest first.
+func (s *Service) metrics(ctx context.Context, q *db.Queries, tenantID uuid.UUID, days int) ([]DailyMetrics, error) {
+	today := dateIn(s.Clock.Now(), MetricsZone)
+	rows, err := q.ListDailyMetrics(ctx, db.ListDailyMetricsParams{
+		TenantID: tenantID, FromDay: pgDate(today.AddDate(0, 0, -(days - 1))), ToDay: pgDate(today),
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DailyMetrics, len(rows))
+	for i, r := range rows {
+		out[i] = DailyMetrics{
+			Day: r.Day.Time, Sales: int(r.Sales), VoidedSales: int(r.VoidedSales), Events: int(r.Events),
+			RejectedEvents: int(r.RejectedEvents), DevicesSynced: int(r.DevicesSynced), Flags: int(r.Flags), ComputedAt: r.ComputedAt,
+		}
+	}
+	return out, nil
 }
 
 // QuietDevice is a tablet that has stopped syncing.

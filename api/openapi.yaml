@@ -1430,6 +1430,246 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
+  /admin/tenants:
+    get:
+      operationId: adminListTenants
+      tags: [admin]
+      summary: Businesses, a page at a time, with their plan, state and last week of use
+      description: |
+        Ordered by id. `q` matches the name or slug. `sales_7d` and `events_7d` come from the nightly
+        metrics, so they lag by up to a day.
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: q, in: query, schema: {type: string, maxLength: 100}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTenantPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/tenants/{tenantId}:
+    get:
+      operationId: adminGetTenant
+      tags: [admin]
+      summary: 'One business: entitlements with their sources, devices, the last 30 days of metrics'
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTenantDetail'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/tenants/{tenantId}/suspend:
+    post:
+      operationId: adminSuspendTenant
+      tags: [admin]
+      summary: Suspend a business
+      description: |
+        Its people can still sign in and read; every change they try answers `403 tenant_suspended`.
+        Its tablets keep syncing and are told to close the open shift and open no new one.
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/tenants/{tenantId}/reinstate:
+    post:
+      operationId: adminReinstateTenant
+      tags: [admin]
+      summary: Lift a suspension
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/tenants/{tenantId}/plan:
+    put:
+      operationId: adminSetTenantPlan
+      tags: [admin]
+      summary: Move a business to another plan
+      description: |
+        `early_access` also restores the early-access status; any other plan makes the subscription
+        `active`. Takes effect within 30 seconds (the entitlement cache).
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPlanChange'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/tenants/{tenantId}/entitlements/{key}:
+    put:
+      operationId: adminSetTenantEntitlement
+      tags: [admin]
+      summary: Override one of a business's entitlements, or clear the override
+      description: |
+        A `value` sets the override (0/1 for modules and flags, a count or -1 for unlimited for
+        limits), until `expires_at` if given. `value: null` clears it, back to the plan. Takes effect
+        within 30 seconds.
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+        - {name: key, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminEntitlementChange'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/devices/stopped-syncing:
+    get:
+      operationId: adminStoppedSyncing
+      tags: [admin]
+      summary: Tablets in use that have gone quiet, across businesses
+      description: |
+        Not revoked, in businesses that are not suspended, that synced (or were paired) in the last
+        30 days but not within `quiet_minutes`. The longest silent first, at most 500.
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: quiet_minutes, in: query, schema: {type: integer, minimum: 1, maximum: 43200, default: 1440}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuietDeviceList'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/devices/{deviceId}/revoke:
+    post:
+      operationId: adminRevokeDevice
+      tags: [admin]
+      summary: Revoke a business's device
+      description: |
+        For a lost or stolen tablet the owner cannot revoke. Written to the business's own audit log
+        as done by Orion support.
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: deviceId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/entitlement-keys:
+    get:
+      operationId: adminListEntitlementKeys
+      tags: [admin]
+      summary: Every entitlement key with its default and what each plan gives
+      security:
+        - operatorAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitlementKeyList'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/entitlement-keys/{key}:
+    patch:
+      operationId: adminSetFlagDefault
+      tags: [admin]
+      summary: Change a flag's default for everyone
+      description: |
+        Rolls a flag out to (or back from) every business without a plan value or an override for it.
+        Only flags: modules and limits are set per plan.
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: key, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagDefaultChange'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /admin/audit-log:
     get:
       operationId: adminListAuditLog
@@ -1440,6 +1680,10 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - name: tenant_id
+          in: query
+          description: Only the entries about this business.
+          schema: {type: string, format: uuid}
       responses:
         '200':
           description: A page of entries; `next_cursor` leads to older ones
@@ -1509,6 +1753,11 @@ components:
 
     CategoryId:
       name: categoryId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    AdminTenantId:
+      name: tenantId
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -2737,6 +2986,176 @@ components:
         access_token: {type: string}
         access_expires_at: {type: string, format: date-time}
         operator_id: {type: string, format: uuid}
+
+    OperatorReason:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 1, maxLength: 500, description: Why; goes in the platform audit log.}
+
+    AdminTenant:
+      type: object
+      required: [id, slug, name, plan, subscription_status, created_at, outlets, devices, sales_7d, events_7d]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        plan: {type: string, description: The plan code, such as free or early_access.}
+        subscription_status: {type: string}
+        suspended_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        outlets: {type: integer}
+        devices: {type: integer, description: Paired and not revoked.}
+        last_sync_at: {type: string, format: date-time, nullable: true, description: The latest sync of any of its devices.}
+        sales_7d: {type: integer, description: Sales of the last 7 business days, voided ones included.}
+        events_7d: {type: integer}
+
+    AdminTenantPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminTenant'}
+        next_cursor: {type: string, format: uuid}
+
+    AdminEntitlement:
+      type: object
+      required: [key, kind, category, value, source, default]
+      properties:
+        key: {type: string}
+        kind: {type: string, enum: [bool, int]}
+        category: {type: string, enum: [module, limit, flag]}
+        value: {type: integer, format: int64, description: In force now.}
+        source: {type: string, enum: [override, plan, default]}
+        default: {type: integer, format: int64}
+        plan_value: {type: integer, format: int64, nullable: true}
+        override:
+          type: object
+          nullable: true
+          required: [value, reason, in_force]
+          properties:
+            value: {type: integer, format: int64}
+            reason: {type: string}
+            expires_at: {type: string, format: date-time, nullable: true}
+            in_force: {type: boolean, description: False once it has expired.}
+
+    AdminDevice:
+      type: object
+      required: [id, name, outlet_code, code, revoked, unsynced_events, open_alerts]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        outlet_code: {type: string}
+        code: {type: integer}
+        revoked: {type: boolean}
+        last_seen_at: {type: string, format: date-time, nullable: true}
+        last_sync_at: {type: string, format: date-time, nullable: true}
+        app_version: {type: string, nullable: true}
+        clock_skew_ms: {type: integer, nullable: true}
+        unsynced_events: {type: integer}
+        oldest_unsynced_at: {type: string, format: date-time, nullable: true}
+        open_alerts:
+          type: array
+          items: {type: string}
+
+    AdminDailyMetrics:
+      type: object
+      required: [day, sales, voided_sales, events, rejected_events, devices_synced, flags]
+      properties:
+        day: {type: string, format: date}
+        sales: {type: integer, description: By business date, voided ones included.}
+        voided_sales: {type: integer}
+        events: {type: integer, description: Received that day (Asia/Jakarta).}
+        rejected_events: {type: integer}
+        devices_synced: {type: integer}
+        flags: {type: integer}
+
+    AdminTenantDetail:
+      type: object
+      required: [tenant, entitlements, devices, metrics]
+      properties:
+        tenant: {$ref: '#/components/schemas/AdminTenant'}
+        entitlements:
+          type: array
+          items: {$ref: '#/components/schemas/AdminEntitlement'}
+        devices:
+          type: array
+          items: {$ref: '#/components/schemas/AdminDevice'}
+        metrics:
+          type: array
+          description: The last 30 days the nightly job has computed, oldest first.
+          items: {$ref: '#/components/schemas/AdminDailyMetrics'}
+
+    AdminPlanChange:
+      type: object
+      required: [plan, reason]
+      properties:
+        plan: {type: string}
+        reason: {type: string, minLength: 1, maxLength: 500}
+
+    AdminEntitlementChange:
+      type: object
+      required: [value, reason]
+      properties:
+        value: {type: integer, format: int64, nullable: true, description: null clears the override.}
+        expires_at: {type: string, format: date-time, nullable: true}
+        reason: {type: string, minLength: 1, maxLength: 500}
+
+    QuietDevice:
+      type: object
+      required: [tenant_slug, tenant_name, outlet_code, device_id, name, code, paired_at, unsynced_events]
+      properties:
+        tenant_slug: {type: string}
+        tenant_name: {type: string}
+        outlet_code: {type: string}
+        device_id: {type: string, format: uuid}
+        name: {type: string}
+        code: {type: integer}
+        paired_at: {type: string, format: date-time}
+        last_sync_at: {type: string, format: date-time, nullable: true, description: Null if it never synced.}
+        last_seen_at: {type: string, format: date-time, nullable: true, description: Later than last_sync_at means the app runs but its sync fails.}
+        app_version: {type: string, nullable: true}
+        unsynced_events: {type: integer}
+
+    QuietDeviceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/QuietDevice'}
+
+    EntitlementKeyInfo:
+      type: object
+      required: [key, kind, category, description, owner, temporary, default, plans]
+      properties:
+        key: {type: string}
+        kind: {type: string, enum: [bool, int]}
+        category: {type: string, enum: [module, limit, flag]}
+        description: {type: string}
+        owner: {type: string}
+        temporary: {type: boolean, description: A flag meant to be removed once rolled out.}
+        default: {type: integer, format: int64}
+        plans:
+          type: object
+          description: Plan code to value. A plan not listed gets the default.
+          additionalProperties: {type: integer, format: int64}
+
+    EntitlementKeyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/EntitlementKeyInfo'}
+
+    FlagDefaultChange:
+      type: object
+      required: [default_value, reason]
+      properties:
+        default_value: {type: integer, format: int64, minimum: 0}
+        reason: {type: string, minLength: 1, maxLength: 500}
 
     AuditEntry:
       type: object

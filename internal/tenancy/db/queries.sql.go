@@ -141,6 +141,19 @@ func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (Tenant, err
 	return i, err
 }
 
+const getTenantPlanCode = `-- name: GetTenantPlanCode :one
+
+SELECT p.code FROM tenant t JOIN plan p ON p.id = t.plan_id WHERE t.id = $1
+`
+
+// Operator tooling (admin.go), as orion_platform.
+func (q *Queries) GetTenantPlanCode(ctx context.Context, id uuid.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getTenantPlanCode, id)
+	var code string
+	err := row.Scan(&code)
+	return code, err
+}
+
 const insertOutlet = `-- name: InsertOutlet :one
 INSERT INTO outlet (id, tenant_id, name, code, address)
 VALUES ($1, $2, $3, $4, $5)
@@ -332,6 +345,29 @@ func (q *Queries) RecordChange(ctx context.Context, arg RecordChangeParams) (int
 	var seq int64
 	err := row.Scan(&seq)
 	return seq, err
+}
+
+const setTenantPlan = `-- name: SetTenantPlan :execrows
+UPDATE tenant
+SET plan_id = p.id,
+    subscription_status = CASE WHEN p.code = 'early_access' THEN 'early_access' ELSE 'active' END::subscription_status
+FROM plan p
+WHERE tenant.id = $1 AND p.code = $2
+`
+
+type SetTenantPlanParams struct {
+	ID       uuid.UUID
+	PlanCode string
+}
+
+// Moving to early_access also restores its status; any other plan is an active subscription until
+// billing (Phase 5) says otherwise.
+func (q *Queries) SetTenantPlan(ctx context.Context, arg SetTenantPlanParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setTenantPlan, arg.ID, arg.PlanCode)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setTenantSuspended = `-- name: SetTenantSuspended :exec

@@ -570,3 +570,25 @@ make worker                       # background jobs; locally, emails go to the l
 
 `seed-demo` prints the demo owner login and the cashier PINs. Regenerate your client from
 `api/openapi.yaml` after every pull of the backend.
+
+## 12. The operator console (`/admin`, Orion staff only)
+
+Not for the business apps. Sign in with `POST /admin/auth/login`, then `POST /admin/auth/totp/verify`
+with a code; the session lasts an hour (no refresh: sign in again). Every change takes a `reason`
+(1 to 500 characters) and is written to the platform audit log with the operator, address and
+user agent; a missing or blank reason is `400`.
+
+| Call | Notes |
+|---|---|
+| `GET /admin/tenants?q=&cursor=&limit=` | Businesses by id: plan, `subscription_status`, `suspended_at`, outlets, active devices, `last_sync_at`, and `sales_7d`/`events_7d` from the nightly metrics (up to a day behind). `q` matches name or slug. |
+| `GET /admin/tenants/{tenantId}` | `tenant`, `entitlements[]` (value in force, `source`, default, plan value, and the override with `in_force: false` once expired), `devices[]` (last sync and contact, app version, clock skew, undelivered events, open alerts), `metrics[]` (last 30 days, oldest first). Not audited. |
+| `POST /admin/tenants/{tenantId}/suspend`, `/reinstate` `{reason}` | Suspension makes the business read-only and tells its tablets to finish the open shift; see `tenant_suspended` and section 5. `409` if it already is. |
+| `PUT /admin/tenants/{tenantId}/plan` `{plan, reason}` | `free` or `early_access`. `409` if already on it. |
+| `PUT /admin/tenants/{tenantId}/entitlements/{key}` `{value, expires_at?, reason}` | An override for one business; `value: null` clears it. Unknown key `404`. |
+| `GET /admin/entitlement-keys`, `PATCH /admin/entitlement-keys/{key}` `{default_value, reason}` | Every key with its default and per-plan values. Only a **flag**'s default can be changed (a rollout to everyone); modules and limits are `400`. |
+| `POST /admin/devices/{deviceId}/revoke` `{reason}` | For a lost or stolen tablet. The business sees it in its own audit log as done by Orion support. |
+| `GET /admin/devices/stopped-syncing?quiet_minutes=` | Tablets in use, across businesses, silent for longer than that (default 1440). |
+| `GET /admin/audit-log?tenant_id=` | Newest first; `tenant_id` narrows it to one business. |
+
+Changes to a plan, an override or a flag reach the business within 30 seconds at most (in this
+server process, at once).

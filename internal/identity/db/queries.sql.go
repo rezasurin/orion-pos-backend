@@ -85,7 +85,7 @@ func (q *Queries) DeleteStaffOutletRoles(ctx context.Context, arg DeleteStaffOut
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at FROM device WHERE tenant_id = $1 AND id = $2
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device WHERE tenant_id = $1 AND id = $2
 `
 
 type GetDeviceParams struct {
@@ -116,13 +116,14 @@ func (q *Queries) GetDevice(ctx context.Context, arg GetDeviceParams) (Device, e
 		&i.UnsyncedEvents,
 		&i.OldestUnsyncedAt,
 		&i.HealthReportedAt,
+		&i.RevokedByOperatorID,
 	)
 	return i, err
 }
 
 const getDeviceForShare = `-- name: GetDeviceForShare :one
 
-SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at FROM device WHERE tenant_id = $1 AND id = $2 FOR SHARE
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device WHERE tenant_id = $1 AND id = $2 FOR SHARE
 `
 
 type GetDeviceForShareParams struct {
@@ -156,12 +157,13 @@ func (q *Queries) GetDeviceForShare(ctx context.Context, arg GetDeviceForSharePa
 		&i.UnsyncedEvents,
 		&i.OldestUnsyncedAt,
 		&i.HealthReportedAt,
+		&i.RevokedByOperatorID,
 	)
 	return i, err
 }
 
 const getDeviceForUpdate = `-- name: GetDeviceForUpdate :one
-SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at FROM device WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device WHERE tenant_id = $1 AND id = $2 FOR UPDATE
 `
 
 type GetDeviceForUpdateParams struct {
@@ -192,6 +194,7 @@ func (q *Queries) GetDeviceForUpdate(ctx context.Context, arg GetDeviceForUpdate
 		&i.UnsyncedEvents,
 		&i.OldestUnsyncedAt,
 		&i.HealthReportedAt,
+		&i.RevokedByOperatorID,
 	)
 	return i, err
 }
@@ -667,7 +670,7 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) error {
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at FROM device
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device
 WHERE tenant_id = $1 AND id > $2
   AND ($3::boolean OR outlet_id = ANY($4::uuid[]))
 ORDER BY id
@@ -718,6 +721,7 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 			&i.UnsyncedEvents,
 			&i.OldestUnsyncedAt,
 			&i.HealthReportedAt,
+			&i.RevokedByOperatorID,
 		); err != nil {
 			return nil, err
 		}
