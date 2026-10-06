@@ -55,6 +55,9 @@ Tests use a real Postgres (testcontainers, or `ORION_TEST_DATABASE_URL`). Never 
 
 ## Open items (not done)
 
+The owner's list, with what each item blocks, is `docs/OWNER_TODO.md` (parked on 2026-10-06 to
+focus on features: B2.4 and B2.11 wait on it).
+
 - Hosting is unchosen. It is written up as a guide for the owner to carry out:
   `docs/guides/hosting-and-restore.md` (B0.13 is marked done as a guide; the host, the deploy
   workflow and the first restore drill, with `docs/runbooks/restore.md`, are still to do before the
