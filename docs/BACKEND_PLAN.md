@@ -530,8 +530,8 @@ trigger that raises on update or delete as a backstop.
   `ORION_ALERT_OPERATOR_EMAIL` when set, naming the business. An email that fails is retried on the
   next run; an incident with nobody to tell is logged and marked handled. Incidents resolve
   themselves when the device delivers, speaks up, is revoked, or closes its shift, with no
-  message. Until a real email provider exists (ORION_EMAIL_PROVIDER is only `log`), the worker
-  writes these emails to its log.
+  message. With `ORION_EMAIL_PROVIDER=log` (local) the worker writes these
+  emails to its log; staging and production send through Resend.
 - **Shape.** The monitor reads the `device` and `shift` tables read-only (with `device_alert`, its
   own table); migration 00013 adds the columns, the table, and a partial index of open shifts.
 

@@ -51,8 +51,12 @@ The operator console needs `ORION_PLATFORM_DATABASE_URL` on `orion serve` too, `
 it up apart from the database) and `ORION_JWT_OPERATOR_KEYS`. Create the first operator with
 `orion admin create-operator --email you@example.com --reason bootstrap` and store what it prints.
 
-There is no email provider yet. `ORION_EMAIL_PROVIDER=log` writes each message, including
-verification links, to the log, so `orion worker` refuses it when `ORION_ENV=production`. To add one, follow `docs/guides/email-provider.md`.
+Email goes through [Resend](https://resend.com) in staging and production:
+`ORION_EMAIL_PROVIDER=resend`, `ORION_EMAIL_API_KEY` (from the secret store) and `ORION_EMAIL_FROM`
+(for example `Orion <no-reply@mail.orion.example>`, on a sending subdomain verified in Resend with
+its SPF, DKIM and DMARC records). A missing key or From address stops `orion` at startup. The local
+default, `ORION_EMAIL_PROVIDER=log`, writes each message, including verification links, to the log,
+so `orion worker` refuses it when `ORION_ENV=production`. Setup steps: `docs/guides/email-provider.md`.
 
 ## Device health alerts
 

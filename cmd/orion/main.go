@@ -303,17 +303,22 @@ func worker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	sender := notify.Sender(notify.LogSender{Logger: logger})
+	if cfg.EmailProvider == "resend" {
+		sender = notify.ResendSender{APIKey: cfg.EmailAPIKey, From: cfg.EmailFrom}
+	}
+
 	workers := river.NewWorkers()
 	idJobs := identity.NewJobs(identity.JobsDeps{
 		Platform:  pool,
-		Sender:    notify.LogSender{Logger: logger},
+		Sender:    sender,
 		Clock:     kernel.SystemClock{},
 		Logger:    logger,
 		PublicURL: cfg.PublicURL,
 	})
 	idJobs.AddWorkers(workers)
 	health := sync.NewHealthJobs(sync.HealthDeps{
-		Platform: pool, Sender: notify.LogSender{Logger: logger}, Clock: kernel.SystemClock{}, Logger: logger,
+		Platform: pool, Sender: sender, Clock: kernel.SystemClock{}, Logger: logger,
 		UnsyncedAfter: cfg.AlertUnsyncedAfter, SilentAfter: cfg.AlertSilentAfter, OperatorEmail: cfg.AlertOperatorEmail,
 	})
 	health.AddWorkers(workers)
