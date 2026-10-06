@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -322,12 +323,14 @@ func worker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		UnsyncedAfter: cfg.AlertUnsyncedAfter, SilentAfter: cfg.AlertSilentAfter, OperatorEmail: cfg.AlertOperatorEmail,
 	})
 	health.AddWorkers(workers)
+	metrics := &platform.MetricsJobs{Platform: pool, Clock: kernel.SystemClock{}, Logger: logger}
+	metrics.AddWorkers(workers)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Logger:       logger,
 		Queues:       map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
 		Workers:      workers,
-		PeriodicJobs: append(idJobs.PeriodicJobs(), health.PeriodicJobs()...),
+		PeriodicJobs: slices.Concat(idJobs.PeriodicJobs(), health.PeriodicJobs(), metrics.PeriodicJobs()),
 	})
 	if err != nil {
 		return fmt.Errorf("river: %w", err)

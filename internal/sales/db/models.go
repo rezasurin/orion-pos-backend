@@ -629,6 +629,18 @@ type TenantAuditLog struct {
 	CreatedAt  time.Time
 }
 
+type TenantDailyMetric struct {
+	TenantID       uuid.UUID
+	Day            pgtype.Date
+	Sales          int32
+	VoidedSales    int32
+	Events         int32
+	RejectedEvents int32
+	DevicesSynced  int32
+	Flags          int32
+	ComputedAt     time.Time
+}
+
 type TenantEntitlementOverride struct {
 	TenantID        uuid.UUID
 	Key             string

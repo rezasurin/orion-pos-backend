@@ -50,6 +50,20 @@ Thresholds: an alert opens when the oldest undelivered event is older than 30 mi
 (`ORION_ALERT_SILENT_AFTER`). Alerts close by themselves once the device catches up. Each opens one
 email to the owners (and to `ORION_ALERT_OPERATOR_EMAIL` if set), not one every five minutes.
 
+A daily check catches the tablets no alert covers (closed shift, nothing pending, just quiet):
+
+```
+orion admin stopped-syncing --operator you@orion.example            # silent for 24 hours
+orion admin stopped-syncing --operator you@orion.example --quiet 4h
+```
+
+It lists, across every business that is not suspended, the tablets that synced (or were paired)
+in the last 30 days but not within `--quiet`, the longest silent first. "Seen since" means the app
+is running and talking to the server but its sync is failing: go to step 1. A business's daily
+usage (sales, voids, events, rejected events, tablets that synced, flags) is
+`orion admin metrics --operator you@orion.example --tenant SLUG [--days 14]`, computed nightly by
+`orion worker`.
+
 Step 1: see what the server sees.
 
 ```

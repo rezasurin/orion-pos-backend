@@ -40,6 +40,12 @@ every change is written to the platform audit log with --reason, attributed to -
   abandon-event     --operator E --tenant SLUG --event ID --reason R
                     gives up on a parked event whose record will never arrive; it becomes rejected
                     with the code "abandoned"
+  metrics           --operator E --tenant SLUG [--days 14]
+                    prints a business's daily usage (sales, voids, events, rejected events, tablets
+                    that synced, review flags), as computed nightly by orion worker. Counts only.
+  stopped-syncing   --operator E [--quiet 24h]
+                    lists tablets, across businesses that are not suspended, that synced in the last
+                    30 days but not in the last --quiet, the longest silent first
 
 tenant commands (connect as the service role, ORION_DATABASE_URL):
   create-tenant   --name N --slug S --outlet-name N --outlet-code C --owner-email E [--password P]
@@ -57,7 +63,7 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 		return errors.New("missing admin command")
 	}
 	switch args[0] {
-	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant", "support-report", "abandon-event":
+	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant", "support-report", "abandon-event", "metrics", "stopped-syncing":
 		return adminPlatform(ctx, cfg, logger, args)
 	}
 	if cfg.DatabaseURL == "" {
@@ -291,6 +297,8 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 	value := fs.Int64("value", 0, "override value (0/1 for modules, a count or -1 for limits)")
 	expires := fs.String("expires", "", "override expiry, RFC 3339")
 	event := fs.String("event", "", "sync event id")
+	days := fs.Int("days", 14, "how many days of metrics")
+	quiet := fs.Duration("quiet", 24*time.Hour, "how long a tablet has been silent")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -352,6 +360,44 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 			return err
 		}
 		fmt.Printf("event %s abandoned\n", id)
+		return nil
+	case "metrics":
+		ms, err := svc.TenantMetrics(ctx, *tenant, *days)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%-10s %6s %6s %7s %8s %7s %5s\n", "day", "sales", "voids", "events", "rejected", "tablets", "flags")
+		for _, m := range ms {
+			fmt.Printf("%-10s %6d %6d %7d %8d %7d %5d\n", m.Day.Format(time.DateOnly), m.Sales, m.VoidedSales, m.Events, m.RejectedEvents, m.DevicesSynced, m.Flags)
+		}
+		if len(ms) == 0 {
+			fmt.Println("no metrics yet: orion worker computes them nightly and when it starts")
+		}
+		return nil
+	case "stopped-syncing":
+		ds, err := svc.StoppedSyncing(ctx, *quiet)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		for _, d := range ds {
+			last := "never synced, paired " + now.Sub(d.PairedAt).Round(time.Minute).String() + " ago"
+			if d.LastSyncAt != nil {
+				last = "last sync " + now.Sub(*d.LastSyncAt).Round(time.Minute).String() + " ago"
+			}
+			seen := ""
+			if d.LastSeenAt != nil && (d.LastSyncAt == nil || d.LastSeenAt.After(*d.LastSyncAt)) {
+				seen = ", seen since " + now.Sub(*d.LastSeenAt).Round(time.Minute).String() + " ago"
+			}
+			fmt.Printf("%-20s %s-%02d %-20s %s%s", d.TenantSlug, d.OutletCode, d.Code, d.Name, last, seen)
+			if d.UnsyncedEvents > 0 {
+				fmt.Printf(", %d events not delivered", d.UnsyncedEvents)
+			}
+			fmt.Println()
+		}
+		if len(ds) == 0 {
+			fmt.Println("every tablet in use has synced within", *quiet)
+		}
 		return nil
 	case "suspend-tenant":
 		return svc.SetTenantSuspended(ctx, actor, *tenant, true, *reason)

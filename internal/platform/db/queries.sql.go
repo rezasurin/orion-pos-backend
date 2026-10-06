@@ -53,6 +53,63 @@ func (q *Queries) AdvanceTOTP(ctx context.Context, arg AdvanceTOTPParams) error 
 	return err
 }
 
+const computeDailyMetrics = `-- name: ComputeDailyMetrics :execrows
+
+WITH days AS (
+    SELECT t.id AS tenant_id, d::date AS day
+    FROM tenant t CROSS JOIN generate_series($2::date, $3::date, interval '1 day') AS d
+    WHERE d::date >= (t.created_at AT TIME ZONE 'Asia/Jakarta')::date
+), sales_day AS (
+    SELECT sa.tenant_id, sa.business_date AS day, count(*) AS sales, count(*) FILTER (WHERE sa.status = 'voided') AS voided
+    FROM sale sa WHERE sa.business_date BETWEEN $2::date AND $3::date
+    GROUP BY 1, 2
+), events_day AS (
+    SELECT i.tenant_id, (i.received_at AT TIME ZONE 'Asia/Jakarta')::date AS day, count(*) AS events,
+           count(*) FILTER (WHERE i.status = 'rejected') AS rejected, count(DISTINCT i.device_id) AS devices
+    FROM sync_inbox i
+    WHERE i.received_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Jakarta')
+      AND i.received_at < (($3::date + 1)::timestamp AT TIME ZONE 'Asia/Jakarta')
+    GROUP BY 1, 2
+), flags_day AS (
+    SELECT fl.tenant_id, (fl.created_at AT TIME ZONE 'Asia/Jakarta')::date AS day, count(*) AS flags
+    FROM flag fl
+    WHERE fl.created_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Jakarta')
+      AND fl.created_at < (($3::date + 1)::timestamp AT TIME ZONE 'Asia/Jakarta')
+    GROUP BY 1, 2
+)
+INSERT INTO tenant_daily_metrics (tenant_id, day, sales, voided_sales, events, rejected_events, devices_synced, flags, computed_at)
+SELECT days.tenant_id, days.day, coalesce(s.sales, 0), coalesce(s.voided, 0), coalesce(e.events, 0), coalesce(e.rejected, 0),
+       coalesce(e.devices, 0), coalesce(f.flags, 0), $1::timestamptz
+FROM days
+LEFT JOIN sales_day s ON s.tenant_id = days.tenant_id AND s.day = days.day
+LEFT JOIN events_day e ON e.tenant_id = days.tenant_id AND e.day = days.day
+LEFT JOIN flags_day f ON f.tenant_id = days.tenant_id AND f.day = days.day
+ON CONFLICT (tenant_id, day) DO UPDATE SET
+    sales = excluded.sales, voided_sales = excluded.voided_sales, events = excluded.events,
+    rejected_events = excluded.rejected_events, devices_synced = excluded.devices_synced, flags = excluded.flags,
+    computed_at = excluded.computed_at
+`
+
+type ComputeDailyMetricsParams struct {
+	Now     time.Time
+	FromDay pgtype.Date
+	ToDay   pgtype.Date
+}
+
+// Usage metrics (metrics.go). Counts only (ADR 0008).
+// Recomputes the days from from_day to to_day for every business that existed then, replacing what
+// was there: a tablet that was offline for days changes the days its sales belong to. Sales count by
+// their business date; sync figures by the day they arrived, in Asia/Jakarta.
+// ponytail: scans the date range of sale, sync_inbox and flag across tenants once a night; add
+// indexes on those dates if the run gets slow.
+func (q *Queries) ComputeDailyMetrics(ctx context.Context, arg ComputeDailyMetricsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, computeDailyMetrics, arg.Now, arg.FromDay, arg.ToDay)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countOperators = `-- name: CountOperators :one
 SELECT count(*) FROM operator
 `
@@ -287,6 +344,116 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 			&i.Ip,
 			&i.UserAgent,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDailyMetrics = `-- name: ListDailyMetrics :many
+SELECT tenant_id, day, sales, voided_sales, events, rejected_events, devices_synced, flags, computed_at FROM tenant_daily_metrics
+WHERE tenant_id = $1 AND day BETWEEN $2::date AND $3::date
+ORDER BY day
+`
+
+type ListDailyMetricsParams struct {
+	TenantID uuid.UUID
+	FromDay  pgtype.Date
+	ToDay    pgtype.Date
+}
+
+func (q *Queries) ListDailyMetrics(ctx context.Context, arg ListDailyMetricsParams) ([]TenantDailyMetric, error) {
+	rows, err := q.db.Query(ctx, listDailyMetrics, arg.TenantID, arg.FromDay, arg.ToDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TenantDailyMetric
+	for rows.Next() {
+		var i TenantDailyMetric
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.Day,
+			&i.Sales,
+			&i.VoidedSales,
+			&i.Events,
+			&i.RejectedEvents,
+			&i.DevicesSynced,
+			&i.Flags,
+			&i.ComputedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const stoppedSyncing = `-- name: StoppedSyncing :many
+SELECT t.slug AS tenant_slug, t.name AS tenant_name, o.code AS outlet_code, d.id AS device_id, d.name AS device_name,
+       d.device_code, d.paired_at, d.last_sync_at, d.last_seen_at, d.app_version, d.unsynced_events, d.oldest_unsynced_at
+FROM device d
+JOIN tenant t ON t.id = d.tenant_id
+JOIN outlet o ON o.tenant_id = d.tenant_id AND o.id = d.outlet_id
+WHERE d.revoked_at IS NULL AND t.suspended_at IS NULL
+  AND coalesce(d.last_sync_at, d.paired_at) < $1::timestamptz
+  AND coalesce(d.last_sync_at, d.paired_at) >= $2::timestamptz
+ORDER BY coalesce(d.last_sync_at, d.paired_at), d.id
+LIMIT 500
+`
+
+type StoppedSyncingParams struct {
+	QuietSince  time.Time
+	WindowStart time.Time
+}
+
+type StoppedSyncingRow struct {
+	TenantSlug       string
+	TenantName       string
+	OutletCode       string
+	DeviceID         uuid.UUID
+	DeviceName       string
+	DeviceCode       int32
+	PairedAt         time.Time
+	LastSyncAt       *time.Time
+	LastSeenAt       *time.Time
+	AppVersion       *string
+	UnsyncedEvents   int32
+	OldestUnsyncedAt *time.Time
+}
+
+// Tablets in use that have gone quiet: not revoked, in a business that is not suspended, that synced
+// (or were paired) within the window but not since `quiet_since`. Oldest silence first.
+func (q *Queries) StoppedSyncing(ctx context.Context, arg StoppedSyncingParams) ([]StoppedSyncingRow, error) {
+	rows, err := q.db.Query(ctx, stoppedSyncing, arg.QuietSince, arg.WindowStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StoppedSyncingRow
+	for rows.Next() {
+		var i StoppedSyncingRow
+		if err := rows.Scan(
+			&i.TenantSlug,
+			&i.TenantName,
+			&i.OutletCode,
+			&i.DeviceID,
+			&i.DeviceName,
+			&i.DeviceCode,
+			&i.PairedAt,
+			&i.LastSyncAt,
+			&i.LastSeenAt,
+			&i.AppVersion,
+			&i.UnsyncedEvents,
+			&i.OldestUnsyncedAt,
 		); err != nil {
 			return nil, err
 		}

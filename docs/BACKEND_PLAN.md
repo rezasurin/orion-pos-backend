@@ -577,6 +577,27 @@ trigger that raises on update or delete as a backstop.
 - **Shape.** The monitor reads the `device` and `shift` tables read-only (with `device_alert`, its
   own table); migration 00013 adds the columns, the table, and a partial index of open shifts.
 
+#### 4.11.2 Usage metrics and "stopped syncing" as built (B2.9)
+
+- **`tenant_daily_metrics (tenant_id, day)`** (migration 00017): sales (by business date, voided
+  ones included) and voided sales; events received, rejected events and distinct tablets that
+  pushed (by the day they arrived, in Asia/Jakarta); review flags raised. **Counts only** (ADR
+  0008): no amounts, items or people. Only `orion_platform` has privileges on it; the app role
+  cannot read it, which `TestPlatformTablesAreInvisibleToTheApp` checks.
+- **The job** (`platform.MetricsJobs`, river kind `tenant_daily_metrics`) runs in `orion worker`
+  at 01:00 Jakarta time and when the worker starts. Each run recomputes the last 7 days, today
+  included, for every business that existed then, in one upsert, so sales from a tablet that was
+  offline for days land on the days they belong to and a rerun changes nothing. It scans those days
+  of `sale`, `sync_inbox` and `flag` across tenants once a night; there are no date indexes on those
+  tables yet (a `ponytail:` note in the query says when to add them).
+- **"Stopped syncing"** (`platform.Service.StoppedSyncing`): tablets not revoked, in businesses not
+  suspended, whose last sync (or pairing, for one that never synced) is within 30 days but older
+  than the quiet period, longest silent first, at most 500. It complements the device monitor
+  (4.11.1), which only alerts on undelivered events or an open shift.
+- Operators use them through `orion admin metrics` and `orion admin stopped-syncing` for now
+  (`docs/runbooks/pilot.md`); B2.8 puts both on `/admin`. Neither is audited: they show counts and
+  device metadata, not a business's data (the support report, which does, stays audited).
+
 ### 4.12 Database conventions: indexes, N+1 queries and deadlocks
 
 **Indexes are added when a query needs one**, not for every column or foreign key. Each index is
@@ -1308,7 +1329,7 @@ Paths under `/v1` are tenant-side (user or device tokens). Paths under `/admin` 
 | `catalog_import` | 2 | not a job: the import is synchronous (6.3.2) |
 | `reconcile_payment_intents` | 2 | every minute for pending intents |
 | `reconcile_gateway_settlement` | 2 | daily |
-| `tenant_daily_metrics` | 2 | nightly aggregates for the admin console (sales counts only, no business data, ADR 0008) |
+| `tenant_daily_metrics` | 2 | nightly at 01:00 WIB and on worker start; recomputes the last 7 days (4.11.2) |
 | `stock_balance_check` | 3 | nightly sample; full rebuild on demand |
 | `billing_start_notices` | 5 | notice schedule before the global/tenant billing date |
 | `billing_start_transition` | 5 | on the date: early_access -> trial/paid, applying stored promo redemptions |
@@ -1378,7 +1399,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.6 | ✅ Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download (see 6.4.4) | 3d |
 | B2.7 | ✅ Kitchen/bar tickets: station routing on items, included in pull; printing is client-side (see 6.3.3) | 1d |
 | B2.8 | Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer | 5d |
-| B2.9 | `tenant_daily_metrics` aggregates, "stopped syncing" query | 1d |
+| B2.9 | ✅ `tenant_daily_metrics` aggregates, "stopped syncing" query (see 4.11.2) | 1d |
 | B2.10 | ✅ Legal plumbing: `terms_acceptance(user_id, version, accepted_at)`; signup requires the current version | 0.5d |
 | B2.11 | Security pass: rate limits, headers, dependency audit (`govulncheck` in CI), secret rotation runbook, operator account review | 2d |
 
