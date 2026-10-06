@@ -343,6 +343,59 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
 
+  /v1/reports/sales:
+    get:
+      operationId: getSalesReport
+      tags: [reports]
+      summary: Sales of an outlet over a range of days, by day, item or payment method
+      description: |
+        Completed sales from `from` to `to` (business dates in the outlet's time zone and day
+        cutoff, inclusive, at most 366 days), grouped by `group_by`:
+
+        - `day`: one row per business date in the range, days without sales included, with the
+          same totals as the end-of-day report.
+        - `item`: one row per variant sold, with the names as they are in the catalog now, the
+          quantity, and the line amounts (gross, discounts including its share of bill discounts,
+          net). The rows' `net` adds up to the range's net sales.
+        - `payment_method`: what each method took.
+
+        `format=csv` returns the same rows as a CSV file (`text/csv`, comma separated, a header
+        row) for a spreadsheet. Needs `report.view` at the outlet.
+      x-permission: report.view
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+        - name: from
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: group_by
+          in: query
+          required: true
+          schema: {type: string, enum: [day, item, payment_method]}
+        - name: format
+          in: query
+          schema: {type: string, enum: [json, csv], default: json}
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesReport'
+            text/csv:
+              schema: {type: string}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /v1/sales:
     get:
       operationId: listSales
@@ -2275,6 +2328,45 @@ components:
         expected: {type: integer, format: int64, description: opening_cash + received - refunded + pay_in - pay_out}
         counted: {type: integer, format: int64, nullable: true, description: Absent until the shift is closed.}
         difference: {type: integer, format: int64, nullable: true, description: counted - expected; negative means short.}
+
+    SalesReport:
+      type: object
+      required: [outlet_id, from, to, group_by]
+      description: Only the list named by `group_by` is present.
+      properties:
+        outlet_id: {type: string, format: uuid}
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        group_by: {type: string, enum: [day, item, payment_method]}
+        days:
+          type: array
+          items: {$ref: '#/components/schemas/SalesReportDay'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SalesReportItem'}
+        payment_methods:
+          type: array
+          items: {$ref: '#/components/schemas/ReportMethod'}
+
+    SalesReportDay:
+      type: object
+      required: [date, sales]
+      properties:
+        date: {type: string, format: date}
+        sales: {$ref: '#/components/schemas/ReportTotals'}
+
+    SalesReportItem:
+      type: object
+      required: [item_id, variant_id, item_name, variant_name, quantity, gross, discounts, net]
+      properties:
+        item_id: {type: string, format: uuid}
+        variant_id: {type: string, format: uuid}
+        item_name: {type: string}
+        variant_name: {type: string, description: Empty for a one-size item.}
+        quantity: {type: integer, format: int64}
+        gross: {type: integer, format: int64, description: (unit price + modifiers) x quantity}
+        discounts: {type: integer, format: int64, description: Line discounts and the lines' share of bill discounts.}
+        net: {type: integer, format: int64, description: gross - discounts}
 
     ReportTotals:
       type: object

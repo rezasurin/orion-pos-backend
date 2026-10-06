@@ -225,6 +225,7 @@ sale shows up the next time you fetch.
 |---|---|
 | `GET /v1/reports/shifts/{shiftId}` | End of shift: `cash` (opening, received, refunded, pay_in, pay_out, `expected`, and once closed `counted` and `difference`), `sales` totals, `payment_methods[]`, `discounts`, `voided_sales`, `voids_recorded`, `no_sale_openings`, `flags`. |
 | `GET /v1/reports/days/{date}?outlet_id=` | End of day for one outlet by **business date**: the same sections, plus `cash_movements`, `shifts[]` with each one's reconciliation, `open_shifts`, and `flags` by code. |
+| `GET /v1/reports/sales?outlet_id=&from=&to=&group_by=` | Completed sales of one outlet over business dates `from`..`to` (inclusive, at most 366 days). `group_by=day`: `days[]`, one per date **including days without sales** (zeros), each with the end-of-day `sales` totals. `group_by=item`: `items[]`, one per variant sold, highest `net` first, with `item_name`/`variant_name` as in the catalog **now** (a renamed item shows its new name), `quantity`, `gross`, `discounts` (its own and its share of bill discounts) and `net`; the `net` column adds up to the range's net sales. `group_by=payment_method`: `payment_methods[]`. Only the list for `group_by` is present. `format=csv` returns the same rows as `text/csv` (header row, comma separated, whole rupiah) for a "Download" button: fetch it with the token and save the blob. In the CSV a name starting with `=`, `+`, `-` or `@` is prefixed with `'` so a spreadsheet does not run it as a formula. |
 | `GET /v1/sales` | Newest first. Filters: `outlet_id`, `from`, `to` (business dates, inclusive), `status` (`completed`, `voided`), `receipt_number` (exact), `staff_id`, `flagged`, plus `cursor`, `limit`. Without `outlet_id` it covers every outlet the caller can see. |
 | `GET /v1/sales/{saleId}` | Everything: lines with modifiers, discounts, payments, the void, flags with their `detail`, and the settings the device priced with. |
 
@@ -513,6 +514,7 @@ settings, for checking printer layout and the calculation; it is not a sale.
 | Sign up | `auth/signup` → "check your inbox" (`auth/resend-verification`) → link → `auth/verify-email` → sign in |
 | Back office sign in | `auth/login` → `me` → `entitlements` |
 | Dashboard / end of day | `reports/days/{date}?outlet_id=` |
+| Sales reports (charts, best sellers, payment mix, CSV download) | `reports/sales?outlet_id=&from=&to=&group_by=day\|item\|payment_method[&format=csv]` |
 | Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |
 | Sales list and search | `sales?…` → `sales/{saleId}` |
 | Catalog manager | `categories`, `items`, `modifier-groups`, `outlets/{id}/variants` |

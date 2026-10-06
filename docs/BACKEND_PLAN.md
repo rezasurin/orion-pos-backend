@@ -1105,6 +1105,27 @@ fields are ignored so a newer app may add fields within a version.
   of a foreign key, so each is justified in the file. B1.11 runs `EXPLAIN` on each report against a
   busy week.
 
+#### 6.4.4 Sales reports as built (B2.6)
+
+- `GET /v1/reports/sales?outlet_id=&from=&to=&group_by=day|item|payment_method[&format=csv]`,
+  `report.view` **at the outlet** (as the day report; a test gives a manager one outlet of two).
+  One outlet per report; a cross-outlet report waits for multi-outlet (Phase 6).
+- **Local time** comes free: sales are grouped by `business_date`, which the projector already
+  computed in the outlet's time zone and day cutoff. The range is at most 366 days.
+- **By day** lists every date in the range (`generate_series`), days without sales as zeros, with
+  the day report's totals. **By item** groups lines by variant with the catalog's current names, and
+  splits a line into gross, discounts (its own and its share of the bill discount) and net
+  (`line_total`), so the items' net adds up to the range's net sales. **By payment method** matches
+  the day report's section. All count completed sales only, like the day report.
+- **The reconciliation test** (`TestAWeekOfSalesReconcilesToTheRupiah`) now also requires the week's
+  report by day to equal the seven day reports with a zero day either side, and by item and
+  payment method to equal its own bookkeeping per variant and method. The load check times all three
+  over the busy week (3 to 19 ms locally).
+- **CSV** (`format=csv`) is built in memory from the same rows: a report is at most 366 day rows or
+  one row per variant. Names starting with `=`, `+`, `-`, `@`, tab or carriage return get a leading
+  `'`, so a name typed by someone with catalog access cannot run as a formula in the owner's
+  spreadsheet.
+
 #### 6.4.3 Sales list and detail as built (B1.9)
 
 - `GET /v1/sales` and `GET /v1/sales/{saleId}`, read-only, needing `report.view` at the outlet(s).
@@ -1338,7 +1359,7 @@ device receipt counters with `sale` rows, gaps explained by voids or unsent draf
 | B2.3 | ✅ CSV catalog import: template compatible with a spreadsheet and Moka's export, dry-run with row errors, then commit (synchronously, see 6.3.2) | 4d |
 | B2.4 | Gateway integration behind the `Gateway` interface: doit.id (6.5.1): tenant sub-merchant onboarding, dynamic QRIS (e-wallets pay by scanning it), webhooks, reconciliation jobs | 6d |
 | B2.5 | Refunds: `refund.issued` event, permission, partial refunds by line, gateway refund for gateway payments, negative report entries | 3d |
-| B2.6 | Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download | 3d |
+| B2.6 | ✅ Sales reports by day, item and payment method, per outlet, in outlet local time; CSV download (see 6.4.4) | 3d |
 | B2.7 | Kitchen/bar tickets: station routing on items, included in pull; printing is client-side | 1d |
 | B2.8 | Admin endpoints: tenant list with metrics, suspend/reinstate (suspended tenants: back office read-only, POS warned at next sync, never cut mid-shift), device revocation, entitlement and flag editing, announcements, audit log viewer | 5d |
 | B2.9 | `tenant_daily_metrics` aggregates, "stopped syncing" query | 1d |

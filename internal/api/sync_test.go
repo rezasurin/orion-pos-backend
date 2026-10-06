@@ -398,6 +398,50 @@ func TestReportsOverHTTP(t *testing.T) {
 	if empty.Code != http.StatusOK {
 		t.Errorf("an empty day: %d %s", empty.Code, empty.Body.String())
 	}
+
+	// The sales report over a range. An item named like a formula is written so a spreadsheet does
+	// not run it.
+	e.do(t, "PATCH", "/v1/items/"+item.ID, owner, map[string]any{"name": "=Espresso"})
+	salesPath := "/v1/reports/sales?outlet_id=" + f.outlet.ID.String() + "&from=" + local + "&to=" + local
+	var byItem struct {
+		GroupBy string `json:"group_by"`
+		Items   []struct {
+			ItemName string `json:"item_name"`
+			Quantity int64  `json:"quantity"`
+			Net      int64  `json:"net"`
+		} `json:"items"`
+		Days *[]any `json:"days"`
+	}
+	e.do(t, "GET", salesPath+"&group_by=item", manager.AccessToken, nil).decode(t, &byItem)
+	if byItem.GroupBy != "item" || len(byItem.Items) != 1 || byItem.Items[0].ItemName != "=Espresso" || byItem.Items[0].Quantity != 2 ||
+		byItem.Items[0].Net != 36000 || byItem.Days != nil {
+		t.Errorf("by item = %+v", byItem)
+	}
+	csvBody := e.do(t, "GET", salesPath+"&group_by=item&format=csv", owner, nil)
+	wantCSV := "item_name,variant_name,quantity,gross,discounts,net,item_id,variant_id\n'=Espresso,,2,36000,0,36000," + item.ID + "," + item.Variants[0].ID + "\n"
+	if csvBody.Code != http.StatusOK || csvBody.Header().Get("Content-Type") != "text/csv" || csvBody.Body.String() != wantCSV {
+		t.Errorf("CSV: %d %q\n%s", csvBody.Code, csvBody.Header().Get("Content-Type"), csvBody.Body.String())
+	}
+	if r := e.do(t, "GET", salesPath+"&group_by=payment_method&format=csv", owner, nil); r.Body.String() != "method,payments,amount\ncash,1,36000\n" {
+		t.Errorf("payment methods CSV: %q", r.Body.String())
+	}
+	e.do(t, "GET", salesPath+"&group_by=day", cashier.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
+	outlet := "/v1/reports/sales?outlet_id=" + f.outlet.ID.String()
+	for name, q := range map[string]string{
+		"to before from": "&from=2026-02-02&to=2026-02-01&group_by=day",
+		"367 days":       "&from=2025-01-01&to=2026-01-02&group_by=day",
+		"bad group":      "&from=2026-01-01&to=2026-01-01&group_by=staff",
+		"no dates":       "&group_by=day",
+	} {
+		t.Run(name, func(t *testing.T) {
+			e.do(t, "GET", outlet+q, owner, nil).problem(t, http.StatusBadRequest, "validation_failed")
+		})
+	}
+	var year struct{ Days []any }
+	e.do(t, "GET", outlet+"&from=2025-01-01&to=2026-01-01&group_by=day", owner, nil).decode(t, &year)
+	if len(year.Days) != 366 {
+		t.Errorf("a 366-day range has %d days", len(year.Days))
+	}
 }
 
 func TestSalesListAndDetailOverHTTP(t *testing.T) {

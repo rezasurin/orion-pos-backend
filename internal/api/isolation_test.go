@@ -215,6 +215,12 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 			// B's own report for the same day holds nothing of A's.
 			w.noLeak(t, "GetDayReport/own", e.do(t, "GET", "/v1/reports/days/"+today+"?outlet_id="+w.b.outlet.ID.String(), ub, nil))
 		},
+		"GetSalesReport": func(t *testing.T) {
+			today := time.Now().UTC().Format(time.DateOnly)
+			q := "&from=" + today + "&to=" + today + "&group_by=item"
+			w.gone(t, "GetSalesReport", e.do(t, "GET", "/v1/reports/sales?outlet_id="+aOutlet+q, ub, nil), http.StatusNotFound, "not_found")
+			w.noLeak(t, "GetSalesReport/own", e.do(t, "GET", "/v1/reports/sales?outlet_id="+w.b.outlet.ID.String()+q, ub, nil))
+		},
 		"PullChanges": func(t *testing.T) {
 			// B's tablet pulls everything it can: nothing of A's, from a snapshot or from cursor zero.
 			w.noLeak(t, "PullChanges", e.do(t, "GET", "/v1/sync/pull", db, nil))
@@ -349,7 +355,7 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"GetOutlet", "UpdateStaff", "SetStaffPin", "RevokeDevice", "CreateStaff", "PairDevice",
 		"ListCategories", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
-		"CreateCategory", "CreateModifierGroup", "CreateItem", "ImportCatalog", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "ListSales", "GetSale",
+		"CreateCategory", "CreateModifierGroup", "CreateItem", "ImportCatalog", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "GetSalesReport", "ListSales", "GetSale",
 	} {
 		covered[op] = true
 	}

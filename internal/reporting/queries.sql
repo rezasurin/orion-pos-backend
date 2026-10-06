@@ -105,3 +105,43 @@ WHERE f.tenant_id = @tenant_id AND f.outlet_id = @outlet_id AND (
     OR f.target_id IN (SELECT sh.id FROM shift sh WHERE sh.tenant_id = @tenant_id AND sh.outlet_id = @outlet_id AND sh.business_date = @business_date)
     OR f.target_id IN (SELECT m.id FROM cash_movement m WHERE m.tenant_id = @tenant_id AND m.outlet_id = @outlet_id AND m.business_date = @business_date))
 GROUP BY f.code ORDER BY f.code;
+
+-- Sales over a range of business dates (B2.6). Completed sales only, as in the day report.
+
+-- name: SalesByDay :many
+-- Every date in the range, days without sales included.
+SELECT d::date AS business_date,
+    count(sa.id)::bigint AS sales,
+    coalesce(sum(sa.subtotal), 0)::bigint AS subtotal,
+    coalesce(sum(sa.discount_total), 0)::bigint AS discount_total,
+    coalesce(sum(sa.service_charge), 0)::bigint AS service_charge,
+    coalesce(sum(sa.tax), 0)::bigint AS tax,
+    coalesce(sum(sa.rounding_amount), 0)::bigint AS rounding,
+    coalesce(sum(sa.total), 0)::bigint AS total
+FROM generate_series(@from_date::date, @to_date::date, interval '1 day') AS d
+LEFT JOIN sale sa ON sa.tenant_id = @tenant_id AND sa.outlet_id = @outlet_id AND sa.business_date = d::date AND sa.status = 'completed'
+GROUP BY d ORDER BY d;
+
+-- name: SalesByItem :many
+-- Per variant sold, named as in the catalog now. A line's total is its gross less its own discount
+-- and its share of the bill discount, so the rows' net adds up to the sales' net.
+SELECT l.variant_id, v.item_id, i.name AS item_name, v.name AS variant_name,
+    sum(l.quantity)::bigint AS quantity,
+    sum(l.line_total + l.line_discount + l.allocated_bill_discount)::bigint AS gross,
+    sum(l.line_discount + l.allocated_bill_discount)::bigint AS discounts,
+    sum(l.line_total)::bigint AS net
+FROM sale sa
+JOIN sale_line l ON l.tenant_id = sa.tenant_id AND l.sale_id = sa.id
+JOIN variant v ON v.tenant_id = l.tenant_id AND v.id = l.variant_id
+JOIN item i ON i.tenant_id = v.tenant_id AND i.id = v.item_id
+WHERE sa.tenant_id = @tenant_id AND sa.outlet_id = @outlet_id AND sa.status = 'completed'
+  AND sa.business_date BETWEEN @from_date::date AND @to_date::date
+GROUP BY l.variant_id, v.item_id, i.name, v.name
+ORDER BY net DESC, i.name, v.name, l.variant_id;
+
+-- name: SalesByPaymentMethod :many
+SELECT p.method, count(*)::bigint AS payments, sum(p.amount)::bigint AS amount
+FROM sale sa JOIN payment p ON p.tenant_id = sa.tenant_id AND p.sale_id = sa.id
+WHERE sa.tenant_id = @tenant_id AND sa.outlet_id = @outlet_id AND sa.status = 'completed' AND p.status = 'confirmed'
+  AND sa.business_date BETWEEN @from_date::date AND @to_date::date
+GROUP BY p.method ORDER BY p.method;

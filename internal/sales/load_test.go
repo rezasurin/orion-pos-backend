@@ -188,6 +188,12 @@ func TestAWeekOfABusyCafeStaysFast(t *testing.T) {
 		_, err := rd.ListSales(ctx, f.tenant.ID, sales.SaleFilter{From: &day, To: &day}, nil, 50)
 		return err
 	})
+	for _, by := range []string{reporting.ByDay, reporting.ByItem, reporting.ByPaymentMethod} {
+		timeIt("sales report of the week by "+by, func() error {
+			_, err := rep.SalesReport(ctx, f.tenant.ID, f.outlet.ID, monday, monday.AddDate(0, 0, loadDays-1), by)
+			return err
+		})
+	}
 	var oneShift uuid.UUID
 	_ = f.d.Owner.QueryRow(ctx, `SELECT id FROM shift ORDER BY opened_at LIMIT 1`).Scan(&oneShift)
 	timeIt("end-of-shift report", func() error {

@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"fmt"
+	"strconv"
+	"strings"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
@@ -67,6 +71,91 @@ func (s *Server) GetDayReport(ctx context.Context, req openapi.GetDayReportReque
 		out.Shifts[i].Shift, out.Shifts[i].Cash = toShiftInfo(sh.Shift), toReportCash(sh.Cash)
 	}
 	return out, nil
+}
+
+func (s *Server) GetSalesReport(ctx context.Context, req openapi.GetSalesReportRequestObject) (openapi.GetSalesReportResponseObject, error) {
+	tenantID, p := principalFrom(ctx).TenantID, req.Params
+	if _, err := s.Tenancy.GetOutlet(ctx, tenantID, p.OutletId); err != nil {
+		return nil, err
+	}
+	if !callerFrom(ctx).Access.HasAt(identity.PermReportView, p.OutletId) {
+		return nil, &identity.ForbiddenError{Permission: string(identity.PermReportView), Reason: "report.view is needed at this outlet"}
+	}
+	r, err := s.Reporting.SalesReport(ctx, tenantID, p.OutletId, p.From.Time, p.To.Time, string(p.GroupBy))
+	if err != nil {
+		return nil, err
+	}
+	if p.Format != nil && *p.Format == openapi.Csv {
+		body, err := salesReportCSV(r)
+		if err != nil {
+			return nil, err
+		}
+		return openapi.GetSalesReport200TextcsvResponse{Body: bytes.NewReader(body), ContentLength: int64(len(body))}, nil
+	}
+	out := openapi.GetSalesReport200JSONResponse{
+		OutletId: r.OutletID, From: openapi_types.Date{Time: r.From}, To: openapi_types.Date{Time: r.To},
+		GroupBy: openapi.SalesReportGroupBy(r.GroupBy),
+	}
+	switch r.GroupBy {
+	case reporting.ByDay:
+		days := make([]openapi.SalesReportDay, len(r.Days))
+		for i, d := range r.Days {
+			days[i] = openapi.SalesReportDay{Date: openapi_types.Date{Time: d.Date}, Sales: toReportTotals(d.Sales)}
+		}
+		out.Days = &days
+	case reporting.ByItem:
+		items := make([]openapi.SalesReportItem, len(r.Items))
+		for i, it := range r.Items {
+			items[i] = openapi.SalesReportItem{
+				ItemId: it.ItemID, VariantId: it.VariantID, ItemName: it.ItemName, VariantName: it.VariantName,
+				Quantity: it.Quantity, Gross: it.Gross, Discounts: it.Discounts, Net: it.Net,
+			}
+		}
+		out.Items = &items
+	case reporting.ByPaymentMethod:
+		methods := toReportMethods(r.PaymentMethods)
+		out.PaymentMethods = &methods
+	}
+	return out, nil
+}
+
+// salesReportCSV writes the report's rows with a header, amounts in whole rupiah.
+func salesReportCSV(r reporting.SalesReport) ([]byte, error) {
+	var rows [][]string
+	n := func(v int64) string { return strconv.FormatInt(v, 10) }
+	switch r.GroupBy {
+	case reporting.ByDay:
+		rows = append(rows, []string{"date", "sales", "subtotal", "discounts", "net", "service_charge", "tax", "total", "rounding"})
+		for _, d := range r.Days {
+			t := d.Sales
+			rows = append(rows, []string{d.Date.Format("2006-01-02"), n(t.Count), n(t.Subtotal), n(t.Discounts), n(t.Net), n(t.ServiceCharge), n(t.Tax), n(t.Total), n(t.Rounding)})
+		}
+	case reporting.ByItem:
+		rows = append(rows, []string{"item_name", "variant_name", "quantity", "gross", "discounts", "net", "item_id", "variant_id"})
+		for _, it := range r.Items {
+			rows = append(rows, []string{csvText(it.ItemName), csvText(it.VariantName), n(it.Quantity), n(it.Gross), n(it.Discounts), n(it.Net), it.ItemID.String(), it.VariantID.String()})
+		}
+	case reporting.ByPaymentMethod:
+		rows = append(rows, []string{"method", "payments", "amount"})
+		for _, m := range r.PaymentMethods {
+			rows = append(rows, []string{m.Method, n(m.Payments), n(m.Amount)})
+		}
+	}
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	if err := w.WriteAll(rows); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// csvText keeps a spreadsheet from running a name as a formula: an item named "=HYPERLINK(...)"
+// by someone with catalog access would otherwise run when the owner opens the file.
+func csvText(v string) string {
+	if v != "" && strings.ContainsRune("=+-@\t\r", rune(v[0])) {
+		return "'" + v
+	}
+	return v
 }
 
 func toShiftInfo(s reporting.ShiftInfo) openapi.ReportShiftInfo {

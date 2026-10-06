@@ -253,6 +253,191 @@ func (q *Queries) GetShiftForReport(ctx context.Context, arg GetShiftForReportPa
 	return i, err
 }
 
+const salesByDay = `-- name: SalesByDay :many
+
+SELECT d::date AS business_date,
+    count(sa.id)::bigint AS sales,
+    coalesce(sum(sa.subtotal), 0)::bigint AS subtotal,
+    coalesce(sum(sa.discount_total), 0)::bigint AS discount_total,
+    coalesce(sum(sa.service_charge), 0)::bigint AS service_charge,
+    coalesce(sum(sa.tax), 0)::bigint AS tax,
+    coalesce(sum(sa.rounding_amount), 0)::bigint AS rounding,
+    coalesce(sum(sa.total), 0)::bigint AS total
+FROM generate_series($1::date, $2::date, interval '1 day') AS d
+LEFT JOIN sale sa ON sa.tenant_id = $3 AND sa.outlet_id = $4 AND sa.business_date = d::date AND sa.status = 'completed'
+GROUP BY d ORDER BY d
+`
+
+type SalesByDayParams struct {
+	FromDate pgtype.Date
+	ToDate   pgtype.Date
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+}
+
+type SalesByDayRow struct {
+	BusinessDate  pgtype.Date
+	Sales         int64
+	Subtotal      int64
+	DiscountTotal int64
+	ServiceCharge int64
+	Tax           int64
+	Rounding      int64
+	Total         int64
+}
+
+// Sales over a range of business dates (B2.6). Completed sales only, as in the day report.
+// Every date in the range, days without sales included.
+func (q *Queries) SalesByDay(ctx context.Context, arg SalesByDayParams) ([]SalesByDayRow, error) {
+	rows, err := q.db.Query(ctx, salesByDay,
+		arg.FromDate,
+		arg.ToDate,
+		arg.TenantID,
+		arg.OutletID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SalesByDayRow
+	for rows.Next() {
+		var i SalesByDayRow
+		if err := rows.Scan(
+			&i.BusinessDate,
+			&i.Sales,
+			&i.Subtotal,
+			&i.DiscountTotal,
+			&i.ServiceCharge,
+			&i.Tax,
+			&i.Rounding,
+			&i.Total,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const salesByItem = `-- name: SalesByItem :many
+SELECT l.variant_id, v.item_id, i.name AS item_name, v.name AS variant_name,
+    sum(l.quantity)::bigint AS quantity,
+    sum(l.line_total + l.line_discount + l.allocated_bill_discount)::bigint AS gross,
+    sum(l.line_discount + l.allocated_bill_discount)::bigint AS discounts,
+    sum(l.line_total)::bigint AS net
+FROM sale sa
+JOIN sale_line l ON l.tenant_id = sa.tenant_id AND l.sale_id = sa.id
+JOIN variant v ON v.tenant_id = l.tenant_id AND v.id = l.variant_id
+JOIN item i ON i.tenant_id = v.tenant_id AND i.id = v.item_id
+WHERE sa.tenant_id = $1 AND sa.outlet_id = $2 AND sa.status = 'completed'
+  AND sa.business_date BETWEEN $3::date AND $4::date
+GROUP BY l.variant_id, v.item_id, i.name, v.name
+ORDER BY net DESC, i.name, v.name, l.variant_id
+`
+
+type SalesByItemParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+	FromDate pgtype.Date
+	ToDate   pgtype.Date
+}
+
+type SalesByItemRow struct {
+	VariantID   uuid.UUID
+	ItemID      uuid.UUID
+	ItemName    string
+	VariantName string
+	Quantity    int64
+	Gross       int64
+	Discounts   int64
+	Net         int64
+}
+
+// Per variant sold, named as in the catalog now. A line's total is its gross less its own discount
+// and its share of the bill discount, so the rows' net adds up to the sales' net.
+func (q *Queries) SalesByItem(ctx context.Context, arg SalesByItemParams) ([]SalesByItemRow, error) {
+	rows, err := q.db.Query(ctx, salesByItem,
+		arg.TenantID,
+		arg.OutletID,
+		arg.FromDate,
+		arg.ToDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SalesByItemRow
+	for rows.Next() {
+		var i SalesByItemRow
+		if err := rows.Scan(
+			&i.VariantID,
+			&i.ItemID,
+			&i.ItemName,
+			&i.VariantName,
+			&i.Quantity,
+			&i.Gross,
+			&i.Discounts,
+			&i.Net,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const salesByPaymentMethod = `-- name: SalesByPaymentMethod :many
+SELECT p.method, count(*)::bigint AS payments, sum(p.amount)::bigint AS amount
+FROM sale sa JOIN payment p ON p.tenant_id = sa.tenant_id AND p.sale_id = sa.id
+WHERE sa.tenant_id = $1 AND sa.outlet_id = $2 AND sa.status = 'completed' AND p.status = 'confirmed'
+  AND sa.business_date BETWEEN $3::date AND $4::date
+GROUP BY p.method ORDER BY p.method
+`
+
+type SalesByPaymentMethodParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+	FromDate pgtype.Date
+	ToDate   pgtype.Date
+}
+
+type SalesByPaymentMethodRow struct {
+	Method   string
+	Payments int64
+	Amount   int64
+}
+
+func (q *Queries) SalesByPaymentMethod(ctx context.Context, arg SalesByPaymentMethodParams) ([]SalesByPaymentMethodRow, error) {
+	rows, err := q.db.Query(ctx, salesByPaymentMethod,
+		arg.TenantID,
+		arg.OutletID,
+		arg.FromDate,
+		arg.ToDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SalesByPaymentMethodRow
+	for rows.Next() {
+		var i SalesByPaymentMethodRow
+		if err := rows.Scan(&i.Method, &i.Payments, &i.Amount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const shiftCash = `-- name: ShiftCash :many
 SELECT s.id AS shift_id,
     coalesce((SELECT sum(p.amount) FROM sale sa JOIN payment p ON p.tenant_id = sa.tenant_id AND p.sale_id = sa.id

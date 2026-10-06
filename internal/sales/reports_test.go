@@ -44,6 +44,7 @@ type bkSale struct {
 	cash      int64            // cash applied to the bill
 	methods   map[string]int64 // amount per payment method
 	discounts int64            // number of discounts
+	lines     []lineSpec
 	voided    bool
 }
 
@@ -88,7 +89,7 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 			spec.Tender = pricing.TenderMixed
 		}
 		payload := f.salePayload(spec)
-		sale := &bkSale{day: day, shift: shift, res: f.lastRes, methods: map[string]int64{}, discounts: int64(len(spec.Discounts))}
+		sale := &bkSale{day: day, shift: shift, res: f.lastRes, methods: map[string]int64{}, discounts: int64(len(spec.Discounts)), lines: spec.Lines}
 		due := int64(sale.res.CashTotal)
 		switch kind {
 		case 0, 1:
@@ -306,6 +307,76 @@ func TestAWeekOfSalesReconcilesToTheRupiah(t *testing.T) {
 		if got.CashMovements.PayIn != payIn || got.CashMovements.PayOut != payOut || got.CashMovements.NoSale != noSale {
 			t.Errorf("day %d cash movements: got %+v, want in %d out %d no-sale %d", day, got.CashMovements, payIn, payOut, noSale)
 		}
+	}
+
+	// The sales report over the week, with a day either side: by day it repeats the day reports
+	// (checked above against the bookkeeping), and by item and payment method it adds up the week.
+	from, to := monday.AddDate(0, 0, -1), monday.AddDate(0, 0, 7)
+	byDayRep, err := rep.SalesReport(ctx, f.tenant.ID, f.outlet.ID, from, to, reporting.ByDay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byDayRep.Days) != 9 || byDayRep.Days[0].Sales != (reporting.Totals{}) || byDayRep.Days[8].Sales != (reporting.Totals{}) {
+		t.Fatalf("by day: %d rows, first %+v, last %+v", len(byDayRep.Days), byDayRep.Days[0], byDayRep.Days[len(byDayRep.Days)-1])
+	}
+	var weekNet int64
+	for day := 0; day < 7; day++ {
+		d, err := rep.DayReport(ctx, f.tenant.ID, f.outlet.ID, monday.AddDate(0, 0, day))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := byDayRep.Days[day+1]; got.Sales != d.Sales || !got.Date.Equal(d.Date) {
+			t.Errorf("by day, day %d: %+v, the day report says %+v", day, got, d.Sales)
+		}
+		weekNet += d.Sales.Net
+	}
+
+	type itemTotals struct{ qty, gross, discounts, net int64 }
+	wantItems, wantMethods := map[uuid.UUID]itemTotals{}, map[string]int64{}
+	for _, s := range all {
+		if s.voided {
+			continue
+		}
+		for i, l := range s.lines {
+			r, it := s.res.Lines[i], wantItems[l.Variant]
+			it.qty += l.Qty
+			it.gross += int64(r.Gross)
+			it.discounts += int64(r.Discount + r.AllocatedBillDiscount)
+			it.net += int64(r.Total)
+			wantItems[l.Variant] = it
+		}
+		for m, a := range s.methods {
+			wantMethods[m] += a
+		}
+	}
+	byItem, err := rep.SalesReport(ctx, f.tenant.ID, f.outlet.ID, from, to, reporting.ByItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotItems, itemsNet := map[uuid.UUID]itemTotals{}, int64(0)
+	for i, it := range byItem.Items {
+		gotItems[it.VariantID] = itemTotals{it.Quantity, it.Gross, it.Discounts, it.Net}
+		itemsNet += it.Net
+		if i > 0 && it.Net > byItem.Items[i-1].Net {
+			t.Errorf("by item: not ordered by net, %d after %d", it.Net, byItem.Items[i-1].Net)
+		}
+		if it.ItemName == "" || it.Gross-it.Discounts != it.Net {
+			t.Errorf("by item: %+v", it)
+		}
+	}
+	if fmt.Sprint(gotItems) != fmt.Sprint(wantItems) || itemsNet != weekNet {
+		t.Errorf("by item:\n got  %v\n want %v\n net %d, the week's %d", gotItems, wantItems, itemsNet, weekNet)
+	}
+	byMethod, err := rep.SalesReport(ctx, f.tenant.ID, f.outlet.ID, from, to, reporting.ByPaymentMethod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotMethods := map[string]int64{}
+	for _, m := range byMethod.PaymentMethods {
+		gotMethods[m.Method] = m.Amount
+	}
+	if fmt.Sprint(gotMethods) != fmt.Sprint(wantMethods) {
+		t.Errorf("by payment method: got %v, want %v", gotMethods, wantMethods)
 	}
 
 	// Each shift's own report agrees.

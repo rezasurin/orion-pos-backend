@@ -249,8 +249,9 @@ func TestCatalogNeedsCatalogManage(t *testing.T) {
 }
 
 // The permission is per outlet where the route names one: catalog.manage at one outlet does not
-// allow changing another outlet's prices, though the same person may edit the shared catalog.
-func TestOutletPricesNeedThePermissionAtThatOutlet(t *testing.T) {
+// allow changing another outlet's prices, though the same person may edit the shared catalog, and
+// report.view at one outlet does not show another's sales.
+func TestOutletRoutesNeedThePermissionAtThatOutlet(t *testing.T) {
 	e := newEnv(t)
 	f := e.business(t, "kopi", "JKT1", "owner@kopi.test")
 	owner := e.login(t, "owner@kopi.test").AccessToken
@@ -279,6 +280,15 @@ func TestOutletPricesNeedThePermissionAtThatOutlet(t *testing.T) {
 	if r := e.do(t, "PUT", "/v1/outlets/"+second.String()+"/variants/"+v, owner, body); r.Code != http.StatusOK {
 		t.Errorf("owner at the second outlet: %d %s", r.Code, r.Body.String())
 	}
+
+	// Reports too: the manager reads the outlet they manage, not the other one.
+	report := func(outlet uuid.UUID) string {
+		return "/v1/reports/sales?outlet_id=" + outlet.String() + "&from=2026-01-01&to=2026-01-31&group_by=day"
+	}
+	if r := e.do(t, "GET", report(f.outlet.ID), manager.AccessToken, nil); r.Code != http.StatusOK {
+		t.Errorf("sales report at own outlet: %d %s", r.Code, r.Body.String())
+	}
+	e.do(t, "GET", report(second), manager.AccessToken, nil).problem(t, http.StatusForbidden, "forbidden")
 }
 
 type outletSettingsBody struct {

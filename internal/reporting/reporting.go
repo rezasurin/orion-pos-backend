@@ -1,5 +1,6 @@
 // Package reporting answers "how did the day go": the end-of-shift report with its cash
-// reconciliation, and the end-of-day report of an outlet (BACKEND_PLAN.md section 6.4, task B1.8).
+// reconciliation, the end-of-day report of an outlet (BACKEND_PLAN.md section 6.4, task B1.8), and
+// an outlet's sales over a range of days by day, item or payment method (B2.6).
 //
 // Reports are computed live from the rows the sales projectors wrote, in one read-only
 // transaction, so they can be rebuilt at any time and there is no stored total to go stale. The
@@ -21,6 +22,7 @@ package reporting
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -215,7 +217,7 @@ func (s *Service) ShiftReport(ctx context.Context, tenantID, shiftID uuid.UUID) 
 
 // DayReport builds the end-of-day report for an outlet and a business date.
 func (s *Service) DayReport(ctx context.Context, tenantID, outletID uuid.UUID, date time.Time) (DayReport, error) {
-	date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+	date = dateOnly(date)
 	out := DayReport{OutletID: outletID, Date: date, Flags: map[string]int64{}}
 	err := kernel.TenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
 		q := db.New(tx)
@@ -304,6 +306,100 @@ func (s *Service) DayReport(ctx context.Context, tenantID, outletID uuid.UUID, d
 		return nil
 	})
 	return out, err
+}
+
+// Ways to group the sales report.
+const (
+	ByDay           = "day"
+	ByItem          = "item"
+	ByPaymentMethod = "payment_method"
+)
+
+// MaxReportDays bounds a sales report's range.
+const MaxReportDays = 366
+
+// DaySales is one business date of the sales report.
+type DaySales struct {
+	Date  time.Time
+	Sales Totals
+}
+
+// ItemSales is one variant of the sales report. Discounts include the lines' share of bill
+// discounts, so Net over all rows is the range's net sales.
+type ItemSales struct {
+	ItemID, VariantID     uuid.UUID
+	ItemName, VariantName string
+	Quantity              int64
+	Gross, Discounts, Net int64
+}
+
+// SalesReport is an outlet's completed sales from From to To (business dates, inclusive). Only the
+// list for GroupBy is filled.
+type SalesReport struct {
+	OutletID       uuid.UUID
+	From, To       time.Time
+	GroupBy        string
+	Days           []DaySales
+	Items          []ItemSales
+	PaymentMethods []MethodTotal
+}
+
+// SalesReport builds the sales report of an outlet over a range of business dates.
+func (s *Service) SalesReport(ctx context.Context, tenantID, outletID uuid.UUID, from, to time.Time, groupBy string) (SalesReport, error) {
+	from, to = dateOnly(from), dateOnly(to)
+	switch {
+	case from.Year() < 2000 || to.Year() > 2100:
+		return SalesReport{}, fmt.Errorf("%w: dates are out of range", kernel.ErrValidation)
+	case to.Before(from):
+		return SalesReport{}, fmt.Errorf("%w: to is before from", kernel.ErrValidation)
+	case to.Sub(from) >= MaxReportDays*24*time.Hour:
+		return SalesReport{}, fmt.Errorf("%w: a report covers at most %d days", kernel.ErrValidation, MaxReportDays)
+	}
+	out := SalesReport{OutletID: outletID, From: from, To: to, GroupBy: groupBy}
+	f, t := pgtype.Date{Time: from, Valid: true}, pgtype.Date{Time: to, Valid: true}
+	err := kernel.TenantTx(ctx, s.pool, tenantID, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		switch groupBy {
+		case ByDay:
+			rows, err := q.SalesByDay(ctx, db.SalesByDayParams{TenantID: tenantID, OutletID: outletID, FromDate: f, ToDate: t})
+			if err != nil {
+				return err
+			}
+			out.Days = make([]DaySales, len(rows))
+			for i, r := range rows {
+				out.Days[i] = DaySales{Date: r.BusinessDate.Time, Sales: Totals{
+					Count: r.Sales, Subtotal: r.Subtotal, Discounts: r.DiscountTotal, Net: r.Subtotal - r.DiscountTotal,
+					ServiceCharge: r.ServiceCharge, Tax: r.Tax, Total: r.Total, Rounding: r.Rounding,
+				}}
+			}
+		case ByItem:
+			rows, err := q.SalesByItem(ctx, db.SalesByItemParams{TenantID: tenantID, OutletID: outletID, FromDate: f, ToDate: t})
+			if err != nil {
+				return err
+			}
+			out.Items = make([]ItemSales, len(rows))
+			for i, r := range rows {
+				out.Items[i] = ItemSales{
+					ItemID: r.ItemID, VariantID: r.VariantID, ItemName: r.ItemName, VariantName: r.VariantName,
+					Quantity: r.Quantity, Gross: r.Gross, Discounts: r.Discounts, Net: r.Net,
+				}
+			}
+		case ByPaymentMethod:
+			rows, err := q.SalesByPaymentMethod(ctx, db.SalesByPaymentMethodParams{TenantID: tenantID, OutletID: outletID, FromDate: f, ToDate: t})
+			if err != nil {
+				return err
+			}
+			out.PaymentMethods = methodTotals(len(rows), func(i int) (string, int64, int64) { return rows[i].Method, rows[i].Payments, rows[i].Amount })
+		default:
+			return fmt.Errorf("%w: group_by must be day, item or payment_method", kernel.ErrValidation)
+		}
+		return nil
+	})
+	return out, err
+}
+
+func dateOnly(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func reconcile(opening int64, counted *int64, received, refunded, payIn, payOut int64) Cash {
