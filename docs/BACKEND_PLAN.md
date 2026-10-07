@@ -5,7 +5,7 @@ currently live in the back-office repo:
 
 - Roadmap: [`Orion-POS/Inventory-React/docs/ROADMAP.md`](https://github.com/Orion-POS/Inventory-React/blob/dev/docs/ROADMAP.md)
 - ADRs: [`docs/adr`](https://github.com/Orion-POS/Inventory-React/tree/dev/docs/adr), referred to
-  below as ADR 0002 to ADR 0008
+  below as ADR 0002 to ADR 0009
 
 The roadmap says *what* ships in each phase. This document says *how* the Go service delivers it:
 the repository layout, the cross-cutting rules every module follows, the data model, the API, and
@@ -1305,12 +1305,12 @@ adjustments, waste, used stock) define the shape. Mapping them onto the ledger:
 | Table | Key columns |
 |---|---|
 | `uom_category` | `name` |
-| `uom` | `category_id`, `name`, `kind` (reference, bigger, smaller), `ratio_num`, `ratio_den` (integer ratio to the reference unit, instead of float), `rounding_scaled`, `active` |
+| `uom` | `category_id`, `name`, `is_reference`, `ratio_num`, `ratio_den` (integer ratio to the reference unit, instead of float; bigger/smaller is derived), `rounding_scaled`, `active` |
 | `ingredient` | `name`, `category_id`, `base_uom_id`, `track`, `archived_at` |
 | `ingredient_category` | `name`, `default_transaction_type_id` |
 | `recipe` | `variant_id` or `modifier_id`, `version`, `active_from` |
 | `recipe_line` | `recipe_id`, `ingredient_id`, `quantity_scaled` |
-| `stock_movement` | `outlet_id`, `ingredient_id`, `quantity_scaled` (signed), `kind` (receive, sale_consumption, waste, opname_adjustment, transfer_out, transfer_in, manual_adjustment), `source_type`, `source_id`, `reason`, `staff_id`, `occurred_at`, `business_date`, `unit_cost null` |
+| `stock_movement` | `outlet_id`, `ingredient_id`, `quantity_scaled` (signed), `kind` (receive, sale_consumption, waste, opname_adjustment, transfer_out, transfer_in, manual_adjustment), `source_type`, `source_id`, `reason`, `staff_id`, `occurred_at`, `business_date`, `cost_total null` (rupiah for the whole movement) |
 | `stock_balance` | `outlet_id`, `ingredient_id`, `quantity_scaled`, `last_movement_id` (materialized) |
 | `purchase`, `purchase_line` | `supplier`, `transaction_type_id`, lines with quantity, UoM and cost |
 | `transaction_type` | `name`, `category` (matches the existing "Belanja Bahan Pasar" style setup) |
@@ -1331,6 +1331,29 @@ Rules:
   per ingredient. Posting is idempotent.
 - **Rebuild job** (ADR 0006): `orion admin rebuild-stock --tenant --outlet` recomputes balances
   from the ledger and reports differences. A nightly job checks a sample and alerts on drift.
+
+#### 6.6.1 Quantities and units as decided (B3.1, ADR 0009)
+
+[ADR 0009](https://github.com/Orion-POS/Inventory-React/blob/dev/docs/adr/0009-scaled-integer-quantities-and-uom-ratios.md)
+fixes the rules above before any inventory table exists. What it changes or adds for B3.2 onwards:
+
+- **One scale.** Ledger rows, balances, recipe lines and counts are thousandths of the
+  ingredient's base unit, which is its UoM category's reference unit. The API bounds quantities to
+  ±10^15 so they stay exact JavaScript numbers.
+- **Ratios** are `ratio_num / ratio_den` reference units per unit, reduced, each 1 to 10^9; the
+  reference is `1/1` and exactly one per category (`is_reference`, a partial unique index). The
+  plan's `kind` column is dropped: bigger or smaller is derived from the fraction. No conversion
+  across categories.
+- **Rounding happens once**, when an entry `{uom_id, quantity_scaled}` (thousandths of *that*
+  unit) is converted to the base unit: exact arithmetic, half away from zero. `rounding_scaled` is
+  display and entry precision only. Documents keep what was typed plus the base quantity; the ledger
+  keeps the base quantity, so a later ratio change rewrites nothing.
+- **Fixed once used**: an ingredient's category and a category's reference unit cannot change after
+  the first ledger row or recipe line; units in use are deactivated, not deleted.
+- **Cost** is `cost_total` (rupiah for the movement), not `unit_cost`, since a price per 0.001 g is
+  not whole rupiah. The valuation method is decided in B3.9.
+- `docs/API_CONTRACT.md` gets these rules with the first inventory endpoints (B3.2); nothing a
+  client can call has changed yet.
 
 ### 6.7 Restaurant flow (Phase 4)
 
@@ -1474,7 +1497,7 @@ the operator can see them in the console, all without the developer touching the
 
 | Id | Task | Size |
 |---|---|---|
-| B3.1 | Write an ADR for the scaled-integer quantity unit (x1000 base unit) and integer UoM ratios | 0.5d |
+| B3.1 | ✅ Write an ADR for the scaled-integer quantity unit (x1000 base unit) and integer UoM ratios (ADR 0009, see 6.6.1) | 0.5d |
 | B3.2 | UoM categories and units, ingredients and categories, transaction types (port of the existing Setup pages' data) | 4d |
 | B3.3 | Ledger + materialized balance + rebuild command and nightly check | 4d |
 | B3.4 | Recipes (versioned) on variants and modifiers; sale consumption and void reversal in the sale projector | 4d |

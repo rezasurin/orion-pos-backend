@@ -3,7 +3,9 @@
 Go modular monolith on PostgreSQL for a point-of-sale system (cafes and restaurants, Indonesia).
 Read `README.md` for the layout and `docs/BACKEND_PLAN.md` for the plan, phases and "as built"
 sections. Phase 0 and Phase 1 (B1.1 to B1.12) are done; in Phase 2, B2.1 to B2.3 and B2.6 to B2.10 are
-done, and B2.4, B2.5 and B2.11 wait on the gateway fee and on hosting.
+done, B2.5 is done except the gateway refund, and B2.4 and B2.11 wait on `docs/OWNER_TODO.md`.
+Phase 3 (inventory): B3.1 is done (ADR 0009, plan 6.6.1); next is B3.2. The back office it serves is
+`../Inventory-React` (`src/pages/Setup`, `src/pages/stock-management`).
 
 ## Standing rules
 
