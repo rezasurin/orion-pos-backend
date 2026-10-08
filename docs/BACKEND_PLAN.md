@@ -1344,12 +1344,17 @@ fixes the rules above before any inventory table exists. What it changes or adds
   reference is `1/1` and exactly one per category (`is_reference`, a partial unique index). The
   plan's `kind` column is dropped: bigger or smaller is derived from the fraction. No conversion
   across categories.
-- **Rounding happens once**, when an entry `{uom_id, quantity_scaled}` (thousandths of *that*
-  unit) is converted to the base unit: exact arithmetic, half away from zero. `rounding_scaled` is
-  display and entry precision only. Documents keep what was typed plus the base quantity; the ledger
-  keeps the base quantity, so a later ratio change rewrites nothing.
-- **Fixed once used**: an ingredient's category and a category's reference unit cannot change after
-  the first ledger row or recipe line; units in use are deactivated, not deleted.
+- **Entries are never rounded.** `rounding_scaled` is the unit's step (BR-UOM-06): an entry
+  `{uom_id, quantity_scaled}` (thousandths of *that* unit) off its step is `validation_failed`.
+  Converting it to the base unit is exact arithmetic; only a ratio that does not divide evenly
+  leaves a remainder below 0.001 of the base unit, rounded half away from zero. Documents keep what
+  was typed plus the base quantity; the ledger keeps the base quantity.
+- **Fixed once used**: an ingredient's base unit and a category's reference unit cannot change
+  after the first ledger row or recipe line; a unit used by an item or a movement keeps its ratio
+  (BR-UOM-07) and is deactivated, not deleted.
+- **Business rules.** The back office's `docs/BUSINESS_RULES.md` (BR-GEN, BR-ITM, BR-UOM, ...) is the
+  rule set; cite its ids in code and tests. ADR 0009 changes BR-GEN-02 to thousandths of the base
+  unit, and the rules document was updated to match.
 - **Cost** is `cost_total` (rupiah for the movement), not `unit_cost`, since a price per 0.001 g is
   not whole rupiah. The valuation method is decided in B3.9.
 - `docs/API_CONTRACT.md` 3.7 carries these rules for the front end (since B3.2).
@@ -1529,6 +1534,7 @@ the operator can see them in the console, all without the developer touching the
 |---|---|---|
 | B3.1 | ✅ Write an ADR for the scaled-integer quantity unit (x1000 base unit) and integer UoM ratios (ADR 0009, see 6.6.1) | 0.5d |
 | B3.2 | ✅ UoM categories and units, ingredients and categories, transaction types (port of the existing Setup pages' data; see 6.6.2) | 4d |
+| B3.2b | Bring setup in line with `BUSINESS_RULES.md` (found after B3.2): item `type` (BR-ITM-01), category required and name 2 to 100 characters (BR-ITM-02), minimum stock (BR-ITM-04) and shelf life (BR-ITM-05); packaging per item with a purchase pack and a recipe unit (BR-UOM-04, 05); unit symbols unique (BR-UOM-02) and standard units seeded and undeletable (BR-UOM-03); a unit used by an item keeps its ratio (BR-UOM-07); contract 3.7 updated with them | 3d |
 | B3.3 | Ledger + materialized balance + rebuild command and nightly check | 4d |
 | B3.4 | Recipes (versioned) on variants and modifiers; sale consumption and void reversal in the sale projector | 4d |
 | B3.5 | Purchasing / receiving with cost | 3d |
