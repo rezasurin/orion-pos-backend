@@ -5,6 +5,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 )
 
@@ -15,9 +16,10 @@ type policy struct {
 	public     bool              // security: [] in the spec
 	audience   identity.Audience // the token family the route accepts
 	permission string            // x-permission, empty if any signed-in caller will do
+	module     entitlements.Key  // x-module, a module the plan must include; empty for none
 }
 
-// policiesFromSpec reads each operation's `security` and `x-permission`. It refuses anything it
+// policiesFromSpec reads each operation's `security`, `x-permission` and `x-module`. It refuses anything it
 // does not understand, so a typo in the spec stops the server from starting instead of leaving
 // a route open.
 func policiesFromSpec(doc *openapi3.T) (map[string]policy, error) {
@@ -66,6 +68,18 @@ func policiesFromSpec(doc *openapi3.T) (map[string]policy, error) {
 					return nil, fmt.Errorf("%s: x-permission %q is not a known permission", id, perm)
 				}
 				p.permission = perm
+			}
+			if v, ok := op.Extensions["x-module"]; ok {
+				mod, isString := v.(string)
+				switch entitlements.Key(mod) {
+				case entitlements.ModuleInventory, entitlements.ModuleRestaurant:
+				default:
+					return nil, fmt.Errorf("%s: x-module %v is not a module", id, v)
+				}
+				if !isString || p.public || p.operator {
+					return nil, fmt.Errorf("%s: x-module needs a tenant operation", id)
+				}
+				p.module = entitlements.Key(mod)
 			}
 			if _, dup := out[id]; dup {
 				return nil, fmt.Errorf("duplicate operationId %q", id)

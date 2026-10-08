@@ -272,6 +272,30 @@ type Flag struct {
 	CreatedAt  time.Time
 }
 
+type Ingredient struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	Name        string
+	CategoryID  *uuid.UUID
+	UomID       uuid.UUID
+	Track       bool
+	Description *string
+	ArchivedAt  *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type IngredientCategory struct {
+	ID                       uuid.UUID
+	TenantID                 uuid.UUID
+	Name                     string
+	DefaultTransactionTypeID *uuid.UUID
+	Description              *string
+	ArchivedAt               *time.Time
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+}
+
 type Item struct {
 	ID         uuid.UUID
 	TenantID   uuid.UUID
@@ -701,6 +725,40 @@ type TermsAcceptance struct {
 	UserID     uuid.UUID
 	Version    string
 	AcceptedAt time.Time
+}
+
+type TransactionType struct {
+	ID          uuid.UUID
+	TenantID    uuid.UUID
+	Name        string
+	Category    string
+	Description *string
+	ArchivedAt  *time.Time
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type Uom struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	CategoryID     uuid.UUID
+	Name           string
+	IsReference    bool
+	RatioNum       int64
+	RatioDen       int64
+	RoundingScaled int64
+	Active         bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type UomCategory struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	Name       string
+	ArchivedAt *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 type UserAccount struct {

@@ -23,6 +23,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/inventory"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/reporting"
@@ -44,6 +45,7 @@ type env struct {
 	ids      *identity.Service
 	tenants  *tenancy.Service
 	platform *platform.Service
+	ents     *entitlements.Resolver
 }
 
 type tenantFixture struct {
@@ -95,7 +97,7 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 			t.Fatal(err)
 		}
 	}
-	srv, err := api.New(api.Deps{Catalog: catalog.NewService(d.App), Sync: syncSvc, Reporting: reporting.NewService(d.App), Sales: sales.NewService(d.App), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	srv, err := api.New(api.Deps{Catalog: catalog.NewService(d.App), Inventory: inventory.NewService(d.App), Sync: syncSvc, Reporting: reporting.NewService(d.App), Sales: sales.NewService(d.App), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +105,7 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Routes: func(r chi.Router) { srv.Routes(r) },
 	})
-	return &env{d: d, handler: handler, ids: ids, tenants: tenants, platform: plat}
+	return &env{d: d, handler: handler, ids: ids, tenants: tenants, platform: plat, ents: ents}
 }
 
 // business creates a tenant with one outlet and a verified owner.

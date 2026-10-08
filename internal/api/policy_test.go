@@ -10,6 +10,7 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 
 	openapi "github.com/rezasurin/orion-pos-backend/gen/openapi"
+	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
@@ -52,6 +53,10 @@ func TestPoliciesFromSpec(t *testing.T) {
 		"unknown permission":   {op: "      x-permission: staff.manag", wantErr: "not a known"},
 		"empty permission":     {op: "      x-permission: ''", wantErr: "non-empty"},
 		"numeric permission":   {op: "      x-permission: 5", wantErr: "non-empty"},
+		"module":               {op: "      x-module: module.inventory", want: policy{audience: identity.AudienceTenant, module: entitlements.ModuleInventory}},
+		"unknown module":       {op: "      x-module: module.inventry", wantErr: "not a module"},
+		"limit as module":      {op: "      x-module: limit.staff", wantErr: "not a module"},
+		"module on public":     {op: "      security: []\n      x-module: module.inventory", wantErr: "tenant operation"},
 		"two schemes at once":  {op: "      security: [{userAuth: [], deviceAuth: []}]", wantErr: "exactly one"},
 		"alternative schemes":  {op: "      security: [{userAuth: []}, {deviceAuth: []}]", wantErr: "exactly one"},
 	} {
@@ -103,6 +108,12 @@ func TestRealSpecPolicies(t *testing.T) {
 			t.Errorf("%s policy = %+v, want user auth with %s", id, p, perm)
 		}
 	}
+	// Every inventory operation is behind the inventory module and its permission.
+	for id, p := range policies {
+		if inventoryOps[id] != (p.module == entitlements.ModuleInventory) || inventoryOps[id] != (p.permission == "inventory.manage") {
+			t.Errorf("%s policy = %+v; inventory operations, and only they, need module.inventory and inventory.manage", id, p)
+		}
+	}
 	if p := policies["GetRoster"]; p.public || p.audience != identity.AudienceDevice || p.permission != "" {
 		t.Errorf("GetRoster policy = %+v, want device auth", p)
 	}
@@ -138,4 +149,11 @@ func TestErrorMapping(t *testing.T) {
 			}
 		})
 	}
+}
+
+var inventoryOps = map[string]bool{
+	"ListTransactionTypes": true, "CreateTransactionType": true, "UpdateTransactionType": true,
+	"ListIngredientCategories": true, "CreateIngredientCategory": true, "UpdateIngredientCategory": true,
+	"ListUomCategories": true, "CreateUomCategory": true, "UpdateUomCategory": true,
+	"ListIngredients": true, "CreateIngredient": true, "UpdateIngredient": true,
 }

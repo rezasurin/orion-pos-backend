@@ -17,6 +17,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/inventory"
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
 	"github.com/rezasurin/orion-pos-backend/internal/reporting"
 	"github.com/rezasurin/orion-pos-backend/internal/sales"
@@ -29,6 +30,7 @@ type Deps struct {
 	Catalog      *catalog.Service
 	Identity     *identity.Service
 	Entitlements *entitlements.Resolver
+	Inventory    *inventory.Service
 	// Platform serves the operator console. Nil when the server has no platform database; operator
 	// routes then answer 503 admin_disabled.
 	Platform  *platform.Service

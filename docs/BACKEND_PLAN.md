@@ -387,8 +387,8 @@ Rules:
   requests cannot both take the last slot (a test races ten tablets for three slots).
   `limit.devices` counts devices that are not revoked, `limit.staff` active staff records;
   `limit.outlets` is checked when outlet creation arrives with signup (Phase 2).
-- `403 limit_reached` and `403 module_disabled` are the error codes. `RequireModule` is ready for
-  the first module-gated endpoint (Phase 3).
+- `403 limit_reached` and `403 module_disabled` are the error codes. `RequireModule` guards
+  every operation marked `x-module` in the spec (since B3.2, 6.6.2).
 - The resolver reads the tenant's `plan_id` straight from the `tenant` row, the one place a module
   reads another module's table: going through tenancy would make an import cycle, and the read is
   one column.
@@ -1352,8 +1352,38 @@ fixes the rules above before any inventory table exists. What it changes or adds
   the first ledger row or recipe line; units in use are deactivated, not deleted.
 - **Cost** is `cost_total` (rupiah for the movement), not `unit_cost`, since a price per 0.001 g is
   not whole rupiah. The valuation method is decided in B3.9.
-- `docs/API_CONTRACT.md` gets these rules with the first inventory endpoints (B3.2); nothing a
-  client can call has changed yet.
+- `docs/API_CONTRACT.md` 3.7 carries these rules for the front end (since B3.2).
+
+#### 6.6.2 Inventory setup as built (B3.2)
+
+- **`internal/inventory`**, migration 00021: `transaction_type`, `ingredient_category`,
+  `uom_category`, `uom` and `ingredient`, under row-level security, archived (or, for units,
+  deactivated) and never deleted; the app role has no `DELETE` and may not move a unit to another
+  category or change which unit is the reference (column grants). Endpoints in
+  `docs/API_CONTRACT.md` 3.7, all with `inventory.manage`.
+- **The module gate is in the spec.** `x-module: module.inventory` on an operation makes the
+  middleware call `Resolver.RequireModule` after the permission check (`403 module_disabled`); the
+  server refuses to start on an `x-module` that is not a module key. A test switches a business to
+  the free plan and gets `module_disabled` from all twelve operations, with its data kept.
+- **Units** are edited through their category: a `PATCH` replaces each listed unit that has an id
+  and adds those without, and leaves the rest. Ratios are reduced by their greatest common divisor
+  in Go, and the database insists (`CHECK (gcd(ratio_num, ratio_den) = 1)`), along with one
+  reference per category at 1/1 and active. The reference is chosen when the category is created
+  and never changes. The list loads every page's units in one query (1 and 30 categories cost the
+  same).
+- **Ingredients** carry `uom_id`, the unit they are shown and entered in, instead of the plan's
+  `base_uom_id`: the base unit is the reference of that unit's category, so it cannot disagree. A
+  new unit must be active in a category that is not archived; one deactivated later stays. The
+  plan's `ingredient_category.default_transaction_type_id` is there; `transaction_type.category`
+  is `materials`, `services` or `debt_payment`, the back office's three groups.
+- **Not in the change log or the pull**: tablets do not need setup data. Writes take no tenant
+  lock, since they record no change and check no limit; unique indexes settle races.
+- **For B3.3:** an ingredient may still move to a unit of another category, because nothing is
+  stored in its units yet. Once it has a ledger row or a recipe line that must be refused (ADR 0009,
+  a `ponytail:` note in `UpdateIngredient` marks it). The conversion function the ADR describes
+  arrives with the first quantity entry (B3.3 or B3.5).
+- Not built: an ingredient `sku`, and the "assigned items" list on the back office's category page
+  (it is a filter on `GET /v1/ingredients?category_id=`).
 
 ### 6.7 Restaurant flow (Phase 4)
 
@@ -1498,7 +1528,7 @@ the operator can see them in the console, all without the developer touching the
 | Id | Task | Size |
 |---|---|---|
 | B3.1 | ✅ Write an ADR for the scaled-integer quantity unit (x1000 base unit) and integer UoM ratios (ADR 0009, see 6.6.1) | 0.5d |
-| B3.2 | UoM categories and units, ingredients and categories, transaction types (port of the existing Setup pages' data) | 4d |
+| B3.2 | ✅ UoM categories and units, ingredients and categories, transaction types (port of the existing Setup pages' data; see 6.6.2) | 4d |
 | B3.3 | Ledger + materialized balance + rebuild command and nightly check | 4d |
 | B3.4 | Recipes (versioned) on variants and modifiers; sale consumption and void reversal in the sale projector | 4d |
 | B3.5 | Purchasing / receiving with cost | 3d |

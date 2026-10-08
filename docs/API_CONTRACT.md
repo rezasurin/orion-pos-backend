@@ -278,6 +278,49 @@ The runbook `docs/runbooks/pilot.md` tells the operator what to do about each.
 
 ---
 
+### 3.7 Inventory setup (`inventory.manage`, inventory module)
+
+The Setup pages of the back office. Every call here needs `inventory.manage` **and** the inventory
+module in the plan: without it the answer is `403 module_disabled` (the free plan does not include
+it; check `module.inventory` in `GET /v1/entitlements` and hide the menu). Nothing here reaches the
+POS. Entries are archived, never deleted, like the catalog (`include_archived=true`,
+`"archived": true|false`); a blank `description` clears it.
+
+| Call | Notes |
+|---|---|
+| `GET/POST /v1/transaction-types`, `PATCH .../{transactionTypeId}` | What a purchase or expense is booked as: `{name (max 60), category, description?}`. `category` is `materials` (Bahan Baku dan Pendukung), `services` (Service, Maintenance, dan lainnya) or `debt_payment` (Belanja Hutang Bayar). |
+| `GET/POST /v1/ingredient-categories`, `PATCH .../{ingredientCategoryId}` | `{name, default_transaction_type_id?, description?}`; `clear_default_transaction_type: true` removes the default. |
+| `GET/POST /v1/uom-categories`, `PATCH .../{uomCategoryId}` | A unit category with all its `units`, the reference first, then from small to large. See below. |
+| `GET/POST /v1/ingredients`, `PATCH .../{ingredientId}` | `{name (max 120), category_id?, uom_id, track (default true), description?}`. `uom_id` is the unit the ingredient is shown and entered in; it must be active and in a category that is not archived. `?category_id=` filters the list; `clear_category: true` removes the category. |
+
+**Quantities and units** (ADR 0009). Read this before building any stock screen:
+
+- A unit category (weight, volume, count) has exactly **one reference unit**. Make it the
+  smallest practical unit (`g`, `ml`, `pcs`): every quantity of an ingredient in that category is
+  stored as an **integer number of thousandths of the reference unit**, so `g` gives 0.001 g
+  precision and `kg` would give only whole grams.
+- Every other unit is a **fraction of the reference**: one unit = `ratio_num / ratio_den` reference
+  units, both whole numbers from 1 to 1,000,000,000. `kg` in a gram category is `1000/1`; a tenth of
+  a gram would be `1/10`. The server reduces the fraction (`2000/2` comes back `1000/1`). Show
+  "bigger" or "smaller than the reference" by comparing `ratio_num` with `ratio_den`; it is not a
+  stored field.
+- **Never go through a float.** When the owner types a ratio such as `236.588`, build the fraction
+  from the text: `236588/1000`. The same goes for quantities later: `2.5` kg is `2500` thousandths
+  of a kg.
+- `rounding_scaled` is the unit's display and entry precision in thousandths of **that** unit
+  (`10` is 0.01, `1000` is whole units). It never changes a stored quantity.
+- There is no conversion between categories. An ingredient bought by the litre and used by the gram
+  needs a unit in its weight category, such as "liter minyak" = `920/1` g, whose ratio the owner sets.
+- **Creating** a category: `{name, units: [{name, is_reference?, ratio_num?, ratio_den?,
+  rounding_scaled?, active?}]}`; exactly one unit has `is_reference: true` and a ratio of 1/1
+  (ratios default to 1/1, `rounding_scaled` to 10, `active` to true).
+- **Changing** a category: `units` in a `PATCH` lists only what changes. A unit with an `id` is
+  replaced by what you send (send all its fields), a unit without one is added, and units left out
+  stay. Units are deactivated (`active: false`), never deleted. The reference stays the reference,
+  at 1/1 and active; it can be renamed. Unit names are unique within a category (`409`).
+- Changing a unit's ratio affects only quantities entered afterwards; stored quantities are in the
+  reference unit and never move.
+
 ## 4. The POS: startup, then the sync loop
 
 The POS works **fully offline**. The server is a place to send what happened and to learn what
@@ -561,6 +604,7 @@ settings, for checking printer layout and the calculation; it is not a sale.
 | Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |
 | Sales list and search | `sales?…` → `sales/{saleId}` |
 | Catalog manager | `categories`, `kitchen-stations`, `items`, `modifier-groups`, `outlets/{id}/variants` |
+| Inventory setup | `transaction-types`, `ingredient-categories`, `uom-categories`, `ingredients` (only when `module.inventory` is on) |
 | Menu import | `catalog/import?dry_run=true` → show counts and row errors → `catalog/import` |
 | Staff manager | `roles`, `staff`, `staff/{id}/pin` |
 | Devices | `devices`, `devices/pair`, `devices/{id}` (revoke) |
@@ -580,7 +624,8 @@ shift).
 
 ## 10. Not built yet
 
-So you do not wait for it or invent it: stock and inventory, purchasing, kitchen display (and
+So you do not wait for it or invent it: stock levels and movements, recipes, purchasing, stock
+opname, waste and transfers (inventory setup is in 3.7), kitchen display (and
 ticket status; kitchen tickets themselves are printed by the POS, see 3.5),
 customers, loyalty, gateway refunds, payment gateways (QRIS dynamic, e-wallets: the methods
 exist as labels only), receipt printing endpoints, file/image upload (an item's `image_url` is a

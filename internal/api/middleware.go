@@ -14,8 +14,8 @@ import (
 
 // authenticate is the strict-server middleware that enforces each operation's policy before its
 // handler runs: a valid token of the right audience, a caller who is still allowed in their
-// tenant, a tenant that is not suspended (for a person's write), and the permission named by
-// x-permission.
+// tenant, a tenant that is not suspended (for a person's write), the permission named by
+// x-permission, and the module named by x-module.
 //
 // It runs inside the generated wrapper, so it knows the operation id. A route missing from the
 // policy table is a programming error and fails closed.
@@ -84,6 +84,11 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 			}
 		default:
 			return nil, identity.ErrInvalidToken
+		}
+		if pol.module != "" {
+			if err := s.Entitlements.RequireModule(ctx, p.TenantID, pol.module); err != nil {
+				return nil, err
+			}
 		}
 		return next(ctx, w, r, req)
 	}
