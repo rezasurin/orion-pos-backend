@@ -1,0 +1,39 @@
+{
+  "name": "large-quantity",
+  "note": "1000 units of 99999: bigger than 32 bits.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 99999,
+      "quantity": 1000
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 99999000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 99999000
+      }
+    ],
+    "subtotal": 99999000,
+    "discount_total": 0,
+    "net": 99999000,
+    "service_charge": 4999950,
+    "tax": 11549885,
+    "tax_included": false,
+    "total": 116548835,
+    "rounding_amount": 0,
+    "cash_total": 116548835
+  }
+}

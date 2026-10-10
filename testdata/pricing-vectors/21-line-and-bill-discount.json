@@ -1,0 +1,59 @@
+{
+  "name": "line-and-bill-discount",
+  "note": "A line discount first, then a 10% bill discount on what is left.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1000,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 40000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 30000,
+      "quantity": 2
+    }
+  ],
+  "discounts": [
+    {
+      "line": 0,
+      "kind": "percent",
+      "value": 2500
+    },
+    {
+      "kind": "percent",
+      "value": 1000
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 40000,
+        "discount": 10000,
+        "allocated_bill_discount": 3000,
+        "total": 27000
+      },
+      {
+        "gross": 60000,
+        "discount": 0,
+        "allocated_bill_discount": 6000,
+        "total": 54000
+      }
+    ],
+    "subtotal": 100000,
+    "discount_total": 19000,
+    "net": 81000,
+    "service_charge": 4050,
+    "tax": 8505,
+    "tax_included": false,
+    "total": 93555,
+    "rounding_amount": 0,
+    "cash_total": 93555
+  }
+}

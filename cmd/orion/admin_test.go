@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 	"github.com/rezasurin/orion-pos-backend/internal/testdb"
@@ -22,8 +23,9 @@ func TestSeedDemoIsUsableAndRunsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	tenants := tenancy.NewService(d.App)
+	cat := catalog.NewService(d.App)
 
-	if err := seedDemo(ctx, tenants, ids); err != nil {
+	if err := seedDemo(ctx, tenants, ids, cat); err != nil {
 		t.Fatal(err)
 	}
 	for _, email := range []string{"owner@demo.orion.test", "manager@demo.orion.test"} {
@@ -31,7 +33,11 @@ func TestSeedDemoIsUsableAndRunsOnce(t *testing.T) {
 			t.Errorf("login %s: %v", email, err)
 		}
 	}
-	if err := seedDemo(ctx, tenants, ids); err == nil {
+	var items int
+	if err := d.Owner.QueryRow(ctx, `SELECT count(*) FROM item i JOIN tenant t ON t.id = i.tenant_id WHERE t.slug = 'demo-kopi'`).Scan(&items); err != nil || items != 6 {
+		t.Errorf("demo menu has %d items (%v), want 6", items, err)
+	}
+	if err := seedDemo(ctx, tenants, ids, cat); err == nil {
 		t.Error("seeding twice should fail, not create a second demo business")
 	}
 }

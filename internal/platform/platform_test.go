@@ -396,7 +396,7 @@ func TestAuditLogIsAppendOnlyAndPages(t *testing.T) {
 	var seen []string
 	page := kernel.Page{Limit: 3}
 	for range 5 {
-		res, err := e.svc.ListAuditLog(ctx, page)
+		res, err := e.svc.ListAuditLog(ctx, page, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

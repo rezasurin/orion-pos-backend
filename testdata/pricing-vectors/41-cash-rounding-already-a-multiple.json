@@ -1,0 +1,39 @@
+{
+  "name": "cash-rounding-already-a-multiple",
+  "note": "Nothing to round: rounding_amount is 0.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 100,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 15000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 15000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 15000
+      }
+    ],
+    "subtotal": 15000,
+    "discount_total": 0,
+    "net": 15000,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 15000,
+    "rounding_amount": 0,
+    "cash_total": 15000
+  }
+}

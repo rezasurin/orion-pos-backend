@@ -85,7 +85,7 @@ func (q *Queries) DeleteStaffOutletRoles(ctx context.Context, arg DeleteStaffOut
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device WHERE tenant_id = $1 AND id = $2
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device WHERE tenant_id = $1 AND id = $2
 `
 
 type GetDeviceParams struct {
@@ -113,12 +113,57 @@ func (q *Queries) GetDevice(ctx context.Context, arg GetDeviceParams) (Device, e
 		&i.ClockSkewMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UnsyncedEvents,
+		&i.OldestUnsyncedAt,
+		&i.HealthReportedAt,
+		&i.RevokedByOperatorID,
+	)
+	return i, err
+}
+
+const getDeviceForShare = `-- name: GetDeviceForShare :one
+
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device WHERE tenant_id = $1 AND id = $2 FOR SHARE
+`
+
+type GetDeviceForShareParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+// Used while projecting synced events (internal/sync). They run inside the event's transaction.
+// Holding a share lock on the device until the event commits makes revocation (an UPDATE) wait for
+// events in flight, so nothing commits after a revoke has returned.
+func (q *Queries) GetDeviceForShare(ctx context.Context, arg GetDeviceForShareParams) (Device, error) {
+	row := q.db.QueryRow(ctx, getDeviceForShare, arg.TenantID, arg.ID)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.DeviceCode,
+		&i.Name,
+		&i.SecretHash,
+		&i.PairedBy,
+		&i.PairedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.LastSeenAt,
+		&i.LastSyncAt,
+		&i.AppVersion,
+		&i.ClockSkewMs,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UnsyncedEvents,
+		&i.OldestUnsyncedAt,
+		&i.HealthReportedAt,
+		&i.RevokedByOperatorID,
 	)
 	return i, err
 }
 
 const getDeviceForUpdate = `-- name: GetDeviceForUpdate :one
-SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device WHERE tenant_id = $1 AND id = $2 FOR UPDATE
 `
 
 type GetDeviceForUpdateParams struct {
@@ -146,6 +191,10 @@ func (q *Queries) GetDeviceForUpdate(ctx context.Context, arg GetDeviceForUpdate
 		&i.ClockSkewMs,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.UnsyncedEvents,
+		&i.OldestUnsyncedAt,
+		&i.HealthReportedAt,
+		&i.RevokedByOperatorID,
 	)
 	return i, err
 }
@@ -572,6 +621,28 @@ func (q *Queries) InsertStaffOutletRoles(ctx context.Context, arg InsertStaffOut
 	return err
 }
 
+const insertTermsAcceptance = `-- name: InsertTermsAcceptance :exec
+INSERT INTO terms_acceptance (tenant_id, user_id, version, accepted_at)
+VALUES ($1, $2, $3, $4)
+`
+
+type InsertTermsAcceptanceParams struct {
+	TenantID   uuid.UUID
+	UserID     uuid.UUID
+	Version    string
+	AcceptedAt time.Time
+}
+
+func (q *Queries) InsertTermsAcceptance(ctx context.Context, arg InsertTermsAcceptanceParams) error {
+	_, err := q.db.Exec(ctx, insertTermsAcceptance,
+		arg.TenantID,
+		arg.UserID,
+		arg.Version,
+		arg.AcceptedAt,
+	)
+	return err
+}
+
 const insertUser = `-- name: InsertUser :exec
 INSERT INTO user_account (id, email, password_hash, email_verified_at, locale)
 VALUES ($1, $2, $3, $4, $5)
@@ -599,7 +670,7 @@ func (q *Queries) InsertUser(ctx context.Context, arg InsertUserParams) error {
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at FROM device
+SELECT id, tenant_id, outlet_id, device_code, name, secret_hash, paired_by, paired_at, revoked_at, revoked_by, last_seen_at, last_sync_at, app_version, clock_skew_ms, created_at, updated_at, unsynced_events, oldest_unsynced_at, health_reported_at, revoked_by_operator_id FROM device
 WHERE tenant_id = $1 AND id > $2
   AND ($3::boolean OR outlet_id = ANY($4::uuid[]))
 ORDER BY id
@@ -647,7 +718,50 @@ func (q *Queries) ListDevices(ctx context.Context, arg ListDevicesParams) ([]Dev
 			&i.ClockSkewMs,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.UnsyncedEvents,
+			&i.OldestUnsyncedAt,
+			&i.HealthReportedAt,
+			&i.RevokedByOperatorID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPermissionsOfStaffAt = `-- name: ListPermissionsOfStaffAt :many
+SELECT sor.staff_id, rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = $1 AND sor.outlet_id = $2 AND sor.staff_id = ANY($3::uuid[])
+ORDER BY sor.staff_id, rp.permission
+`
+
+type ListPermissionsOfStaffAtParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+	StaffIds []uuid.UUID
+}
+
+type ListPermissionsOfStaffAtRow struct {
+	StaffID    uuid.UUID
+	Permission string
+}
+
+func (q *Queries) ListPermissionsOfStaffAt(ctx context.Context, arg ListPermissionsOfStaffAtParams) ([]ListPermissionsOfStaffAtRow, error) {
+	rows, err := q.db.Query(ctx, listPermissionsOfStaffAt, arg.TenantID, arg.OutletID, arg.StaffIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPermissionsOfStaffAtRow
+	for rows.Next() {
+		var i ListPermissionsOfStaffAtRow
+		if err := rows.Scan(&i.StaffID, &i.Permission); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -751,6 +865,61 @@ func (q *Queries) ListRolesByIDs(ctx context.Context, arg ListRolesByIDsParams) 
 			&i.IsSystem,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRosterCandidates = `-- name: ListRosterCandidates :many
+
+SELECT s.id, s.display_name, s.pin_hash, coalesce(m.is_owner, false)::boolean AS is_owner,
+       (s.active AND (coalesce(m.is_owner, false) OR EXISTS (
+            SELECT 1 FROM staff_outlet_role sor
+            WHERE sor.tenant_id = s.tenant_id AND sor.staff_id = s.id AND sor.outlet_id = $1)))::boolean AS on_roster
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = $2 AND s.id = ANY($3::uuid[])
+ORDER BY s.display_name, s.id
+`
+
+type ListRosterCandidatesParams struct {
+	OutletID uuid.UUID
+	TenantID uuid.UUID
+	StaffIds []uuid.UUID
+}
+
+type ListRosterCandidatesRow struct {
+	ID          uuid.UUID
+	DisplayName string
+	PinHash     *string
+	IsOwner     bool
+	OnRoster    bool
+}
+
+// The POS pull: roster entries for the staff whose records changed.
+// For each staff id: whether the person belongs on this outlet's roster (active, and an owner or
+// assigned to the outlet). Those who do not are reported as removed.
+func (q *Queries) ListRosterCandidates(ctx context.Context, arg ListRosterCandidatesParams) ([]ListRosterCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listRosterCandidates, arg.OutletID, arg.TenantID, arg.StaffIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRosterCandidatesRow
+	for rows.Next() {
+		var i ListRosterCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.DisplayName,
+			&i.PinHash,
+			&i.IsOwner,
+			&i.OnRoster,
 		); err != nil {
 			return nil, err
 		}
@@ -945,6 +1114,41 @@ func (q *Queries) ListStaffOutletRoles(ctx context.Context, arg ListStaffOutletR
 	return items, nil
 }
 
+const listStaffPermissionsAt = `-- name: ListStaffPermissionsAt :many
+SELECT rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = $1 AND sor.staff_id = $2 AND sor.outlet_id = $3
+ORDER BY rp.permission
+`
+
+type ListStaffPermissionsAtParams struct {
+	TenantID uuid.UUID
+	StaffID  uuid.UUID
+	OutletID uuid.UUID
+}
+
+// What one staff member may do at an outlet.
+func (q *Queries) ListStaffPermissionsAt(ctx context.Context, arg ListStaffPermissionsAtParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listStaffPermissionsAt, arg.TenantID, arg.StaffID, arg.OutletID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var permission string
+		if err := rows.Scan(&permission); err != nil {
+			return nil, err
+		}
+		items = append(items, permission)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markEmailVerified = `-- name: MarkEmailVerified :exec
 UPDATE user_account SET email_verified_at = $1 WHERE id = $2 AND email_verified_at IS NULL
 `
@@ -1030,6 +1234,44 @@ func (q *Queries) RecordDeviceContact(ctx context.Context, arg RecordDeviceConta
 		arg.Now,
 		arg.AppVersion,
 		arg.ClockSkewMs,
+		arg.TenantID,
+		arg.ID,
+	)
+	return err
+}
+
+const recordDeviceSync = `-- name: RecordDeviceSync :exec
+UPDATE device
+SET last_sync_at = $1, last_seen_at = $1,
+    app_version = coalesce($2, app_version),
+    clock_skew_ms = coalesce($3, clock_skew_ms),
+    unsynced_events = CASE WHEN $4::integer IS NULL THEN unsynced_events ELSE $4::integer END,
+    oldest_unsynced_at = CASE WHEN $4::integer IS NULL THEN oldest_unsynced_at
+                              WHEN $4::integer = 0 THEN NULL
+                              ELSE $5::timestamptz END,
+    health_reported_at = CASE WHEN $4::integer IS NULL THEN health_reported_at ELSE $1 END
+WHERE tenant_id = $6 AND id = $7
+`
+
+type RecordDeviceSyncParams struct {
+	Now              *time.Time
+	AppVersion       *string
+	ClockSkewMs      *int32
+	UnsyncedEvents   *int32
+	OldestUnsyncedAt *time.Time
+	TenantID         uuid.UUID
+	ID               uuid.UUID
+}
+
+// Stamps a push or pull: when the device last synced, its app version, how far its clock is off and,
+// when it reported its outbox, how much is still waiting there.
+func (q *Queries) RecordDeviceSync(ctx context.Context, arg RecordDeviceSyncParams) error {
+	_, err := q.db.Exec(ctx, recordDeviceSync,
+		arg.Now,
+		arg.AppVersion,
+		arg.ClockSkewMs,
+		arg.UnsyncedEvents,
+		arg.OldestUnsyncedAt,
 		arg.TenantID,
 		arg.ID,
 	)

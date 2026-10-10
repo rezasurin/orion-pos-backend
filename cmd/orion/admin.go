@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
 	"github.com/rezasurin/orion-pos-backend/internal/config"
 	"github.com/rezasurin/orion-pos-backend/internal/database"
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
@@ -31,7 +32,26 @@ every change is written to the platform audit log with --reason, attributed to -
   set-override      --operator E --tenant SLUG --key K --value N --reason R [--expires RFC3339]
   clear-override    --operator E --tenant SLUG --key K --reason R
   suspend-tenant    --operator E --tenant SLUG --reason R
+                    the business turns read-only; its tablets finish the open shift and stop
   reinstate-tenant  --operator E --tenant SLUG --reason R
+  set-plan          --operator E --tenant SLUG --plan CODE --reason R
+                    moves a business to another plan (free, early_access)
+  revoke-device     --operator E --device ID --reason R
+  set-flag-default  --operator E --key flag.K --value N --reason R
+                    changes a flag's default for every business without a plan value or override
+  support-report    --operator E --tenant SLUG --reason R
+                    prints a business's devices (last contact, clock skew, undelivered events, open
+                    alerts), events parked waiting for a record, rejected events and review flags of
+                    the last week by code, and the most recently flagged sales. Read-only, but audited.
+  abandon-event     --operator E --tenant SLUG --event ID --reason R
+                    gives up on a parked event whose record will never arrive; it becomes rejected
+                    with the code "abandoned"
+  metrics           --operator E --tenant SLUG [--days 14]
+                    prints a business's daily usage (sales, voids, events, rejected events, tablets
+                    that synced, review flags), as computed nightly by orion worker. Counts only.
+  stopped-syncing   --operator E [--quiet 24h]
+                    lists tablets, across businesses that are not suspended, that synced in the last
+                    30 days but not in the last --quiet, the longest silent first
 
 tenant commands (connect as the service role, ORION_DATABASE_URL):
   create-tenant   --name N --slug S --outlet-name N --outlet-code C --owner-email E [--password P]
@@ -49,7 +69,8 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 		return errors.New("missing admin command")
 	}
 	switch args[0] {
-	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant":
+	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant", "support-report", "abandon-event", "metrics", "stopped-syncing",
+		"set-plan", "revoke-device", "set-flag-default":
 		return adminPlatform(ctx, cfg, logger, args)
 	}
 	if cfg.DatabaseURL == "" {
@@ -106,7 +127,7 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 		if cfg.Env == "production" {
 			return errors.New("seed-demo is refused when ORION_ENV is production")
 		}
-		return seedDemo(ctx, tenants, ids)
+		return seedDemo(ctx, tenants, ids, catalog.NewService(pool))
 	default:
 		fmt.Print(adminUsage)
 		return fmt.Errorf("unknown admin command %q", args[0])
@@ -114,19 +135,18 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 }
 
 func createBusiness(ctx context.Context, tenants *tenancy.Service, ids *identity.Service, in tenancy.NewTenant, email, password, ownerName string) (tenancy.Tenant, tenancy.Outlet, error) {
-	t, o, err := tenants.CreateTenant(ctx, in)
+	owner, err := ids.PrepareMember(ctx, identity.NewMember{
+		Email: email, Password: password, DisplayName: ownerName, IsOwner: true, EmailVerified: true,
+	})
 	if err != nil {
 		return tenancy.Tenant{}, tenancy.Outlet{}, err
 	}
-	_, err = ids.CreateMember(ctx, identity.NewMember{
-		TenantID: t.ID, Email: email, Password: password, DisplayName: ownerName, IsOwner: true, EmailVerified: true,
-	})
-	return t, o, err
+	return tenants.CreateTenantWith(ctx, in, owner.Insert)
 }
 
 const demoPassword = "demo-password-1"
 
-func seedDemo(ctx context.Context, tenants *tenancy.Service, ids *identity.Service) error {
+func seedDemo(ctx context.Context, tenants *tenancy.Service, ids *identity.Service, cat *catalog.Service) error {
 	t, o, err := createBusiness(ctx, tenants, ids, tenancy.NewTenant{
 		Name: "Demo Kopi", Slug: "demo-kopi", Outlet: tenancy.NewOutlet{Name: "Demo Kopi Jakarta", Code: "JKT1"},
 	}, "owner@demo.orion.test", demoPassword, "Demo Owner")
@@ -183,10 +203,64 @@ func seedDemo(ctx context.Context, tenants *tenancy.Service, ids *identity.Servi
 		return err
 	}
 
+	if err := seedMenu(ctx, cat, t.ID); err != nil {
+		return err
+	}
+
 	fmt.Printf("demo business %s (outlet %s %s)\n", t.ID, o.Code, o.ID)
 	fmt.Printf("sign in: owner@demo.orion.test or manager@demo.orion.test, password %s\n", demoPassword)
 	fmt.Println("cashiers: Sari PIN 4821, Budi PIN 9071")
 	fmt.Printf("device %s code %d, secret: %s\n", dev.Device.ID, dev.Device.Code, dev.Secret)
+	return nil
+}
+
+// seedMenu gives the demo business a small cafe menu: three categories, two modifier groups, and
+// items with and without variants, so front-end and POS work has realistic catalog data.
+func seedMenu(ctx context.Context, cat *catalog.Service, tenantID uuid.UUID) error {
+	category := func(name string, order int) (uuid.UUID, error) {
+		c, err := cat.CreateCategory(ctx, tenantID, catalog.NewCategory{Name: name, SortOrder: order})
+		return c.ID, err
+	}
+	coffee, err := category("Coffee", 1)
+	if err != nil {
+		return err
+	}
+	drinks, err := category("Other drinks", 2)
+	if err != nil {
+		return err
+	}
+	food, err := category("Food", 3)
+	if err != nil {
+		return err
+	}
+	sugar, err := cat.CreateModifierGroup(ctx, tenantID, catalog.NewModifierGroup{
+		Name: "Sugar level", MinSelect: 1, MaxSelect: 1, Required: true,
+		Modifiers: []catalog.NewModifier{{Name: "Normal"}, {Name: "Less sugar"}, {Name: "No sugar"}},
+	})
+	if err != nil {
+		return err
+	}
+	addOns, err := cat.CreateModifierGroup(ctx, tenantID, catalog.NewModifierGroup{
+		Name: "Add-ons", MinSelect: 0, MaxSelect: 3,
+		Modifiers: []catalog.NewModifier{{Name: "Extra shot", PriceDelta: 5000}, {Name: "Oat milk", PriceDelta: 4000}, {Name: "Whipped cream", PriceDelta: 3000}},
+	})
+	if err != nil {
+		return err
+	}
+	one := func(price kernel.Rupiah) []catalog.NewVariant { return []catalog.NewVariant{{BasePrice: price}} }
+	for _, it := range []catalog.NewItem{
+		{Name: "Espresso", CategoryID: &coffee, Variants: one(18000), ModifierGroupIDs: []uuid.UUID{addOns.ID}},
+		{Name: "Latte", CategoryID: &coffee, ModifierGroupIDs: []uuid.UUID{sugar.ID, addOns.ID},
+			Variants: []catalog.NewVariant{{Name: "Hot", BasePrice: 28000}, {Name: "Iced", BasePrice: 30000}}},
+		{Name: "Kopi susu", CategoryID: &coffee, Variants: one(22000), ModifierGroupIDs: []uuid.UUID{sugar.ID}},
+		{Name: "Es teh manis", CategoryID: &drinks, Variants: one(12000), ModifierGroupIDs: []uuid.UUID{sugar.ID}},
+		{Name: "Croissant", CategoryID: &food, Variants: one(25000)},
+		{Name: "Nasi goreng", CategoryID: &food, Variants: one(35000)},
+	} {
+		if _, err := cat.CreateItem(ctx, tenantID, it); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -229,6 +303,11 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 	key := fs.String("key", "", "entitlement key")
 	value := fs.Int64("value", 0, "override value (0/1 for modules, a count or -1 for limits)")
 	expires := fs.String("expires", "", "override expiry, RFC 3339")
+	event := fs.String("event", "", "sync event id")
+	days := fs.Int("days", 14, "how many days of metrics")
+	plan := fs.String("plan", "", "plan code")
+	device := fs.String("device", "", "device id")
+	quiet := fs.Duration("quiet", 24*time.Hour, "how long a tablet has been silent")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -274,9 +353,140 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 		return svc.SetOverride(ctx, actor, *tenant, entitlements.Key(*key), *value, exp, *reason)
 	case "clear-override":
 		return svc.ClearOverride(ctx, actor, *tenant, entitlements.Key(*key), *reason)
+	case "support-report":
+		r, err := svc.SupportReport(ctx, actor, *tenant, *reason)
+		if err != nil {
+			return err
+		}
+		printSupportReport(r)
+		return nil
+	case "abandon-event":
+		id, err := uuid.Parse(*event)
+		if err != nil {
+			return fmt.Errorf("--event: %w", err)
+		}
+		if err := svc.AbandonParkedEvent(ctx, actor, *tenant, id, *reason); err != nil {
+			return err
+		}
+		fmt.Printf("event %s abandoned\n", id)
+		return nil
+	case "metrics":
+		ms, err := svc.TenantMetrics(ctx, *tenant, *days)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%-10s %6s %6s %7s %8s %7s %5s\n", "day", "sales", "voids", "events", "rejected", "tablets", "flags")
+		for _, m := range ms {
+			fmt.Printf("%-10s %6d %6d %7d %8d %7d %5d\n", m.Day.Format(time.DateOnly), m.Sales, m.VoidedSales, m.Events, m.RejectedEvents, m.DevicesSynced, m.Flags)
+		}
+		if len(ms) == 0 {
+			fmt.Println("no metrics yet: orion worker computes them nightly and when it starts")
+		}
+		return nil
+	case "stopped-syncing":
+		ds, err := svc.StoppedSyncing(ctx, *quiet)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		for _, d := range ds {
+			last := "never synced, paired " + now.Sub(d.PairedAt).Round(time.Minute).String() + " ago"
+			if d.LastSyncAt != nil {
+				last = "last sync " + now.Sub(*d.LastSyncAt).Round(time.Minute).String() + " ago"
+			}
+			seen := ""
+			if d.LastSeenAt != nil && (d.LastSyncAt == nil || d.LastSeenAt.After(*d.LastSyncAt)) {
+				seen = ", seen since " + now.Sub(*d.LastSeenAt).Round(time.Minute).String() + " ago"
+			}
+			fmt.Printf("%-20s %s-%02d %-20s %s%s", d.TenantSlug, d.OutletCode, d.Code, d.Name, last, seen)
+			if d.UnsyncedEvents > 0 {
+				fmt.Printf(", %d events not delivered", d.UnsyncedEvents)
+			}
+			fmt.Println()
+		}
+		if len(ds) == 0 {
+			fmt.Println("every tablet in use has synced within", *quiet)
+		}
+		return nil
+	case "set-plan":
+		return svc.SetTenantPlan(ctx, actor, *tenant, *plan, *reason)
+	case "revoke-device":
+		id, err := uuid.Parse(*device)
+		if err != nil {
+			return fmt.Errorf("--device: %w", err)
+		}
+		return svc.RevokeDevice(ctx, actor, id, *reason)
+	case "set-flag-default":
+		return svc.SetFlagDefault(ctx, actor, entitlements.Key(*key), *value, *reason)
 	case "suspend-tenant":
 		return svc.SetTenantSuspended(ctx, actor, *tenant, true, *reason)
 	default: // reinstate-tenant
 		return svc.SetTenantSuspended(ctx, actor, *tenant, false, *reason)
+	}
+}
+
+// printSupportReport writes a support report as plain text, to paste into a ticket.
+func printSupportReport(r platform.SupportReport) {
+	ago := func(t *time.Time) string {
+		if t == nil {
+			return "never"
+		}
+		return r.GeneratedAt.Sub(*t).Round(time.Minute).String() + " ago"
+	}
+	state := ""
+	if r.Suspended {
+		state = " (SUSPENDED)"
+	}
+	fmt.Printf("%s%s  %s\nas of %s; counts cover since %s\n\n", r.TenantName, state, r.TenantID,
+		r.GeneratedAt.Format(time.RFC3339), r.WindowStartAt.Format(time.RFC3339))
+
+	fmt.Println("devices")
+	for _, d := range r.Devices {
+		status := ""
+		if d.Revoked {
+			status = " REVOKED"
+		}
+		skew := "-"
+		if d.ClockSkewMs != nil {
+			skew = (time.Duration(*d.ClockSkewMs) * time.Millisecond).Round(time.Second).String()
+		}
+		version := "-"
+		if d.AppVersion != nil {
+			version = *d.AppVersion
+		}
+		fmt.Printf("  %s-%02d %-20s last sync %s, last seen %s, app %s, clock skew %s%s\n        id %s\n",
+			d.OutletCode, d.Code, d.Name, ago(d.LastSyncAt), ago(d.LastSeenAt), version, skew, status, d.ID)
+		if d.UnsyncedEvents > 0 {
+			fmt.Printf("        %d events not delivered, the oldest from %s\n", d.UnsyncedEvents, ago(d.OldestUnsyncedAt))
+		}
+		for _, a := range d.OpenAlerts {
+			fmt.Printf("        open alert: %s\n", a)
+		}
+	}
+	if len(r.Devices) == 0 {
+		fmt.Println("  none")
+	}
+
+	fmt.Printf("\nparked events (waiting for a record that has not arrived): %d\n", len(r.Parked))
+	for _, p := range r.Parked {
+		fmt.Printf("  %s  %-15s from %-15s received %s, waiting for %s\n", p.ID, p.Type, p.Device, p.ReceivedAt.Format(time.RFC3339), p.DependsOn)
+	}
+	counts := func(title string, cs []platform.CodeCount) {
+		fmt.Printf("\n%s\n", title)
+		for _, c := range cs {
+			fmt.Printf("  %-24s %d\n", c.Code, c.Count)
+		}
+		if len(cs) == 0 {
+			fmt.Println("  none")
+		}
+	}
+	counts("rejected events", r.Rejected)
+	counts("review flags", r.Flags)
+	fmt.Printf("\nrecently flagged sales\n")
+	for _, f := range r.FlaggedSales {
+		fmt.Printf("  %s  %s  %s  %d  %s  %v\n", f.Receipt, f.BusinessDate.Format(time.DateOnly), f.Status, f.Total, f.ID, f.Codes)
+	}
+	if len(r.FlaggedSales) == 0 {
+		fmt.Println("  none")
 	}
 }

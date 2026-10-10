@@ -1,0 +1,54 @@
+{
+  "name": "bill-percent-discount-half-rounds-up",
+  "note": "12.5% of 10004 is 1250.5, which rounds half up to 1251, then spreads over the two lines by largest remainder.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 5000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 5004,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "percent",
+      "value": 1250
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 5000,
+        "discount": 0,
+        "allocated_bill_discount": 625,
+        "total": 4375
+      },
+      {
+        "gross": 5004,
+        "discount": 0,
+        "allocated_bill_discount": 626,
+        "total": 4378
+      }
+    ],
+    "subtotal": 10004,
+    "discount_total": 1251,
+    "net": 8753,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 8753,
+    "rounding_amount": 0,
+    "cash_total": 8753
+  }
+}

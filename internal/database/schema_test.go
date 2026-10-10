@@ -123,10 +123,11 @@ func TestMigrationsRoundTrip(t *testing.T) {
 
 func discardLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// Operator credentials and the platform audit log are reachable only through orion_platform.
+// Operator credentials, the platform audit log and the usage metrics are reachable only through
+// orion_platform.
 func TestPlatformTablesAreInvisibleToTheApp(t *testing.T) {
 	d := testdb.New(t)
-	for _, table := range []string{"operator", "operator_recovery_code", "platform_audit_log"} {
+	for _, table := range []string{"operator", "operator_recovery_code", "platform_audit_log", "tenant_daily_metrics"} {
 		for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE", "REFERENCES", "TRIGGER"} {
 			var has bool
 			if err := d.Owner.QueryRow(context.Background(), `SELECT has_table_privilege('orion_app', $1, $2)`, table, priv).Scan(&has); err != nil {

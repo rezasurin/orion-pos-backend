@@ -1,0 +1,49 @@
+{
+  "name": "line-discount-with-modifiers",
+  "note": "Line amount includes modifiers: (30000+5000+3000)*2 = 76000; 10% off = 7600.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 30000,
+      "quantity": 2,
+      "modifiers": [
+        5000,
+        3000
+      ]
+    }
+  ],
+  "discounts": [
+    {
+      "line": 0,
+      "kind": "percent",
+      "value": 1000
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 76000,
+        "discount": 7600,
+        "allocated_bill_discount": 0,
+        "total": 68400
+      }
+    ],
+    "subtotal": 76000,
+    "discount_total": 7600,
+    "net": 68400,
+    "service_charge": 0,
+    "tax": 7524,
+    "tax_included": false,
+    "total": 75924,
+    "rounding_amount": 0,
+    "cash_total": 75924
+  }
+}

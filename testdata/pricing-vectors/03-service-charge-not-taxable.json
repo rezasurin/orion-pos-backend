@@ -1,0 +1,39 @@
+{
+  "name": "service-charge-not-taxable",
+  "note": "Same bill, but tax is on the net only: tax 10000, total 115000.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1000,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": false,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 50000,
+      "quantity": 2
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 100000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 100000
+      }
+    ],
+    "subtotal": 100000,
+    "discount_total": 0,
+    "net": 100000,
+    "service_charge": 5000,
+    "tax": 10000,
+    "tax_included": false,
+    "total": 115000,
+    "rounding_amount": 0,
+    "cash_total": 115000
+  }
+}

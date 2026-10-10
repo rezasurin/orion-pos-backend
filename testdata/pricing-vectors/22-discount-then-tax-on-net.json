@@ -1,0 +1,44 @@
+{
+  "name": "discount-then-tax-on-net",
+  "note": "Tax and service charge work from the discounted amount, not the gross.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 100000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "amount",
+      "value": 20000
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 100000,
+        "discount": 0,
+        "allocated_bill_discount": 20000,
+        "total": 80000
+      }
+    ],
+    "subtotal": 100000,
+    "discount_total": 20000,
+    "net": 80000,
+    "service_charge": 4000,
+    "tax": 9240,
+    "tax_included": false,
+    "total": 93240,
+    "rounding_amount": 0,
+    "cash_total": 93240
+  }
+}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+
+	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 )
 
 // Errors the HTTP layer maps to problem+json codes. Validation, conflict and not-found problems
@@ -23,6 +25,10 @@ var (
 	// ErrForbidden means the caller is authenticated but lacks a permission.
 	ErrForbidden     = errors.New("identity: forbidden")
 	ErrDeviceRevoked = errors.New("identity: device has been revoked")
+	// ErrEmailTaken is a conflict: another account has the email.
+	ErrEmailTaken = fmt.Errorf("%w: email is already registered", kernel.ErrConflict)
+	// ErrTermsOutdated means a signup accepted a terms version other than TermsVersion.
+	ErrTermsOutdated = errors.New("identity: accepted terms are not the current version")
 )
 
 // TenantRequiredError is returned by Login when the account belongs to several businesses and

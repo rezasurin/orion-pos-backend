@@ -11,7 +11,113 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const abandonParkedEvent = `-- name: AbandonParkedEvent :exec
+UPDATE sync_inbox SET status = 'rejected', code = 'abandoned', detail = $1, depends_on = NULL
+WHERE tenant_id = $2 AND device_id = $3 AND idempotency_key = $4
+`
+
+type AbandonParkedEventParams struct {
+	Detail         *string
+	TenantID       uuid.UUID
+	DeviceID       uuid.UUID
+	IdempotencyKey uuid.UUID
+}
+
+func (q *Queries) AbandonParkedEvent(ctx context.Context, arg AbandonParkedEventParams) error {
+	_, err := q.db.Exec(ctx, abandonParkedEvent,
+		arg.Detail,
+		arg.TenantID,
+		arg.DeviceID,
+		arg.IdempotencyKey,
+	)
+	return err
+}
+
+const adminTenants = `-- name: AdminTenants :many
+
+SELECT t.id, t.slug, t.name, p.code AS plan_code, t.subscription_status::text AS subscription_status,
+       t.suspended_at, t.created_at,
+       (SELECT count(*) FROM outlet o WHERE o.tenant_id = t.id)::integer AS outlets,
+       (SELECT count(*) FROM device d WHERE d.tenant_id = t.id AND d.revoked_at IS NULL)::integer AS devices,
+       (SELECT d.last_sync_at FROM device d WHERE d.tenant_id = t.id AND d.last_sync_at IS NOT NULL
+        ORDER BY d.last_sync_at DESC LIMIT 1) AS last_sync_at,
+       coalesce((SELECT sum(m.sales) FROM tenant_daily_metrics m WHERE m.tenant_id = t.id AND m.day >= $1::date), 0)::integer AS sales_7d,
+       coalesce((SELECT sum(m.events) FROM tenant_daily_metrics m WHERE m.tenant_id = t.id AND m.day >= $1::date), 0)::integer AS events_7d
+FROM tenant t JOIN plan p ON p.id = t.plan_id
+WHERE t.id > $2
+  AND ($3::uuid IS NULL OR t.id = $3::uuid)
+  AND ($4::text = '' OR t.name ILIKE '%' || $4::text || '%' OR t.slug ILIKE '%' || $4::text || '%')
+ORDER BY t.id
+LIMIT $5
+`
+
+type AdminTenantsParams struct {
+	SinceDay pgtype.Date
+	After    uuid.UUID
+	ID       *uuid.UUID
+	Q        string
+	PageSize int32
+}
+
+type AdminTenantsRow struct {
+	ID                 uuid.UUID
+	Slug               string
+	Name               string
+	PlanCode           string
+	SubscriptionStatus string
+	SuspendedAt        *time.Time
+	CreatedAt          time.Time
+	Outlets            int32
+	Devices            int32
+	LastSyncAt         *time.Time
+	Sales7d            int32
+	Events7d           int32
+}
+
+// The operator console (console.go).
+// A page of businesses with what an operator scans for: plan, state, size and the last week's use.
+// With id set, that one business.
+func (q *Queries) AdminTenants(ctx context.Context, arg AdminTenantsParams) ([]AdminTenantsRow, error) {
+	rows, err := q.db.Query(ctx, adminTenants,
+		arg.SinceDay,
+		arg.After,
+		arg.ID,
+		arg.Q,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminTenantsRow
+	for rows.Next() {
+		var i AdminTenantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Slug,
+			&i.Name,
+			&i.PlanCode,
+			&i.SubscriptionStatus,
+			&i.SuspendedAt,
+			&i.CreatedAt,
+			&i.Outlets,
+			&i.Devices,
+			&i.LastSyncAt,
+			&i.Sales7d,
+			&i.Events7d,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const advanceTOTP = `-- name: AdvanceTOTP :exec
 UPDATE operator SET totp_last_step = $1, totp_confirmed_at = coalesce(totp_confirmed_at, $2::timestamptz)
@@ -30,6 +136,63 @@ func (q *Queries) AdvanceTOTP(ctx context.Context, arg AdvanceTOTPParams) error 
 	return err
 }
 
+const computeDailyMetrics = `-- name: ComputeDailyMetrics :execrows
+
+WITH days AS (
+    SELECT t.id AS tenant_id, d::date AS day
+    FROM tenant t CROSS JOIN generate_series($2::date, $3::date, interval '1 day') AS d
+    WHERE d::date >= (t.created_at AT TIME ZONE 'Asia/Jakarta')::date
+), sales_day AS (
+    SELECT sa.tenant_id, sa.business_date AS day, count(*) AS sales, count(*) FILTER (WHERE sa.status = 'voided') AS voided
+    FROM sale sa WHERE sa.business_date BETWEEN $2::date AND $3::date
+    GROUP BY 1, 2
+), events_day AS (
+    SELECT i.tenant_id, (i.received_at AT TIME ZONE 'Asia/Jakarta')::date AS day, count(*) AS events,
+           count(*) FILTER (WHERE i.status = 'rejected') AS rejected, count(DISTINCT i.device_id) AS devices
+    FROM sync_inbox i
+    WHERE i.received_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Jakarta')
+      AND i.received_at < (($3::date + 1)::timestamp AT TIME ZONE 'Asia/Jakarta')
+    GROUP BY 1, 2
+), flags_day AS (
+    SELECT fl.tenant_id, (fl.created_at AT TIME ZONE 'Asia/Jakarta')::date AS day, count(*) AS flags
+    FROM flag fl
+    WHERE fl.created_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Jakarta')
+      AND fl.created_at < (($3::date + 1)::timestamp AT TIME ZONE 'Asia/Jakarta')
+    GROUP BY 1, 2
+)
+INSERT INTO tenant_daily_metrics (tenant_id, day, sales, voided_sales, events, rejected_events, devices_synced, flags, computed_at)
+SELECT days.tenant_id, days.day, coalesce(s.sales, 0), coalesce(s.voided, 0), coalesce(e.events, 0), coalesce(e.rejected, 0),
+       coalesce(e.devices, 0), coalesce(f.flags, 0), $1::timestamptz
+FROM days
+LEFT JOIN sales_day s ON s.tenant_id = days.tenant_id AND s.day = days.day
+LEFT JOIN events_day e ON e.tenant_id = days.tenant_id AND e.day = days.day
+LEFT JOIN flags_day f ON f.tenant_id = days.tenant_id AND f.day = days.day
+ON CONFLICT (tenant_id, day) DO UPDATE SET
+    sales = excluded.sales, voided_sales = excluded.voided_sales, events = excluded.events,
+    rejected_events = excluded.rejected_events, devices_synced = excluded.devices_synced, flags = excluded.flags,
+    computed_at = excluded.computed_at
+`
+
+type ComputeDailyMetricsParams struct {
+	Now     time.Time
+	FromDay pgtype.Date
+	ToDay   pgtype.Date
+}
+
+// Usage metrics (metrics.go). Counts only (ADR 0008).
+// Recomputes the days from from_day to to_day for every business that existed then, replacing what
+// was there: a tablet that was offline for days changes the days its sales belong to. Sales count by
+// their business date; sync figures by the day they arrived, in Asia/Jakarta.
+// ponytail: scans the date range of sale, sync_inbox and flag across tenants once a night; add
+// indexes on those dates if the run gets slow.
+func (q *Queries) ComputeDailyMetrics(ctx context.Context, arg ComputeDailyMetricsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, computeDailyMetrics, arg.Now, arg.FromDay, arg.ToDay)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countOperators = `-- name: CountOperators :one
 SELECT count(*) FROM operator
 `
@@ -39,6 +202,63 @@ func (q *Queries) CountOperators(ctx context.Context) (int64, error) {
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const endAnnouncement = `-- name: EndAnnouncement :one
+UPDATE announcement
+SET ends_at = $1::timestamptz, starts_at = least(starts_at, $1::timestamptz - interval '1 microsecond')
+WHERE id = $2 AND (ends_at IS NULL OR ends_at > $1::timestamptz)
+RETURNING id, tenant_id, severity, title, body, starts_at, ends_at, created_by, created_at
+`
+
+type EndAnnouncementParams struct {
+	Now time.Time
+	ID  uuid.UUID
+}
+
+// Ends it now; one that has not started yet ends before it begins, so it is moved to start now too.
+func (q *Queries) EndAnnouncement(ctx context.Context, arg EndAnnouncementParams) (Announcement, error) {
+	row := q.db.QueryRow(ctx, endAnnouncement, arg.Now, arg.ID)
+	var i Announcement
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Severity,
+		&i.Title,
+		&i.Body,
+		&i.StartsAt,
+		&i.EndsAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getDeviceForOperator = `-- name: GetDeviceForOperator :one
+SELECT id, tenant_id, outlet_id, device_code, name, revoked_at FROM device WHERE id = $1 FOR UPDATE
+`
+
+type GetDeviceForOperatorRow struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	OutletID   uuid.UUID
+	DeviceCode int32
+	Name       string
+	RevokedAt  *time.Time
+}
+
+func (q *Queries) GetDeviceForOperator(ctx context.Context, id uuid.UUID) (GetDeviceForOperatorRow, error) {
+	row := q.db.QueryRow(ctx, getDeviceForOperator, id)
+	var i GetDeviceForOperatorRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.DeviceCode,
+		&i.Name,
+		&i.RevokedAt,
+	)
+	return i, err
 }
 
 const getOperator = `-- name: GetOperator :one
@@ -100,6 +320,83 @@ func (q *Queries) GetOperatorForUpdate(ctx context.Context, id uuid.UUID) (Opera
 		&i.DisabledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getParkedEventForUpdate = `-- name: GetParkedEventForUpdate :one
+SELECT tenant_id, device_id, idempotency_key, id, event_type, depends_on FROM sync_inbox
+WHERE tenant_id = $1 AND id = $2 AND status = 'pending_dependency'
+FOR UPDATE
+`
+
+type GetParkedEventForUpdateParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+type GetParkedEventForUpdateRow struct {
+	TenantID       uuid.UUID
+	DeviceID       uuid.UUID
+	IdempotencyKey uuid.UUID
+	ID             uuid.UUID
+	EventType      string
+	DependsOn      *uuid.UUID
+}
+
+func (q *Queries) GetParkedEventForUpdate(ctx context.Context, arg GetParkedEventForUpdateParams) (GetParkedEventForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getParkedEventForUpdate, arg.TenantID, arg.ID)
+	var i GetParkedEventForUpdateRow
+	err := row.Scan(
+		&i.TenantID,
+		&i.DeviceID,
+		&i.IdempotencyKey,
+		&i.ID,
+		&i.EventType,
+		&i.DependsOn,
+	)
+	return i, err
+}
+
+const insertAnnouncement = `-- name: InsertAnnouncement :one
+INSERT INTO announcement (id, tenant_id, severity, title, body, starts_at, ends_at, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, tenant_id, severity, title, body, starts_at, ends_at, created_by, created_at
+`
+
+type InsertAnnouncementParams struct {
+	ID        uuid.UUID
+	TenantID  *uuid.UUID
+	Severity  string
+	Title     []byte
+	Body      []byte
+	StartsAt  time.Time
+	EndsAt    *time.Time
+	CreatedBy uuid.UUID
+}
+
+func (q *Queries) InsertAnnouncement(ctx context.Context, arg InsertAnnouncementParams) (Announcement, error) {
+	row := q.db.QueryRow(ctx, insertAnnouncement,
+		arg.ID,
+		arg.TenantID,
+		arg.Severity,
+		arg.Title,
+		arg.Body,
+		arg.StartsAt,
+		arg.EndsAt,
+		arg.CreatedBy,
+	)
+	var i Announcement
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Severity,
+		&i.Title,
+		&i.Body,
+		&i.StartsAt,
+		&i.EndsAt,
+		&i.CreatedBy,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -179,16 +476,79 @@ func (q *Queries) InsertRecoveryCode(ctx context.Context, arg InsertRecoveryCode
 	return err
 }
 
+const insertTenantAuditAsSystem = `-- name: InsertTenantAuditAsSystem :exec
+INSERT INTO tenant_audit_log (id, tenant_id, actor_type, action, target_type, target_id, detail)
+VALUES ($1, $2, 'system', $3, $4, $5, $6)
+`
+
+type InsertTenantAuditAsSystemParams struct {
+	ID         uuid.UUID
+	TenantID   uuid.UUID
+	Action     string
+	TargetType string
+	TargetID   *uuid.UUID
+	Detail     []byte
+}
+
+// The business's own audit log, for something Orion staff did to it.
+func (q *Queries) InsertTenantAuditAsSystem(ctx context.Context, arg InsertTenantAuditAsSystemParams) error {
+	_, err := q.db.Exec(ctx, insertTenantAuditAsSystem,
+		arg.ID,
+		arg.TenantID,
+		arg.Action,
+		arg.TargetType,
+		arg.TargetID,
+		arg.Detail,
+	)
+	return err
+}
+
+const listAnnouncements = `-- name: ListAnnouncements :many
+SELECT id, tenant_id, severity, title, body, starts_at, ends_at, created_by, created_at FROM announcement ORDER BY starts_at DESC, id LIMIT 200
+`
+
+// The most recent announcements, ended ones included.
+func (q *Queries) ListAnnouncements(ctx context.Context) ([]Announcement, error) {
+	rows, err := q.db.Query(ctx, listAnnouncements)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Announcement
+	for rows.Next() {
+		var i Announcement
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Severity,
+			&i.Title,
+			&i.Body,
+			&i.StartsAt,
+			&i.EndsAt,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAudit = `-- name: ListAudit :many
 SELECT id, operator_id, action, target_type, target_id, tenant_id, before, after, reason, coalesce(host(ip), '')::text AS ip, user_agent, created_at
 FROM platform_audit_log
-WHERE id < $1
+WHERE id < $1 AND ($2::uuid IS NULL OR tenant_id = $2::uuid)
 ORDER BY id DESC
-LIMIT $2
+LIMIT $3
 `
 
 type ListAuditParams struct {
 	Before   uuid.UUID
+	TenantID *uuid.UUID
 	PageSize int32
 }
 
@@ -209,7 +569,7 @@ type ListAuditRow struct {
 
 // Newest first; the cursor is the id of the last row of the previous page.
 func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAuditRow, error) {
-	rows, err := q.db.Query(ctx, listAudit, arg.Before, arg.PageSize)
+	rows, err := q.db.Query(ctx, listAudit, arg.Before, arg.TenantID, arg.PageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +591,366 @@ func (q *Queries) ListAudit(ctx context.Context, arg ListAuditParams) ([]ListAud
 			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDailyMetrics = `-- name: ListDailyMetrics :many
+SELECT tenant_id, day, sales, voided_sales, events, rejected_events, devices_synced, flags, computed_at FROM tenant_daily_metrics
+WHERE tenant_id = $1 AND day BETWEEN $2::date AND $3::date
+ORDER BY day
+`
+
+type ListDailyMetricsParams struct {
+	TenantID uuid.UUID
+	FromDay  pgtype.Date
+	ToDay    pgtype.Date
+}
+
+func (q *Queries) ListDailyMetrics(ctx context.Context, arg ListDailyMetricsParams) ([]TenantDailyMetric, error) {
+	rows, err := q.db.Query(ctx, listDailyMetrics, arg.TenantID, arg.FromDay, arg.ToDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TenantDailyMetric
+	for rows.Next() {
+		var i TenantDailyMetric
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.Day,
+			&i.Sales,
+			&i.VoidedSales,
+			&i.Events,
+			&i.RejectedEvents,
+			&i.DevicesSynced,
+			&i.Flags,
+			&i.ComputedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const revokeDeviceByOperator = `-- name: RevokeDeviceByOperator :exec
+UPDATE device SET revoked_at = $1, revoked_by_operator_id = $2 WHERE id = $3 AND revoked_at IS NULL
+`
+
+type RevokeDeviceByOperatorParams struct {
+	Now        *time.Time
+	OperatorID *uuid.UUID
+	ID         uuid.UUID
+}
+
+func (q *Queries) RevokeDeviceByOperator(ctx context.Context, arg RevokeDeviceByOperatorParams) error {
+	_, err := q.db.Exec(ctx, revokeDeviceByOperator, arg.Now, arg.OperatorID, arg.ID)
+	return err
+}
+
+const stoppedSyncing = `-- name: StoppedSyncing :many
+SELECT t.slug AS tenant_slug, t.name AS tenant_name, o.code AS outlet_code, d.id AS device_id, d.name AS device_name,
+       d.device_code, d.paired_at, d.last_sync_at, d.last_seen_at, d.app_version, d.unsynced_events, d.oldest_unsynced_at
+FROM device d
+JOIN tenant t ON t.id = d.tenant_id
+JOIN outlet o ON o.tenant_id = d.tenant_id AND o.id = d.outlet_id
+WHERE d.revoked_at IS NULL AND t.suspended_at IS NULL
+  AND coalesce(d.last_sync_at, d.paired_at) < $1::timestamptz
+  AND coalesce(d.last_sync_at, d.paired_at) >= $2::timestamptz
+ORDER BY coalesce(d.last_sync_at, d.paired_at), d.id
+LIMIT 500
+`
+
+type StoppedSyncingParams struct {
+	QuietSince  time.Time
+	WindowStart time.Time
+}
+
+type StoppedSyncingRow struct {
+	TenantSlug       string
+	TenantName       string
+	OutletCode       string
+	DeviceID         uuid.UUID
+	DeviceName       string
+	DeviceCode       int32
+	PairedAt         time.Time
+	LastSyncAt       *time.Time
+	LastSeenAt       *time.Time
+	AppVersion       *string
+	UnsyncedEvents   int32
+	OldestUnsyncedAt *time.Time
+}
+
+// Tablets in use that have gone quiet: not revoked, in a business that is not suspended, that synced
+// (or were paired) within the window but not since `quiet_since`. Oldest silence first.
+func (q *Queries) StoppedSyncing(ctx context.Context, arg StoppedSyncingParams) ([]StoppedSyncingRow, error) {
+	rows, err := q.db.Query(ctx, stoppedSyncing, arg.QuietSince, arg.WindowStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StoppedSyncingRow
+	for rows.Next() {
+		var i StoppedSyncingRow
+		if err := rows.Scan(
+			&i.TenantSlug,
+			&i.TenantName,
+			&i.OutletCode,
+			&i.DeviceID,
+			&i.DeviceName,
+			&i.DeviceCode,
+			&i.PairedAt,
+			&i.LastSyncAt,
+			&i.LastSeenAt,
+			&i.AppVersion,
+			&i.UnsyncedEvents,
+			&i.OldestUnsyncedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportDevices = `-- name: SupportDevices :many
+
+SELECT d.id, d.name, d.device_code, o.code AS outlet_code, d.revoked_at, d.last_seen_at, d.last_sync_at, d.app_version,
+       d.clock_skew_ms, d.unsynced_events, d.oldest_unsynced_at,
+       coalesce((SELECT array_agg(a.kind ORDER BY a.kind) FROM device_alert a
+                 WHERE a.tenant_id = d.tenant_id AND a.device_id = d.id AND a.resolved_at IS NULL), '{}')::text[] AS open_alerts
+FROM device d JOIN outlet o ON o.tenant_id = d.tenant_id AND o.id = d.outlet_id
+WHERE d.tenant_id = $1
+ORDER BY o.code, d.device_code
+`
+
+type SupportDevicesRow struct {
+	ID               uuid.UUID
+	Name             string
+	DeviceCode       int32
+	OutletCode       string
+	RevokedAt        *time.Time
+	LastSeenAt       *time.Time
+	LastSyncAt       *time.Time
+	AppVersion       *string
+	ClockSkewMs      *int32
+	UnsyncedEvents   int32
+	OldestUnsyncedAt *time.Time
+	OpenAlerts       []string
+}
+
+// Support tooling (support.go): read-only views of one business's sync health, and the one write an
+// operator may make there. They run as orion_platform, across every table they touch.
+func (q *Queries) SupportDevices(ctx context.Context, tenantID uuid.UUID) ([]SupportDevicesRow, error) {
+	rows, err := q.db.Query(ctx, supportDevices, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportDevicesRow
+	for rows.Next() {
+		var i SupportDevicesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.DeviceCode,
+			&i.OutletCode,
+			&i.RevokedAt,
+			&i.LastSeenAt,
+			&i.LastSyncAt,
+			&i.AppVersion,
+			&i.ClockSkewMs,
+			&i.UnsyncedEvents,
+			&i.OldestUnsyncedAt,
+			&i.OpenAlerts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportFlagCounts = `-- name: SupportFlagCounts :many
+SELECT code, count(*)::bigint AS flags FROM flag
+WHERE tenant_id = $1 AND created_at >= $2
+GROUP BY code ORDER BY flags DESC, code
+`
+
+type SupportFlagCountsParams struct {
+	TenantID uuid.UUID
+	Since    time.Time
+}
+
+type SupportFlagCountsRow struct {
+	Code  string
+	Flags int64
+}
+
+func (q *Queries) SupportFlagCounts(ctx context.Context, arg SupportFlagCountsParams) ([]SupportFlagCountsRow, error) {
+	rows, err := q.db.Query(ctx, supportFlagCounts, arg.TenantID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportFlagCountsRow
+	for rows.Next() {
+		var i SupportFlagCountsRow
+		if err := rows.Scan(&i.Code, &i.Flags); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportFlaggedSales = `-- name: SupportFlaggedSales :many
+SELECT s.id, s.receipt_number, o.code AS outlet_code, s.business_date, s.total, s.status,
+       array_agg(DISTINCT f.code ORDER BY f.code)::text[] AS codes, max(f.created_at)::timestamptz AS flagged_at
+FROM flag f
+JOIN sale s ON s.tenant_id = f.tenant_id AND s.id = f.target_id
+JOIN outlet o ON o.tenant_id = s.tenant_id AND o.id = s.outlet_id
+WHERE f.tenant_id = $1 AND f.created_at >= $2
+GROUP BY s.id, s.receipt_number, o.code, s.business_date, s.total, s.status
+ORDER BY flagged_at DESC, s.id
+LIMIT 20
+`
+
+type SupportFlaggedSalesParams struct {
+	TenantID uuid.UUID
+	Since    time.Time
+}
+
+type SupportFlaggedSalesRow struct {
+	ID            uuid.UUID
+	ReceiptNumber string
+	OutletCode    string
+	BusinessDate  pgtype.Date
+	Total         int64
+	Status        string
+	Codes         []string
+	FlaggedAt     time.Time
+}
+
+// The sales most recently flagged, with their flag codes.
+func (q *Queries) SupportFlaggedSales(ctx context.Context, arg SupportFlaggedSalesParams) ([]SupportFlaggedSalesRow, error) {
+	rows, err := q.db.Query(ctx, supportFlaggedSales, arg.TenantID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportFlaggedSalesRow
+	for rows.Next() {
+		var i SupportFlaggedSalesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ReceiptNumber,
+			&i.OutletCode,
+			&i.BusinessDate,
+			&i.Total,
+			&i.Status,
+			&i.Codes,
+			&i.FlaggedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportParked = `-- name: SupportParked :many
+SELECT i.id, i.event_type, i.depends_on, i.received_at, d.name AS device_name
+FROM sync_inbox i JOIN device d ON d.tenant_id = i.tenant_id AND d.id = i.device_id
+WHERE i.tenant_id = $1 AND i.status = 'pending_dependency'
+ORDER BY i.received_at, i.id
+LIMIT 100
+`
+
+type SupportParkedRow struct {
+	ID         uuid.UUID
+	EventType  string
+	DependsOn  *uuid.UUID
+	ReceivedAt time.Time
+	DeviceName string
+}
+
+// Events waiting for a record that has not arrived, oldest first.
+func (q *Queries) SupportParked(ctx context.Context, tenantID uuid.UUID) ([]SupportParkedRow, error) {
+	rows, err := q.db.Query(ctx, supportParked, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportParkedRow
+	for rows.Next() {
+		var i SupportParkedRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.EventType,
+			&i.DependsOn,
+			&i.ReceivedAt,
+			&i.DeviceName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supportRejected = `-- name: SupportRejected :many
+SELECT coalesce(code, '')::text AS code, count(*)::bigint AS events
+FROM sync_inbox
+WHERE tenant_id = $1 AND status = 'rejected' AND received_at >= $2
+GROUP BY code ORDER BY events DESC, code
+`
+
+type SupportRejectedParams struct {
+	TenantID uuid.UUID
+	Since    time.Time
+}
+
+type SupportRejectedRow struct {
+	Code   string
+	Events int64
+}
+
+func (q *Queries) SupportRejected(ctx context.Context, arg SupportRejectedParams) ([]SupportRejectedRow, error) {
+	rows, err := q.db.Query(ctx, supportRejected, arg.TenantID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SupportRejectedRow
+	for rows.Next() {
+		var i SupportRejectedRow
+		if err := rows.Scan(&i.Code, &i.Events); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

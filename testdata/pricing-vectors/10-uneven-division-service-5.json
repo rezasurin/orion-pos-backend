@@ -1,0 +1,39 @@
+{
+  "name": "uneven-division-service-5",
+  "note": "5% of 33333 is 1666.65, rounds to 1667.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 33333,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 33333,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 33333
+      }
+    ],
+    "subtotal": 33333,
+    "discount_total": 0,
+    "net": 33333,
+    "service_charge": 1667,
+    "tax": 0,
+    "tax_included": false,
+    "total": 35000,
+    "rounding_amount": 0,
+    "cash_total": 35000
+  }
+}

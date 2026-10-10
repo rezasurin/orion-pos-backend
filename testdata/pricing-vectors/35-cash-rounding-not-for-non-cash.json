@@ -1,0 +1,49 @@
+{
+  "name": "cash-rounding-not-for-non-cash",
+  "note": "The same bill paid by QRIS is not rounded.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 100,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 24000,
+      "quantity": 2
+    },
+    {
+      "unit_price": 28500,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 48000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 48000
+      },
+      {
+        "gross": 28500,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 28500
+      }
+    ],
+    "subtotal": 76500,
+    "discount_total": 0,
+    "net": 76500,
+    "service_charge": 0,
+    "tax": 8415,
+    "tax_included": false,
+    "total": 84915,
+    "rounding_amount": 0,
+    "cash_total": 84915
+  }
+}

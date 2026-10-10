@@ -1,0 +1,55 @@
+{
+  "name": "line-amount-discount",
+  "note": "5000 off one line.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 25000,
+      "quantity": 2
+    },
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "line": 1,
+      "kind": "amount",
+      "value": 5000
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 50000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 50000
+      },
+      {
+        "gross": 10000,
+        "discount": 5000,
+        "allocated_bill_discount": 0,
+        "total": 5000
+      }
+    ],
+    "subtotal": 60000,
+    "discount_total": 5000,
+    "net": 55000,
+    "service_charge": 0,
+    "tax": 6050,
+    "tax_included": false,
+    "total": 61050,
+    "rounding_amount": 0,
+    "cash_total": 61050
+  }
+}

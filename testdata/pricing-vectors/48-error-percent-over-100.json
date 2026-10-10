@@ -1,0 +1,26 @@
+{
+  "name": "error-percent-over-100",
+  "note": "More than 100%.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "percent",
+      "value": 10001
+    }
+  ],
+  "tender": "non_cash",
+  "expected_error": "invalid_discount"
+}

@@ -44,6 +44,17 @@ jobs:
       # Tests start Postgres with testcontainers, using the runner's Docker.
       - run: go test -race -count=1 ./...
 
+  # The push latency bar is only meaningful without the race detector, which `test` runs under.
+  load:
+    name: load check (push p95 under 300 ms)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: make load
+
   docker:
     runs-on: ubuntu-latest
     steps:

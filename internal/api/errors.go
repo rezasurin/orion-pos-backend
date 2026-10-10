@@ -50,8 +50,11 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		tenantRequired *identity.TenantRequiredError
 		forbidden      *identity.ForbiddenError
 		limited        *rateLimitError
+		tooBig         *http.MaxBytesError
 	)
 	switch {
+	case errors.As(err, &tooBig): // a handler that reads its own body, such as the catalog import
+		p.Status, p.Code, p.Detail = http.StatusRequestEntityTooLarge, "payload_too_large", "request body is too large"
 	case errors.As(err, &limited):
 		p.Status, p.Code = http.StatusTooManyRequests, "rate_limited"
 		p.Detail = "too many requests; try again later"
@@ -73,6 +76,8 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		p.Status, p.Code, p.Detail = http.StatusUnauthorized, "invalid_token", "the token is invalid, expired or already used"
 	case errors.Is(err, identity.ErrEmailNotVerified):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "email_not_verified", "verify your email address first"
+	case errors.Is(err, identity.ErrTermsOutdated):
+		p.Status, p.Code, p.Detail = http.StatusConflict, "terms_outdated", "the current terms version is "+identity.TermsVersion
 	case errors.Is(err, identity.ErrNoTenant):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "no_tenant", "this account does not belong to a business"
 	case errors.Is(err, tenancy.ErrSuspended):
@@ -97,7 +102,7 @@ func (s *Server) responseError(w http.ResponseWriter, r *http.Request, err error
 		}
 	case errors.Is(err, identity.ErrForbidden):
 		p.Status, p.Code, p.Detail = http.StatusForbidden, "forbidden", "you do not have permission"
-	case errors.Is(err, kernel.ErrNotFound):
+	case errors.Is(err, kernel.ErrNotFound), errors.Is(err, entitlements.ErrUnknownKey):
 		p.Status, p.Code, p.Detail = http.StatusNotFound, "not_found", "not found"
 	case errors.Is(err, kernel.ErrConflict):
 		p.Status, p.Code = http.StatusConflict, "conflict"

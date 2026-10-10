@@ -51,10 +51,23 @@ The operator console needs `ORION_PLATFORM_DATABASE_URL` on `orion serve` too, `
 it up apart from the database) and `ORION_JWT_OPERATOR_KEYS`. Create the first operator with
 `orion admin create-operator --email you@example.com --reason bootstrap` and store what it prints.
 
-There is no email provider yet. `ORION_EMAIL_PROVIDER=log` writes each message, including
-verification links, to the log, so `orion worker` refuses it when `ORION_ENV=production`.
+Email goes through [Resend](https://resend.com) in staging and production:
+`ORION_EMAIL_PROVIDER=resend`, `ORION_EMAIL_API_KEY` (from the secret store) and `ORION_EMAIL_FROM`
+(for example `Orion <no-reply@mail.orion.example>`, on a sending subdomain verified in Resend with
+its SPF, DKIM and DMARC records). A missing key or From address stops `orion` at startup. The local
+default, `ORION_EMAIL_PROVIDER=log`, writes each message, including verification links, to the log,
+so `orion worker` refuses it when `ORION_ENV=production`. Setup steps: `docs/guides/email-provider.md`.
 
-## Not decided yet
+## Device health alerts
 
-Hosting, backups and the deploy pipeline are task B0.13 in `docs/BACKEND_PLAN.md` and wait on the
-hosting decision.
+`orion worker` runs a monitor every five minutes that emails a business's owners when a tablet holds
+unsynced sales for more than `ORION_ALERT_UNSYNCED_AFTER` (default 30 minutes) or goes quiet for
+`ORION_ALERT_SILENT_AFTER` (default 3 hours) with a shift open. `ORION_ALERT_OPERATOR_EMAIL` gets a
+copy. With `ORION_EMAIL_PROVIDER=log` the emails only appear in the worker's log.
+
+## Hosting, backups and restore
+
+Nothing is deployed yet. `docs/guides/hosting-and-restore.md` walks through choosing a host,
+provisioning, the deploy pipeline, backups and the restore drill. `deploy/restore-drill.sh` is the
+drill: it restores a dump into a scratch database and compares the migration version and every
+table's row count with the source.

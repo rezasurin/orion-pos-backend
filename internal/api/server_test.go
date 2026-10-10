@@ -19,11 +19,17 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/rezasurin/orion-pos-backend/internal/api"
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/inventory"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
+	"github.com/rezasurin/orion-pos-backend/internal/reporting"
+	"github.com/rezasurin/orion-pos-backend/internal/sales"
+	syncsrv "github.com/rezasurin/orion-pos-backend/internal/sync"
+	"github.com/rezasurin/orion-pos-backend/internal/sync/syncstub"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 	"github.com/rezasurin/orion-pos-backend/internal/testdb"
 )
@@ -39,6 +45,7 @@ type env struct {
 	ids      *identity.Service
 	tenants  *tenancy.Service
 	platform *platform.Service
+	ents     *entitlements.Resolver
 }
 
 type tenantFixture struct {
@@ -60,9 +67,16 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 	ents := entitlements.NewResolver(d.App, nil)
 	ids, err := identity.NewService(identity.Deps{
 		Entitlements: ents, Pool: d.App, TenantKeys: identity.NewEphemeralKeyring(), DeviceKeys: identity.NewEphemeralKeyring(),
-		Jobs: jobs, Gate: tenants.CheckActive,
+		Jobs: jobs, Gate: func(ctx context.Context, id uuid.UUID) error { _, err := tenants.SuspendedAt(ctx, id); return err },
 		PasswordCost: identity.ArgonParams{Time: 1, Memory: 8 * 1024, Threads: 1},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncstub.Install(context.Background(), d.Owner); err != nil {
+		t.Fatal(err)
+	}
+	syncSvc, err := syncsrv.NewService(syncsrv.Deps{Pool: d.App, Identity: ids, Catalog: catalog.NewService(d.App), Tenancy: tenants, Entitlements: ents, Projectors: []syncsrv.Projector{&syncstub.Projector{}, sales.NewProjector(sales.Deps{Identity: ids, Tenancy: tenants, Catalog: catalog.NewService(d.App)})}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +97,7 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 			t.Fatal(err)
 		}
 	}
-	srv, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	srv, err := api.New(api.Deps{Catalog: catalog.NewService(d.App), Inventory: inventory.NewService(d.App), Sync: syncSvc, Reporting: reporting.NewService(d.App), Sales: sales.NewService(d.App), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +105,7 @@ func newEnvWith(t *testing.T, withPlatform bool) *env {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Routes: func(r chi.Router) { srv.Routes(r) },
 	})
-	return &env{d: d, handler: handler, ids: ids, tenants: tenants, platform: plat}
+	return &env{d: d, handler: handler, ids: ids, tenants: tenants, platform: plat, ents: ents}
 }
 
 // business creates a tenant with one outlet and a verified owner.
@@ -378,18 +392,69 @@ func TestOutlets(t *testing.T) {
 	}
 }
 
-func TestSuspendedTenantIsLockedOut(t *testing.T) {
+// A suspended business can read but not change anything, and its tablets keep syncing so a shift in
+// progress is never cut off; the pull tells them it is suspended.
+func TestASuspendedBusinessIsReadOnlyAndItsTabletsKeepSyncing(t *testing.T) {
 	e := newEnv(t)
 	b := e.business(t, "kopi", "JKT1", "owner@kopi.test")
 	s := e.login(t, "owner@kopi.test")
+	p := e.pusher(t, b, s.AccessToken, "Kasir 1")
 
 	e.d.Exec(t, `UPDATE tenant SET suspended_at = now() WHERE id = $1`, b.tenant.ID)
 
-	e.do(t, "GET", "/v1/me", s.AccessToken, nil).problem(t, http.StatusForbidden, "tenant_suspended")
-	e.do(t, "POST", "/v1/auth/login", "", map[string]string{"email": "owner@kopi.test", "password": password}).
+	var me struct {
+		Tenant struct {
+			SuspendedAt *string `json:"suspended_at"`
+		} `json:"tenant"`
+	}
+	e.do(t, "GET", "/v1/me", s.AccessToken, nil).decode(t, &me)
+	if me.Tenant.SuspendedAt == nil {
+		t.Error("me does not say the business is suspended")
+	}
+	if r := e.do(t, "GET", "/v1/items", s.AccessToken, nil); r.Code != http.StatusOK {
+		t.Errorf("reading the catalog: %d", r.Code)
+	}
+	e.do(t, "POST", "/v1/categories", s.AccessToken, map[string]any{"name": "Kopi"}).problem(t, http.StatusForbidden, "tenant_suspended")
+	e.do(t, "POST", "/v1/devices/pair", s.AccessToken, map[string]string{"outlet_id": b.outlet.ID.String(), "name": "Kasir 2"}).
 		problem(t, http.StatusForbidden, "tenant_suspended")
-	e.do(t, "POST", "/v1/auth/refresh", "", map[string]string{"refresh_token": s.RefreshToken}).
-		problem(t, http.StatusForbidden, "tenant_suspended")
+	// Signing in still works, to read.
+	if r := e.do(t, "POST", "/v1/auth/login", "", map[string]string{"email": "owner@kopi.test", "password": password}); r.Code != http.StatusOK {
+		t.Errorf("login: %d %s", r.Code, r.Body.String())
+	}
+	if r := e.do(t, "POST", "/v1/auth/refresh", "", map[string]string{"refresh_token": s.RefreshToken}); r.Code != http.StatusOK {
+		t.Errorf("refresh: %d %s", r.Code, r.Body.String())
+	}
+
+	// The tablet gets a fresh token, pushes its sales and is told.
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	e.do(t, "POST", "/v1/devices/token", "", map[string]string{"device_secret": p.secret}).decode(t, &tok)
+	if tok.AccessToken == "" {
+		t.Fatal("token exchange refused while suspended")
+	}
+	var pushed pushBody
+	p.push(t, p.event("shift.opened", map[string]any{"opening_cash": 0})).decode(t, &pushed)
+	if len(pushed.Results) != 1 || pushed.Results[0].Status != "accepted" {
+		t.Errorf("push while suspended: %+v", pushed)
+	}
+	var pull struct {
+		Suspended bool `json:"suspended"`
+	}
+	e.do(t, "GET", "/v1/sync/pull", p.token, nil).decode(t, &pull)
+	if !pull.Suspended {
+		t.Error("the pull does not say the business is suspended")
+	}
+
+	e.d.Exec(t, `UPDATE tenant SET suspended_at = NULL WHERE id = $1`, b.tenant.ID)
+	if r := e.do(t, "POST", "/v1/categories", s.AccessToken, map[string]any{"name": "Kopi"}); r.Code != http.StatusCreated {
+		t.Errorf("a write after reinstatement: %d", r.Code)
+	}
+	pull.Suspended = true
+	e.do(t, "GET", "/v1/sync/pull", p.token, nil).decode(t, &pull)
+	if pull.Suspended {
+		t.Error("the pull still says suspended after reinstatement")
+	}
 }
 
 func TestLoginIsRateLimited(t *testing.T) {

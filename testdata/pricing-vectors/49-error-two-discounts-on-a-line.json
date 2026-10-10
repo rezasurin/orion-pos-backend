@@ -1,0 +1,32 @@
+{
+  "name": "error-two-discounts-on-a-line",
+  "note": "Only one discount per line.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "line": 0,
+      "kind": "percent",
+      "value": 100
+    },
+    {
+      "line": 0,
+      "kind": "amount",
+      "value": 100
+    }
+  ],
+  "tender": "non_cash",
+  "expected_error": "duplicate_discount"
+}

@@ -1,0 +1,39 @@
+{
+  "name": "large-unit-price",
+  "note": "A price at the ceiling of one billion rupiah.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 1000000000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 1000000000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 1000000000
+      }
+    ],
+    "subtotal": 1000000000,
+    "discount_total": 0,
+    "net": 1000000000,
+    "service_charge": 0,
+    "tax": 110000000,
+    "tax_included": false,
+    "total": 1110000000,
+    "rounding_amount": 0,
+    "cash_total": 1110000000
+  }
+}

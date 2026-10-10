@@ -1,0 +1,64 @@
+{
+  "name": "bill-percent-discount",
+  "note": "15% off the whole bill, spread over the lines.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 18000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 22000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 9500,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "percent",
+      "value": 1500
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 18000,
+        "discount": 0,
+        "allocated_bill_discount": 2700,
+        "total": 15300
+      },
+      {
+        "gross": 22000,
+        "discount": 0,
+        "allocated_bill_discount": 3300,
+        "total": 18700
+      },
+      {
+        "gross": 9500,
+        "discount": 0,
+        "allocated_bill_discount": 1425,
+        "total": 8075
+      }
+    ],
+    "subtotal": 49500,
+    "discount_total": 7425,
+    "net": 42075,
+    "service_charge": 2104,
+    "tax": 4860,
+    "tax_included": false,
+    "total": 49039,
+    "rounding_amount": 0,
+    "cash_total": 49039
+  }
+}

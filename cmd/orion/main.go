@@ -15,22 +15,29 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/rezasurin/orion-pos-backend/internal/api"
+	"github.com/rezasurin/orion-pos-backend/internal/catalog"
 	"github.com/rezasurin/orion-pos-backend/internal/config"
 	"github.com/rezasurin/orion-pos-backend/internal/database"
 	"github.com/rezasurin/orion-pos-backend/internal/entitlements"
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/inventory"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/notify"
 	"github.com/rezasurin/orion-pos-backend/internal/platform"
+	"github.com/rezasurin/orion-pos-backend/internal/reporting"
+	"github.com/rezasurin/orion-pos-backend/internal/sales"
+	"github.com/rezasurin/orion-pos-backend/internal/sync"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
@@ -158,7 +165,15 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	ids, err := identity.NewService(identity.Deps{
 		Pool: pool, Clock: kernel.SystemClock{}, TenantKeys: tenantKeys, DeviceKeys: deviceKeys,
-		Jobs: jobs, Gate: tenants.CheckActive, Entitlements: ents,
+		Jobs: jobs, Gate: func(ctx context.Context, id uuid.UUID) error { _, err := tenants.SuspendedAt(ctx, id); return err }, Entitlements: ents,
+	})
+	if err != nil {
+		return err
+	}
+	catalogSvc := catalog.NewService(pool)
+	syncSvc, err := sync.NewService(sync.Deps{
+		Pool: pool, Identity: ids, Clock: kernel.SystemClock{}, Logger: logger, Catalog: catalogSvc, Tenancy: tenants, Entitlements: ents,
+		Projectors: []sync.Projector{sales.NewProjector(sales.Deps{Identity: ids, Tenancy: tenants, Catalog: catalogSvc})},
 	})
 	if err != nil {
 		return err
@@ -179,7 +194,7 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		logger.Warn("ORION_PLATFORM_DATABASE_URL is not set: the operator console (/admin) is disabled")
 	}
-	apiServer, err := api.New(api.Deps{Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: logger})
+	apiServer, err := api.New(api.Deps{Catalog: catalogSvc, Inventory: inventory.NewService(pool), Sync: syncSvc, Reporting: reporting.NewService(pool), Sales: sales.NewService(pool), Identity: ids, Entitlements: ents, Platform: plat, Tenancy: tenants, Logger: logger})
 	if err != nil {
 		return err
 	}
@@ -291,21 +306,33 @@ func worker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return err
 	}
 
+	sender := notify.Sender(notify.LogSender{Logger: logger})
+	if cfg.EmailProvider == "resend" {
+		sender = notify.ResendSender{APIKey: cfg.EmailAPIKey, From: cfg.EmailFrom}
+	}
+
 	workers := river.NewWorkers()
 	idJobs := identity.NewJobs(identity.JobsDeps{
 		Platform:  pool,
-		Sender:    notify.LogSender{Logger: logger},
+		Sender:    sender,
 		Clock:     kernel.SystemClock{},
 		Logger:    logger,
 		PublicURL: cfg.PublicURL,
 	})
 	idJobs.AddWorkers(workers)
+	health := sync.NewHealthJobs(sync.HealthDeps{
+		Platform: pool, Sender: sender, Clock: kernel.SystemClock{}, Logger: logger,
+		UnsyncedAfter: cfg.AlertUnsyncedAfter, SilentAfter: cfg.AlertSilentAfter, OperatorEmail: cfg.AlertOperatorEmail,
+	})
+	health.AddWorkers(workers)
+	metrics := &platform.MetricsJobs{Platform: pool, Clock: kernel.SystemClock{}, Logger: logger}
+	metrics.AddWorkers(workers)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Logger:       logger,
 		Queues:       map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
 		Workers:      workers,
-		PeriodicJobs: idJobs.PeriodicJobs(),
+		PeriodicJobs: slices.Concat(idJobs.PeriodicJobs(), health.PeriodicJobs(), metrics.PeriodicJobs()),
 	})
 	if err != nil {
 		return fmt.Errorf("river: %w", err)

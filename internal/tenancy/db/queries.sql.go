@@ -10,7 +10,83 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const activeAnnouncements = `-- name: ActiveAnnouncements :many
+SELECT id, severity, title, body, starts_at, ends_at FROM announcement
+WHERE starts_at <= $1 AND (ends_at IS NULL OR ends_at > $1)
+ORDER BY starts_at DESC, id
+LIMIT 20
+`
+
+type ActiveAnnouncementsRow struct {
+	ID       uuid.UUID
+	Severity string
+	Title    []byte
+	Body     []byte
+	StartsAt time.Time
+	EndsAt   *time.Time
+}
+
+// Row-level security limits this to the announcements to everyone and to the current tenant.
+func (q *Queries) ActiveAnnouncements(ctx context.Context, now time.Time) ([]ActiveAnnouncementsRow, error) {
+	rows, err := q.db.Query(ctx, activeAnnouncements, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActiveAnnouncementsRow
+	for rows.Next() {
+		var i ActiveAnnouncementsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Severity,
+			&i.Title,
+			&i.Body,
+			&i.StartsAt,
+			&i.EndsAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getOutletSettingsForUpdate = `-- name: GetOutletSettingsForUpdate :one
+SELECT outlet_id, tenant_id, timezone, business_day_cutoff, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer, created_at, updated_at FROM outlet_settings WHERE tenant_id = $1 AND outlet_id = $2 FOR UPDATE
+`
+
+type GetOutletSettingsForUpdateParams struct {
+	TenantID uuid.UUID
+	OutletID uuid.UUID
+}
+
+func (q *Queries) GetOutletSettingsForUpdate(ctx context.Context, arg GetOutletSettingsForUpdateParams) (OutletSetting, error) {
+	row := q.db.QueryRow(ctx, getOutletSettingsForUpdate, arg.TenantID, arg.OutletID)
+	var i OutletSetting
+	err := row.Scan(
+		&i.OutletID,
+		&i.TenantID,
+		&i.Timezone,
+		&i.BusinessDayCutoff,
+		&i.PriceIncludesTax,
+		&i.TaxRateBp,
+		&i.ServiceChargeRateBp,
+		&i.ServiceChargeTaxable,
+		&i.CashRoundingUnit,
+		&i.CashRoundingMode,
+		&i.ReceiptHeader,
+		&i.ReceiptFooter,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
 
 const getOutletWithSettings = `-- name: GetOutletWithSettings :one
 SELECT o.id, o.tenant_id, o.name, o.code, o.address, o.archived_at, o.created_at, o.updated_at, s.outlet_id, s.tenant_id, s.timezone, s.business_day_cutoff, s.price_includes_tax, s.tax_rate_bp, s.service_charge_rate_bp, s.service_charge_taxable, s.cash_rounding_unit, s.cash_rounding_mode, s.receipt_header, s.receipt_footer, s.created_at, s.updated_at
@@ -109,6 +185,19 @@ func (q *Queries) GetTenantBySlug(ctx context.Context, slug string) (Tenant, err
 	return i, err
 }
 
+const getTenantPlanCode = `-- name: GetTenantPlanCode :one
+
+SELECT p.code FROM tenant t JOIN plan p ON p.id = t.plan_id WHERE t.id = $1
+`
+
+// Operator tooling (admin.go), as orion_platform.
+func (q *Queries) GetTenantPlanCode(ctx context.Context, id uuid.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getTenantPlanCode, id)
+	var code string
+	err := row.Scan(&code)
+	return code, err
+}
+
 const insertOutlet = `-- name: InsertOutlet :one
 INSERT INTO outlet (id, tenant_id, name, code, address)
 VALUES ($1, $2, $3, $4, $5)
@@ -180,22 +269,29 @@ func (q *Queries) InsertOutletSettings(ctx context.Context, arg InsertOutletSett
 }
 
 const insertTenant = `-- name: InsertTenant :one
-INSERT INTO tenant (id, name, slug, plan_id)
-SELECT $1, $2, $3, p.id
+INSERT INTO tenant (id, name, slug, plan_id, subscription_status)
+SELECT $1, $2, $3, p.id,
+       CASE WHEN p.code = 'early_access' THEN 'early_access' ELSE 'active' END::subscription_status
 FROM plan p
-WHERE p.code = 'early_access'
+WHERE p.code = $4
 RETURNING id, name, slug, plan_id, subscription_status, trial_ends_at, paid_until, billing_starts_at, suspended_at, change_seq, created_at, updated_at
 `
 
 type InsertTenantParams struct {
-	ID   uuid.UUID
-	Name string
-	Slug string
+	ID       uuid.UUID
+	Name     string
+	Slug     string
+	PlanCode string
 }
 
-// Every new tenant starts on the early_access plan (ADR 0007).
+// Early access tenants have the early_access status (ADR 0007); any other plan starts active.
 func (q *Queries) InsertTenant(ctx context.Context, arg InsertTenantParams) (Tenant, error) {
-	row := q.db.QueryRow(ctx, insertTenant, arg.ID, arg.Name, arg.Slug)
+	row := q.db.QueryRow(ctx, insertTenant,
+		arg.ID,
+		arg.Name,
+		arg.Slug,
+		arg.PlanCode,
+	)
 	var i Tenant
 	err := row.Scan(
 		&i.ID,
@@ -295,6 +391,29 @@ func (q *Queries) RecordChange(ctx context.Context, arg RecordChangeParams) (int
 	return seq, err
 }
 
+const setTenantPlan = `-- name: SetTenantPlan :execrows
+UPDATE tenant
+SET plan_id = p.id,
+    subscription_status = CASE WHEN p.code = 'early_access' THEN 'early_access' ELSE 'active' END::subscription_status
+FROM plan p
+WHERE tenant.id = $1 AND p.code = $2
+`
+
+type SetTenantPlanParams struct {
+	ID       uuid.UUID
+	PlanCode string
+}
+
+// Moving to early_access also restores its status; any other plan is an active subscription until
+// billing (Phase 5) says otherwise.
+func (q *Queries) SetTenantPlan(ctx context.Context, arg SetTenantPlanParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setTenantPlan, arg.ID, arg.PlanCode)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setTenantSuspended = `-- name: SetTenantSuspended :exec
 UPDATE tenant SET suspended_at = $1 WHERE id = $2
 `
@@ -307,4 +426,64 @@ type SetTenantSuspendedParams struct {
 func (q *Queries) SetTenantSuspended(ctx context.Context, arg SetTenantSuspendedParams) error {
 	_, err := q.db.Exec(ctx, setTenantSuspended, arg.SuspendedAt, arg.ID)
 	return err
+}
+
+const updateOutletSettings = `-- name: UpdateOutletSettings :one
+UPDATE outlet_settings
+SET timezone = $1, business_day_cutoff = $2, price_includes_tax = $3,
+    tax_rate_bp = $4, service_charge_rate_bp = $5,
+    service_charge_taxable = $6, cash_rounding_unit = $7,
+    cash_rounding_mode = $8, receipt_header = $9, receipt_footer = $10
+WHERE tenant_id = $11 AND outlet_id = $12
+RETURNING outlet_id, tenant_id, timezone, business_day_cutoff, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer, created_at, updated_at
+`
+
+type UpdateOutletSettingsParams struct {
+	Timezone             string
+	BusinessDayCutoff    pgtype.Time
+	PriceIncludesTax     bool
+	TaxRateBp            int32
+	ServiceChargeRateBp  int32
+	ServiceChargeTaxable bool
+	CashRoundingUnit     int32
+	CashRoundingMode     CashRoundingMode
+	ReceiptHeader        string
+	ReceiptFooter        string
+	TenantID             uuid.UUID
+	OutletID             uuid.UUID
+}
+
+func (q *Queries) UpdateOutletSettings(ctx context.Context, arg UpdateOutletSettingsParams) (OutletSetting, error) {
+	row := q.db.QueryRow(ctx, updateOutletSettings,
+		arg.Timezone,
+		arg.BusinessDayCutoff,
+		arg.PriceIncludesTax,
+		arg.TaxRateBp,
+		arg.ServiceChargeRateBp,
+		arg.ServiceChargeTaxable,
+		arg.CashRoundingUnit,
+		arg.CashRoundingMode,
+		arg.ReceiptHeader,
+		arg.ReceiptFooter,
+		arg.TenantID,
+		arg.OutletID,
+	)
+	var i OutletSetting
+	err := row.Scan(
+		&i.OutletID,
+		&i.TenantID,
+		&i.Timezone,
+		&i.BusinessDayCutoff,
+		&i.PriceIncludesTax,
+		&i.TaxRateBp,
+		&i.ServiceChargeRateBp,
+		&i.ServiceChargeTaxable,
+		&i.CashRoundingUnit,
+		&i.CashRoundingMode,
+		&i.ReceiptHeader,
+		&i.ReceiptFooter,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }
