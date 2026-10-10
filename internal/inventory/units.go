@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,24 +13,29 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 )
 
-// UomCategory is a family of units that convert into each other, such as weight. Exactly one of
-// its units is the reference, in which its ingredients' quantities are stored (ADR 0009).
+// UomCategory is a physical dimension whose units convert into each other, such as weight
+// (BR-UOM-01). Exactly one of its units is the reference, in which the quantities of items based on
+// it are stored (ADR 0009). The standard categories (BR-UOM-03) are never archived.
 type UomCategory struct {
 	ID         uuid.UUID
 	Name       string
+	IsStandard bool
 	ArchivedAt *time.Time
 	CreatedAt  time.Time
 	Units      []Uom // the reference first, then from small to large
 }
 
-// Uom is a unit: one of it is RatioNum/RatioDen reference units, a reduced fraction.
+// Uom is a unit: one of it is RatioNum/RatioDen reference units, a reduced fraction. A standard
+// unit keeps its symbol and ratio and stays active.
 type Uom struct {
 	ID             uuid.UUID
 	Name           string
+	Symbol         string
 	IsReference    bool
+	IsStandard     bool
 	RatioNum       int64
 	RatioDen       int64
-	RoundingScaled int64 // display and entry precision, in thousandths of this unit
+	RoundingScaled int64 // the step a person may enter, in thousandths of this unit (BR-UOM-06)
 	Active         bool
 }
 
@@ -44,6 +50,7 @@ type NewUomCategory struct {
 type UnitInput struct {
 	ID             *uuid.UUID
 	Name           string
+	Symbol         string
 	IsReference    bool // only when creating a category
 	RatioNum       int64
 	RatioDen       int64
@@ -53,7 +60,8 @@ type UnitInput struct {
 
 // UpdateUomCategory changes a unit category. Nil fields stay as they are. Units listed with an id
 // are replaced by what is sent, units without one are added, and units left out stay. A unit is
-// never deleted, and the reference unit stays the reference with a ratio of 1/1.
+// never deleted, and the reference unit stays the reference with a ratio of 1/1. A unit an item
+// uses keeps its ratio (BR-UOM-07), and a standard unit keeps its symbol and ratio and stays active.
 type UpdateUomCategory struct {
 	Name     *string
 	Archived *bool
@@ -139,6 +147,9 @@ func (s *Service) UpdateUomCategory(ctx context.Context, tenantID, id uuid.UUID,
 			return mapErr(err)
 		}
 		p := db.UpdateUomCategoryParams{TenantID: tenantID, ID: id, Name: cur.Name, ArchivedAt: s.archiveState(cur.ArchivedAt, in.Archived)}
+		if cur.IsStandard && p.ArchivedAt != nil {
+			return fmt.Errorf("%w: a standard unit category is never archived", kernel.ErrValidation)
+		}
 		if in.Name != nil {
 			if p.Name, err = validName("name", *in.Name, maxName); err != nil {
 				return err
@@ -158,6 +169,7 @@ func (s *Service) UpdateUomCategory(ctx context.Context, tenantID, id uuid.UUID,
 			existing[u.ID] = u
 		}
 		var added []UnitInput
+		var rescaled []uuid.UUID
 		for _, u := range in.Units {
 			if u.ID == nil {
 				added = append(added, u)
@@ -167,15 +179,30 @@ func (s *Service) UpdateUomCategory(ctx context.Context, tenantID, id uuid.UUID,
 			if !ok {
 				return fmt.Errorf("%w: unit %s is not in this category", kernel.ErrValidation, u.ID)
 			}
-			if old.IsReference && (u.RatioNum != 1 || u.RatioDen != 1 || !u.Active) {
+			newRatio := u.RatioNum != old.RatioNum || u.RatioDen != old.RatioDen
+			switch {
+			case old.IsReference && (newRatio || !u.Active):
 				return fmt.Errorf("%w: the reference unit keeps a ratio of 1/1 and stays active", kernel.ErrValidation)
+			case old.IsStandard && (newRatio || !u.Active || u.Symbol != old.Symbol):
+				return fmt.Errorf("%w: the standard unit %q keeps its symbol and ratio and stays active", kernel.ErrValidation, old.Symbol)
+			case newRatio:
+				rescaled = append(rescaled, old.ID)
 			}
 			// ponytail: one statement per changed unit; a category has at most 50, edited by hand.
 			if _, err := q.UpdateUom(ctx, db.UpdateUomParams{
-				TenantID: tenantID, CategoryID: id, ID: *u.ID, Name: u.Name,
+				TenantID: tenantID, CategoryID: id, ID: *u.ID, Name: u.Name, Symbol: u.Symbol,
 				RatioNum: u.RatioNum, RatioDen: u.RatioDen, RoundingScaled: u.RoundingScaled, Active: u.Active,
 			}); err != nil {
 				return mapErr(err)
+			}
+		}
+		if len(rescaled) > 0 {
+			used, err := q.UnitsUsedByItems(ctx, db.UnitsUsedByItemsParams{TenantID: tenantID, Ids: rescaled})
+			if err != nil {
+				return err
+			}
+			if len(used) > 0 {
+				return fmt.Errorf("%w: a unit that an item uses keeps its ratio; add a new unit and deactivate this one", kernel.ErrConflict)
 			}
 		}
 		if len(units)+len(added) > maxUnits {
@@ -197,17 +224,29 @@ func normalizeUnit(u *UnitInput) error {
 		return err
 	}
 	u.Name = name
-	if u.RatioNum < 1 || u.RatioNum > maxRatioPart || u.RatioDen < 1 || u.RatioDen > maxRatioPart {
-		return fmt.Errorf("%w: ratio_num and ratio_den of %q are whole numbers from 1 to %d", kernel.ErrValidation, name, maxRatioPart)
+	u.Symbol = strings.TrimSpace(u.Symbol)
+	if n := len([]rune(u.Symbol)); n < 1 || n > maxSymbol {
+		return fmt.Errorf("%w: the symbol of %q is required, at most %d characters", kernel.ErrValidation, name, maxSymbol)
 	}
-	if u.RoundingScaled < 1 || u.RoundingScaled > maxRounding {
-		return fmt.Errorf("%w: rounding_scaled of %q is from 1 to %d thousandths", kernel.ErrValidation, name, maxRounding)
+	if err := reduce(name, &u.RatioNum, &u.RatioDen, u.RoundingScaled); err != nil {
+		return err
 	}
-	g := gcd(u.RatioNum, u.RatioDen)
-	u.RatioNum, u.RatioDen = u.RatioNum/g, u.RatioDen/g
 	if u.IsReference && (u.RatioNum != 1 || u.RatioDen != 1 || !u.Active) {
 		return fmt.Errorf("%w: the reference unit %q has a ratio of 1/1 and is active", kernel.ErrValidation, name)
 	}
+	return nil
+}
+
+// reduce checks a ratio and a step and reduces the ratio by its greatest common divisor.
+func reduce(name string, num, den *int64, rounding int64) error {
+	if *num < 1 || *num > maxRatioPart || *den < 1 || *den > maxRatioPart {
+		return fmt.Errorf("%w: ratio_num and ratio_den of %q are whole numbers from 1 to %d", kernel.ErrValidation, name, maxRatioPart)
+	}
+	if rounding < 1 || rounding > maxRounding {
+		return fmt.Errorf("%w: rounding_scaled of %q is from 1 to %d thousandths", kernel.ErrValidation, name, maxRounding)
+	}
+	g := gcd(*num, *den)
+	*num, *den = *num/g, *den/g
 	return nil
 }
 
@@ -226,6 +265,7 @@ func insertUnits(ctx context.Context, q *db.Queries, tenantID, categoryID uuid.U
 	for _, u := range units {
 		p.Ids = append(p.Ids, kernel.NewID())
 		p.Names = append(p.Names, u.Name)
+		p.Symbols = append(p.Symbols, u.Symbol)
 		p.IsReference = append(p.IsReference, u.IsReference)
 		p.RatioNum = append(p.RatioNum, u.RatioNum)
 		p.RatioDen = append(p.RatioDen, u.RatioDen)
@@ -249,7 +289,7 @@ func withUnits(ctx context.Context, q *db.Queries, tenantID uuid.UUID, page kern
 	ids := make([]uuid.UUID, len(page.Items))
 	at := make(map[uuid.UUID]int, len(page.Items))
 	for i, r := range page.Items {
-		out.Items[i] = UomCategory{ID: r.ID, Name: r.Name, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt, Units: []Uom{}}
+		out.Items[i] = UomCategory{ID: r.ID, Name: r.Name, IsStandard: r.IsStandard, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt, Units: []Uom{}}
 		ids[i], at[r.ID] = r.ID, i
 	}
 	if len(ids) == 0 {
@@ -261,7 +301,7 @@ func withUnits(ctx context.Context, q *db.Queries, tenantID uuid.UUID, page kern
 	}
 	for _, u := range units {
 		c := &out.Items[at[u.CategoryID]]
-		c.Units = append(c.Units, Uom{ID: u.ID, Name: u.Name, IsReference: u.IsReference, RatioNum: u.RatioNum, RatioDen: u.RatioDen, RoundingScaled: u.RoundingScaled, Active: u.Active})
+		c.Units = append(c.Units, Uom{ID: u.ID, Name: u.Name, Symbol: u.Symbol, IsReference: u.IsReference, IsStandard: u.IsStandard, RatioNum: u.RatioNum, RatioDen: u.RatioDen, RoundingScaled: u.RoundingScaled, Active: u.Active})
 	}
 	return out, nil
 }

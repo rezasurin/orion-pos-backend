@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
+	"github.com/rezasurin/orion-pos-backend/internal/inventory"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
 	"github.com/rezasurin/orion-pos-backend/internal/tenancy/db"
 )
@@ -136,6 +137,9 @@ func (s *Service) CreateTenantWith(ctx context.Context, in NewTenant, then func(
 			return mapErr(err)
 		}
 		if err = identity.SeedRoles(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		if err = inventory.SeedStandardUnits(ctx, tx, tenantID); err != nil {
 			return err
 		}
 		if outlet, err = insertOutlet(ctx, q, tenantID, in.Outlet); err != nil || then == nil {

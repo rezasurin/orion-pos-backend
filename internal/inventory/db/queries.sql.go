@@ -12,23 +12,23 @@ import (
 	"github.com/google/uuid"
 )
 
-const getIngredientCategoryForUpdate = `-- name: GetIngredientCategoryForUpdate :one
-SELECT id, tenant_id, name, default_transaction_type_id, description, archived_at, created_at, updated_at FROM ingredient_category WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+const getExpenseTypeForUpdate = `-- name: GetExpenseTypeForUpdate :one
+SELECT id, tenant_id, name, expense_group, description, archived_at, created_at, updated_at FROM expense_type WHERE tenant_id = $1 AND id = $2 FOR UPDATE
 `
 
-type GetIngredientCategoryForUpdateParams struct {
+type GetExpenseTypeForUpdateParams struct {
 	TenantID uuid.UUID
 	ID       uuid.UUID
 }
 
-func (q *Queries) GetIngredientCategoryForUpdate(ctx context.Context, arg GetIngredientCategoryForUpdateParams) (IngredientCategory, error) {
-	row := q.db.QueryRow(ctx, getIngredientCategoryForUpdate, arg.TenantID, arg.ID)
-	var i IngredientCategory
+func (q *Queries) GetExpenseTypeForUpdate(ctx context.Context, arg GetExpenseTypeForUpdateParams) (ExpenseType, error) {
+	row := q.db.QueryRow(ctx, getExpenseTypeForUpdate, arg.TenantID, arg.ID)
+	var i ExpenseType
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
 		&i.Name,
-		&i.DefaultTransactionTypeID,
+		&i.ExpenseGroup,
 		&i.Description,
 		&i.ArchivedAt,
 		&i.CreatedAt,
@@ -37,25 +37,54 @@ func (q *Queries) GetIngredientCategoryForUpdate(ctx context.Context, arg GetIng
 	return i, err
 }
 
-const getIngredientForUpdate = `-- name: GetIngredientForUpdate :one
-SELECT id, tenant_id, name, category_id, uom_id, track, description, archived_at, created_at, updated_at FROM ingredient WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+const getStockCategoryForUpdate = `-- name: GetStockCategoryForUpdate :one
+SELECT id, tenant_id, name, default_expense_type_id, description, archived_at, created_at, updated_at FROM stock_category WHERE tenant_id = $1 AND id = $2 FOR UPDATE
 `
 
-type GetIngredientForUpdateParams struct {
+type GetStockCategoryForUpdateParams struct {
 	TenantID uuid.UUID
 	ID       uuid.UUID
 }
 
-func (q *Queries) GetIngredientForUpdate(ctx context.Context, arg GetIngredientForUpdateParams) (Ingredient, error) {
-	row := q.db.QueryRow(ctx, getIngredientForUpdate, arg.TenantID, arg.ID)
-	var i Ingredient
+func (q *Queries) GetStockCategoryForUpdate(ctx context.Context, arg GetStockCategoryForUpdateParams) (StockCategory, error) {
+	row := q.db.QueryRow(ctx, getStockCategoryForUpdate, arg.TenantID, arg.ID)
+	var i StockCategory
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
 		&i.Name,
+		&i.DefaultExpenseTypeID,
+		&i.Description,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getStockItemForUpdate = `-- name: GetStockItemForUpdate :one
+SELECT id, tenant_id, name, type, category_id, base_uom_id, recipe_uom_id, track, min_stock_scaled, shelf_life_days, description, archived_at, created_at, updated_at FROM stock_item WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+`
+
+type GetStockItemForUpdateParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) GetStockItemForUpdate(ctx context.Context, arg GetStockItemForUpdateParams) (StockItem, error) {
+	row := q.db.QueryRow(ctx, getStockItemForUpdate, arg.TenantID, arg.ID)
+	var i StockItem
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Type,
 		&i.CategoryID,
-		&i.UomID,
+		&i.BaseUomID,
+		&i.RecipeUomID,
 		&i.Track,
+		&i.MinStockScaled,
+		&i.ShelfLifeDays,
 		&i.Description,
 		&i.ArchivedAt,
 		&i.CreatedAt,
@@ -64,33 +93,41 @@ func (q *Queries) GetIngredientForUpdate(ctx context.Context, arg GetIngredientF
 	return i, err
 }
 
-const getTransactionTypeForUpdate = `-- name: GetTransactionTypeForUpdate :one
-SELECT id, tenant_id, name, category, description, archived_at, created_at, updated_at FROM transaction_type WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+const getUnitForItem = `-- name: GetUnitForItem :one
+SELECT u.id, u.category_id, u.is_reference, u.rounding_scaled, (u.active AND c.archived_at IS NULL)::boolean AS usable
+FROM uom u JOIN uom_category c ON c.tenant_id = u.tenant_id AND c.id = u.category_id
+WHERE u.tenant_id = $1 AND u.id = $2
 `
 
-type GetTransactionTypeForUpdateParams struct {
+type GetUnitForItemParams struct {
 	TenantID uuid.UUID
 	ID       uuid.UUID
 }
 
-func (q *Queries) GetTransactionTypeForUpdate(ctx context.Context, arg GetTransactionTypeForUpdateParams) (TransactionType, error) {
-	row := q.db.QueryRow(ctx, getTransactionTypeForUpdate, arg.TenantID, arg.ID)
-	var i TransactionType
+type GetUnitForItemRow struct {
+	ID             uuid.UUID
+	CategoryID     uuid.UUID
+	IsReference    bool
+	RoundingScaled int64
+	Usable         bool
+}
+
+// A unit an item may be given: its row, and whether it is active in a category that is not archived.
+func (q *Queries) GetUnitForItem(ctx context.Context, arg GetUnitForItemParams) (GetUnitForItemRow, error) {
+	row := q.db.QueryRow(ctx, getUnitForItem, arg.TenantID, arg.ID)
+	var i GetUnitForItemRow
 	err := row.Scan(
 		&i.ID,
-		&i.TenantID,
-		&i.Name,
-		&i.Category,
-		&i.Description,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
+		&i.CategoryID,
+		&i.IsReference,
+		&i.RoundingScaled,
+		&i.Usable,
 	)
 	return i, err
 }
 
 const getUomCategoryForUpdate = `-- name: GetUomCategoryForUpdate :one
-SELECT id, tenant_id, name, archived_at, created_at, updated_at FROM uom_category WHERE tenant_id = $1 AND id = $2 FOR UPDATE
+SELECT id, tenant_id, name, is_standard, archived_at, created_at, updated_at FROM uom_category WHERE tenant_id = $1 AND id = $2 FOR UPDATE
 `
 
 type GetUomCategoryForUpdateParams struct {
@@ -105,6 +142,7 @@ func (q *Queries) GetUomCategoryForUpdate(ctx context.Context, arg GetUomCategor
 		&i.ID,
 		&i.TenantID,
 		&i.Name,
+		&i.IsStandard,
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -112,141 +150,161 @@ func (q *Queries) GetUomCategoryForUpdate(ctx context.Context, arg GetUomCategor
 	return i, err
 }
 
-const getUomForIngredient = `-- name: GetUomForIngredient :one
-SELECT u.id, u.category_id FROM uom u JOIN uom_category c ON c.tenant_id = u.tenant_id AND c.id = u.category_id
-WHERE u.tenant_id = $1 AND u.id = $2 AND u.active AND c.archived_at IS NULL
+const insertExpenseType = `-- name: InsertExpenseType :one
+
+INSERT INTO expense_type (id, tenant_id, name, expense_group, description)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, tenant_id, name, expense_group, description, archived_at, created_at, updated_at
 `
 
-type GetUomForIngredientParams struct {
-	TenantID uuid.UUID
-	ID       uuid.UUID
+type InsertExpenseTypeParams struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	Name         string
+	ExpenseGroup string
+	Description  *string
 }
 
-type GetUomForIngredientRow struct {
-	ID         uuid.UUID
-	CategoryID uuid.UUID
-}
-
-// A unit an ingredient may be given: active, in a category that is not archived.
-func (q *Queries) GetUomForIngredient(ctx context.Context, arg GetUomForIngredientParams) (GetUomForIngredientRow, error) {
-	row := q.db.QueryRow(ctx, getUomForIngredient, arg.TenantID, arg.ID)
-	var i GetUomForIngredientRow
-	err := row.Scan(&i.ID, &i.CategoryID)
-	return i, err
-}
-
-const insertIngredient = `-- name: InsertIngredient :one
-
-INSERT INTO ingredient (id, tenant_id, name, category_id, uom_id, track, description)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, tenant_id, name, category_id, uom_id, track, description, archived_at, created_at, updated_at
-`
-
-type InsertIngredientParams struct {
-	ID          uuid.UUID
-	TenantID    uuid.UUID
-	Name        string
-	CategoryID  *uuid.UUID
-	UomID       uuid.UUID
-	Track       bool
-	Description *string
-}
-
-// Ingredients
-func (q *Queries) InsertIngredient(ctx context.Context, arg InsertIngredientParams) (Ingredient, error) {
-	row := q.db.QueryRow(ctx, insertIngredient,
+// Expense types
+func (q *Queries) InsertExpenseType(ctx context.Context, arg InsertExpenseTypeParams) (ExpenseType, error) {
+	row := q.db.QueryRow(ctx, insertExpenseType,
 		arg.ID,
 		arg.TenantID,
 		arg.Name,
+		arg.ExpenseGroup,
+		arg.Description,
+	)
+	var i ExpenseType
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.ExpenseGroup,
+		&i.Description,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertPacks = `-- name: InsertPacks :exec
+INSERT INTO stock_item_pack (id, tenant_id, stock_item_id, name, ratio_num, ratio_den, rounding_scaled, active)
+SELECT unnest($1::uuid[]), $2, $3, unnest($4::text[]),
+       unnest($5::bigint[]), unnest($6::bigint[]), unnest($7::bigint[]), unnest($8::boolean[])
+`
+
+type InsertPacksParams struct {
+	Ids            []uuid.UUID
+	TenantID       uuid.UUID
+	StockItemID    uuid.UUID
+	Names          []string
+	RatioNum       []int64
+	RatioDen       []int64
+	RoundingScaled []int64
+	Active         []bool
+}
+
+func (q *Queries) InsertPacks(ctx context.Context, arg InsertPacksParams) error {
+	_, err := q.db.Exec(ctx, insertPacks,
+		arg.Ids,
+		arg.TenantID,
+		arg.StockItemID,
+		arg.Names,
+		arg.RatioNum,
+		arg.RatioDen,
+		arg.RoundingScaled,
+		arg.Active,
+	)
+	return err
+}
+
+const insertStockCategory = `-- name: InsertStockCategory :one
+
+INSERT INTO stock_category (id, tenant_id, name, default_expense_type_id, description)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, tenant_id, name, default_expense_type_id, description, archived_at, created_at, updated_at
+`
+
+type InsertStockCategoryParams struct {
+	ID                   uuid.UUID
+	TenantID             uuid.UUID
+	Name                 string
+	DefaultExpenseTypeID *uuid.UUID
+	Description          *string
+}
+
+// Stock categories
+func (q *Queries) InsertStockCategory(ctx context.Context, arg InsertStockCategoryParams) (StockCategory, error) {
+	row := q.db.QueryRow(ctx, insertStockCategory,
+		arg.ID,
+		arg.TenantID,
+		arg.Name,
+		arg.DefaultExpenseTypeID,
+		arg.Description,
+	)
+	var i StockCategory
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.DefaultExpenseTypeID,
+		&i.Description,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertStockItem = `-- name: InsertStockItem :one
+
+INSERT INTO stock_item (id, tenant_id, name, type, category_id, base_uom_id, recipe_uom_id, track, min_stock_scaled, shelf_life_days, description)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+RETURNING id, tenant_id, name, type, category_id, base_uom_id, recipe_uom_id, track, min_stock_scaled, shelf_life_days, description, archived_at, created_at, updated_at
+`
+
+type InsertStockItemParams struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	Name           string
+	Type           string
+	CategoryID     uuid.UUID
+	BaseUomID      uuid.UUID
+	RecipeUomID    *uuid.UUID
+	Track          bool
+	MinStockScaled *int64
+	ShelfLifeDays  *int32
+	Description    *string
+}
+
+// Stock items and their packs
+func (q *Queries) InsertStockItem(ctx context.Context, arg InsertStockItemParams) (StockItem, error) {
+	row := q.db.QueryRow(ctx, insertStockItem,
+		arg.ID,
+		arg.TenantID,
+		arg.Name,
+		arg.Type,
 		arg.CategoryID,
-		arg.UomID,
+		arg.BaseUomID,
+		arg.RecipeUomID,
 		arg.Track,
+		arg.MinStockScaled,
+		arg.ShelfLifeDays,
 		arg.Description,
 	)
-	var i Ingredient
+	var i StockItem
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
 		&i.Name,
+		&i.Type,
 		&i.CategoryID,
-		&i.UomID,
+		&i.BaseUomID,
+		&i.RecipeUomID,
 		&i.Track,
-		&i.Description,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const insertIngredientCategory = `-- name: InsertIngredientCategory :one
-
-INSERT INTO ingredient_category (id, tenant_id, name, default_transaction_type_id, description)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, tenant_id, name, default_transaction_type_id, description, archived_at, created_at, updated_at
-`
-
-type InsertIngredientCategoryParams struct {
-	ID                       uuid.UUID
-	TenantID                 uuid.UUID
-	Name                     string
-	DefaultTransactionTypeID *uuid.UUID
-	Description              *string
-}
-
-// Ingredient categories
-func (q *Queries) InsertIngredientCategory(ctx context.Context, arg InsertIngredientCategoryParams) (IngredientCategory, error) {
-	row := q.db.QueryRow(ctx, insertIngredientCategory,
-		arg.ID,
-		arg.TenantID,
-		arg.Name,
-		arg.DefaultTransactionTypeID,
-		arg.Description,
-	)
-	var i IngredientCategory
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.Name,
-		&i.DefaultTransactionTypeID,
-		&i.Description,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const insertTransactionType = `-- name: InsertTransactionType :one
-
-INSERT INTO transaction_type (id, tenant_id, name, category, description)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, tenant_id, name, category, description, archived_at, created_at, updated_at
-`
-
-type InsertTransactionTypeParams struct {
-	ID          uuid.UUID
-	TenantID    uuid.UUID
-	Name        string
-	Category    string
-	Description *string
-}
-
-// Transaction types
-func (q *Queries) InsertTransactionType(ctx context.Context, arg InsertTransactionTypeParams) (TransactionType, error) {
-	row := q.db.QueryRow(ctx, insertTransactionType,
-		arg.ID,
-		arg.TenantID,
-		arg.Name,
-		arg.Category,
-		arg.Description,
-	)
-	var i TransactionType
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.Name,
-		&i.Category,
+		&i.MinStockScaled,
+		&i.ShelfLifeDays,
 		&i.Description,
 		&i.ArchivedAt,
 		&i.CreatedAt,
@@ -256,10 +314,9 @@ func (q *Queries) InsertTransactionType(ctx context.Context, arg InsertTransacti
 }
 
 const insertUomCategory = `-- name: InsertUomCategory :one
-
 INSERT INTO uom_category (id, tenant_id, name)
 VALUES ($1, $2, $3)
-RETURNING id, tenant_id, name, archived_at, created_at, updated_at
+RETURNING id, tenant_id, name, is_standard, archived_at, created_at, updated_at
 `
 
 type InsertUomCategoryParams struct {
@@ -268,7 +325,6 @@ type InsertUomCategoryParams struct {
 	Name     string
 }
 
-// UoM categories and units
 func (q *Queries) InsertUomCategory(ctx context.Context, arg InsertUomCategoryParams) (UomCategory, error) {
 	row := q.db.QueryRow(ctx, insertUomCategory, arg.ID, arg.TenantID, arg.Name)
 	var i UomCategory
@@ -276,6 +332,7 @@ func (q *Queries) InsertUomCategory(ctx context.Context, arg InsertUomCategoryPa
 		&i.ID,
 		&i.TenantID,
 		&i.Name,
+		&i.IsStandard,
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -284,9 +341,9 @@ func (q *Queries) InsertUomCategory(ctx context.Context, arg InsertUomCategoryPa
 }
 
 const insertUoms = `-- name: InsertUoms :exec
-INSERT INTO uom (id, tenant_id, category_id, name, is_reference, ratio_num, ratio_den, rounding_scaled, active)
-SELECT unnest($1::uuid[]), $2, $3, unnest($4::text[]), unnest($5::boolean[]),
-       unnest($6::bigint[]), unnest($7::bigint[]), unnest($8::bigint[]), unnest($9::boolean[])
+INSERT INTO uom (id, tenant_id, category_id, name, symbol, is_reference, ratio_num, ratio_den, rounding_scaled, active)
+SELECT unnest($1::uuid[]), $2, $3, unnest($4::text[]), unnest($5::text[]), unnest($6::boolean[]),
+       unnest($7::bigint[]), unnest($8::bigint[]), unnest($9::bigint[]), unnest($10::boolean[])
 `
 
 type InsertUomsParams struct {
@@ -294,6 +351,7 @@ type InsertUomsParams struct {
 	TenantID       uuid.UUID
 	CategoryID     uuid.UUID
 	Names          []string
+	Symbols        []string
 	IsReference    []bool
 	RatioNum       []int64
 	RatioDen       []int64
@@ -307,6 +365,7 @@ func (q *Queries) InsertUoms(ctx context.Context, arg InsertUomsParams) error {
 		arg.TenantID,
 		arg.CategoryID,
 		arg.Names,
+		arg.Symbols,
 		arg.IsReference,
 		arg.RatioNum,
 		arg.RatioDen,
@@ -316,22 +375,54 @@ func (q *Queries) InsertUoms(ctx context.Context, arg InsertUomsParams) error {
 	return err
 }
 
-const listIngredientCategories = `-- name: ListIngredientCategories :many
-SELECT id, tenant_id, name, default_transaction_type_id, description, archived_at, created_at, updated_at FROM ingredient_category
+const isLiveExpenseType = `-- name: IsLiveExpenseType :one
+SELECT EXISTS (SELECT 1 FROM expense_type WHERE tenant_id = $1 AND id = $2 AND archived_at IS NULL)
+`
+
+type IsLiveExpenseTypeParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) IsLiveExpenseType(ctx context.Context, arg IsLiveExpenseTypeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isLiveExpenseType, arg.TenantID, arg.ID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const isLiveStockCategory = `-- name: IsLiveStockCategory :one
+SELECT EXISTS (SELECT 1 FROM stock_category WHERE tenant_id = $1 AND id = $2 AND archived_at IS NULL)
+`
+
+type IsLiveStockCategoryParams struct {
+	TenantID uuid.UUID
+	ID       uuid.UUID
+}
+
+func (q *Queries) IsLiveStockCategory(ctx context.Context, arg IsLiveStockCategoryParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isLiveStockCategory, arg.TenantID, arg.ID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listExpenseTypes = `-- name: ListExpenseTypes :many
+SELECT id, tenant_id, name, expense_group, description, archived_at, created_at, updated_at FROM expense_type
 WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
 ORDER BY id
 LIMIT $4
 `
 
-type ListIngredientCategoriesParams struct {
+type ListExpenseTypesParams struct {
 	TenantID        uuid.UUID
 	After           uuid.UUID
 	IncludeArchived bool
 	PageSize        int32
 }
 
-func (q *Queries) ListIngredientCategories(ctx context.Context, arg ListIngredientCategoriesParams) ([]IngredientCategory, error) {
-	rows, err := q.db.Query(ctx, listIngredientCategories,
+func (q *Queries) ListExpenseTypes(ctx context.Context, arg ListExpenseTypesParams) ([]ExpenseType, error) {
+	rows, err := q.db.Query(ctx, listExpenseTypes,
 		arg.TenantID,
 		arg.After,
 		arg.IncludeArchived,
@@ -341,14 +432,14 @@ func (q *Queries) ListIngredientCategories(ctx context.Context, arg ListIngredie
 		return nil, err
 	}
 	defer rows.Close()
-	var items []IngredientCategory
+	var items []ExpenseType
 	for rows.Next() {
-		var i IngredientCategory
+		var i ExpenseType
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
 			&i.Name,
-			&i.DefaultTransactionTypeID,
+			&i.ExpenseGroup,
 			&i.Description,
 			&i.ArchivedAt,
 			&i.CreatedAt,
@@ -364,92 +455,139 @@ func (q *Queries) ListIngredientCategories(ctx context.Context, arg ListIngredie
 	return items, nil
 }
 
-const listIngredients = `-- name: ListIngredients :many
-SELECT id, tenant_id, name, category_id, uom_id, track, description, archived_at, created_at, updated_at FROM ingredient
-WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
-  AND ($4::uuid IS NULL OR category_id = $4)
-ORDER BY id
-LIMIT $5
+const listPacksByItems = `-- name: ListPacksByItems :many
+SELECT id, tenant_id, stock_item_id, name, ratio_num, ratio_den, rounding_scaled, active, created_at, updated_at FROM stock_item_pack WHERE tenant_id = $1 AND stock_item_id = ANY($2::uuid[]) ORDER BY stock_item_id, ratio_num::numeric / ratio_den, id
 `
 
-type ListIngredientsParams struct {
+type ListPacksByItemsParams struct {
+	TenantID uuid.UUID
+	ItemIds  []uuid.UUID
+}
+
+func (q *Queries) ListPacksByItems(ctx context.Context, arg ListPacksByItemsParams) ([]StockItemPack, error) {
+	rows, err := q.db.Query(ctx, listPacksByItems, arg.TenantID, arg.ItemIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StockItemPack
+	for rows.Next() {
+		var i StockItemPack
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.StockItemID,
+			&i.Name,
+			&i.RatioNum,
+			&i.RatioDen,
+			&i.RoundingScaled,
+			&i.Active,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStockCategories = `-- name: ListStockCategories :many
+SELECT id, tenant_id, name, default_expense_type_id, description, archived_at, created_at, updated_at FROM stock_category
+WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
+ORDER BY id
+LIMIT $4
+`
+
+type ListStockCategoriesParams struct {
+	TenantID        uuid.UUID
+	After           uuid.UUID
+	IncludeArchived bool
+	PageSize        int32
+}
+
+func (q *Queries) ListStockCategories(ctx context.Context, arg ListStockCategoriesParams) ([]StockCategory, error) {
+	rows, err := q.db.Query(ctx, listStockCategories,
+		arg.TenantID,
+		arg.After,
+		arg.IncludeArchived,
+		arg.PageSize,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StockCategory
+	for rows.Next() {
+		var i StockCategory
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.DefaultExpenseTypeID,
+			&i.Description,
+			&i.ArchivedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listStockItems = `-- name: ListStockItems :many
+SELECT id, tenant_id, name, type, category_id, base_uom_id, recipe_uom_id, track, min_stock_scaled, shelf_life_days, description, archived_at, created_at, updated_at FROM stock_item
+WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
+  AND ($4::uuid IS NULL OR category_id = $4)
+  AND ($5::text IS NULL OR type = $5)
+ORDER BY id
+LIMIT $6
+`
+
+type ListStockItemsParams struct {
 	TenantID        uuid.UUID
 	After           uuid.UUID
 	IncludeArchived bool
 	CategoryID      *uuid.UUID
+	Type            *string
 	PageSize        int32
 }
 
-func (q *Queries) ListIngredients(ctx context.Context, arg ListIngredientsParams) ([]Ingredient, error) {
-	rows, err := q.db.Query(ctx, listIngredients,
+func (q *Queries) ListStockItems(ctx context.Context, arg ListStockItemsParams) ([]StockItem, error) {
+	rows, err := q.db.Query(ctx, listStockItems,
 		arg.TenantID,
 		arg.After,
 		arg.IncludeArchived,
 		arg.CategoryID,
+		arg.Type,
 		arg.PageSize,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Ingredient
+	var items []StockItem
 	for rows.Next() {
-		var i Ingredient
+		var i StockItem
 		if err := rows.Scan(
 			&i.ID,
 			&i.TenantID,
 			&i.Name,
+			&i.Type,
 			&i.CategoryID,
-			&i.UomID,
+			&i.BaseUomID,
+			&i.RecipeUomID,
 			&i.Track,
-			&i.Description,
-			&i.ArchivedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listTransactionTypes = `-- name: ListTransactionTypes :many
-SELECT id, tenant_id, name, category, description, archived_at, created_at, updated_at FROM transaction_type
-WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
-ORDER BY id
-LIMIT $4
-`
-
-type ListTransactionTypesParams struct {
-	TenantID        uuid.UUID
-	After           uuid.UUID
-	IncludeArchived bool
-	PageSize        int32
-}
-
-func (q *Queries) ListTransactionTypes(ctx context.Context, arg ListTransactionTypesParams) ([]TransactionType, error) {
-	rows, err := q.db.Query(ctx, listTransactionTypes,
-		arg.TenantID,
-		arg.After,
-		arg.IncludeArchived,
-		arg.PageSize,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []TransactionType
-	for rows.Next() {
-		var i TransactionType
-		if err := rows.Scan(
-			&i.ID,
-			&i.TenantID,
-			&i.Name,
-			&i.Category,
+			&i.MinStockScaled,
+			&i.ShelfLifeDays,
 			&i.Description,
 			&i.ArchivedAt,
 			&i.CreatedAt,
@@ -466,7 +604,7 @@ func (q *Queries) ListTransactionTypes(ctx context.Context, arg ListTransactionT
 }
 
 const listUomCategories = `-- name: ListUomCategories :many
-SELECT id, tenant_id, name, archived_at, created_at, updated_at FROM uom_category
+SELECT id, tenant_id, name, is_standard, archived_at, created_at, updated_at FROM uom_category
 WHERE tenant_id = $1 AND id > $2 AND ($3::boolean OR archived_at IS NULL)
 ORDER BY id
 LIMIT $4
@@ -497,6 +635,7 @@ func (q *Queries) ListUomCategories(ctx context.Context, arg ListUomCategoriesPa
 			&i.ID,
 			&i.TenantID,
 			&i.Name,
+			&i.IsStandard,
 			&i.ArchivedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -512,7 +651,7 @@ func (q *Queries) ListUomCategories(ctx context.Context, arg ListUomCategoriesPa
 }
 
 const listUomsByCategories = `-- name: ListUomsByCategories :many
-SELECT id, tenant_id, category_id, name, is_reference, ratio_num, ratio_den, rounding_scaled, active, created_at, updated_at FROM uom WHERE tenant_id = $1 AND category_id = ANY($2::uuid[]) ORDER BY category_id, NOT is_reference, ratio_num::numeric / ratio_den, id
+SELECT id, tenant_id, category_id, name, symbol, is_reference, is_standard, ratio_num, ratio_den, rounding_scaled, active, created_at, updated_at FROM uom WHERE tenant_id = $1 AND category_id = ANY($2::uuid[]) ORDER BY category_id, NOT is_reference, ratio_num::numeric / ratio_den, id
 `
 
 type ListUomsByCategoriesParams struct {
@@ -534,7 +673,9 @@ func (q *Queries) ListUomsByCategories(ctx context.Context, arg ListUomsByCatego
 			&i.TenantID,
 			&i.CategoryID,
 			&i.Name,
+			&i.Symbol,
 			&i.IsReference,
+			&i.IsStandard,
 			&i.RatioNum,
 			&i.RatioDen,
 			&i.RoundingScaled,
@@ -552,120 +693,205 @@ func (q *Queries) ListUomsByCategories(ctx context.Context, arg ListUomsByCatego
 	return items, nil
 }
 
-const updateIngredient = `-- name: UpdateIngredient :one
-UPDATE ingredient
-SET name = $1, category_id = $2, uom_id = $3, track = $4, description = $5, archived_at = $6
-WHERE tenant_id = $7 AND id = $8
-RETURNING id, tenant_id, name, category_id, uom_id, track, description, archived_at, created_at, updated_at
+const seedStandardUnits = `-- name: SeedStandardUnits :exec
+
+SELECT seed_standard_units($1::uuid)
 `
 
-type UpdateIngredientParams struct {
-	Name        string
-	CategoryID  *uuid.UUID
-	UomID       uuid.UUID
-	Track       bool
-	Description *string
-	ArchivedAt  *time.Time
-	TenantID    uuid.UUID
-	ID          uuid.UUID
+// UoM categories and units
+func (q *Queries) SeedStandardUnits(ctx context.Context, tenantID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, seedStandardUnits, tenantID)
+	return err
 }
 
-func (q *Queries) UpdateIngredient(ctx context.Context, arg UpdateIngredientParams) (Ingredient, error) {
-	row := q.db.QueryRow(ctx, updateIngredient,
+const unitsUsedByItems = `-- name: UnitsUsedByItems :many
+SELECT DISTINCT u.id FROM uom u
+WHERE u.tenant_id = $1 AND u.id = ANY($2::uuid[])
+  AND EXISTS (SELECT 1 FROM stock_item i WHERE i.tenant_id = u.tenant_id AND (i.base_uom_id = u.id OR i.recipe_uom_id = u.id))
+`
+
+type UnitsUsedByItemsParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+}
+
+// Which of these units an item uses as its base or recipe unit (BR-UOM-07).
+func (q *Queries) UnitsUsedByItems(ctx context.Context, arg UnitsUsedByItemsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, unitsUsedByItems, arg.TenantID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateExpenseType = `-- name: UpdateExpenseType :one
+UPDATE expense_type SET name = $1, expense_group = $2, description = $3, archived_at = $4
+WHERE tenant_id = $5 AND id = $6
+RETURNING id, tenant_id, name, expense_group, description, archived_at, created_at, updated_at
+`
+
+type UpdateExpenseTypeParams struct {
+	Name         string
+	ExpenseGroup string
+	Description  *string
+	ArchivedAt   *time.Time
+	TenantID     uuid.UUID
+	ID           uuid.UUID
+}
+
+func (q *Queries) UpdateExpenseType(ctx context.Context, arg UpdateExpenseTypeParams) (ExpenseType, error) {
+	row := q.db.QueryRow(ctx, updateExpenseType,
 		arg.Name,
+		arg.ExpenseGroup,
+		arg.Description,
+		arg.ArchivedAt,
+		arg.TenantID,
+		arg.ID,
+	)
+	var i ExpenseType
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.ExpenseGroup,
+		&i.Description,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updatePack = `-- name: UpdatePack :execrows
+UPDATE stock_item_pack SET name = $1, rounding_scaled = $2, active = $3
+WHERE tenant_id = $4 AND stock_item_id = $5 AND id = $6
+`
+
+type UpdatePackParams struct {
+	Name           string
+	RoundingScaled int64
+	Active         bool
+	TenantID       uuid.UUID
+	StockItemID    uuid.UUID
+	ID             uuid.UUID
+}
+
+func (q *Queries) UpdatePack(ctx context.Context, arg UpdatePackParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updatePack,
+		arg.Name,
+		arg.RoundingScaled,
+		arg.Active,
+		arg.TenantID,
+		arg.StockItemID,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateStockCategory = `-- name: UpdateStockCategory :one
+UPDATE stock_category
+SET name = $1, default_expense_type_id = $2, description = $3, archived_at = $4
+WHERE tenant_id = $5 AND id = $6
+RETURNING id, tenant_id, name, default_expense_type_id, description, archived_at, created_at, updated_at
+`
+
+type UpdateStockCategoryParams struct {
+	Name                 string
+	DefaultExpenseTypeID *uuid.UUID
+	Description          *string
+	ArchivedAt           *time.Time
+	TenantID             uuid.UUID
+	ID                   uuid.UUID
+}
+
+func (q *Queries) UpdateStockCategory(ctx context.Context, arg UpdateStockCategoryParams) (StockCategory, error) {
+	row := q.db.QueryRow(ctx, updateStockCategory,
+		arg.Name,
+		arg.DefaultExpenseTypeID,
+		arg.Description,
+		arg.ArchivedAt,
+		arg.TenantID,
+		arg.ID,
+	)
+	var i StockCategory
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.DefaultExpenseTypeID,
+		&i.Description,
+		&i.ArchivedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateStockItem = `-- name: UpdateStockItem :one
+UPDATE stock_item
+SET name = $1, type = $2, category_id = $3, base_uom_id = $4, recipe_uom_id = $5, track = $6,
+    min_stock_scaled = $7, shelf_life_days = $8, description = $9, archived_at = $10
+WHERE tenant_id = $11 AND id = $12
+RETURNING id, tenant_id, name, type, category_id, base_uom_id, recipe_uom_id, track, min_stock_scaled, shelf_life_days, description, archived_at, created_at, updated_at
+`
+
+type UpdateStockItemParams struct {
+	Name           string
+	Type           string
+	CategoryID     uuid.UUID
+	BaseUomID      uuid.UUID
+	RecipeUomID    *uuid.UUID
+	Track          bool
+	MinStockScaled *int64
+	ShelfLifeDays  *int32
+	Description    *string
+	ArchivedAt     *time.Time
+	TenantID       uuid.UUID
+	ID             uuid.UUID
+}
+
+func (q *Queries) UpdateStockItem(ctx context.Context, arg UpdateStockItemParams) (StockItem, error) {
+	row := q.db.QueryRow(ctx, updateStockItem,
+		arg.Name,
+		arg.Type,
 		arg.CategoryID,
-		arg.UomID,
+		arg.BaseUomID,
+		arg.RecipeUomID,
 		arg.Track,
+		arg.MinStockScaled,
+		arg.ShelfLifeDays,
 		arg.Description,
 		arg.ArchivedAt,
 		arg.TenantID,
 		arg.ID,
 	)
-	var i Ingredient
+	var i StockItem
 	err := row.Scan(
 		&i.ID,
 		&i.TenantID,
 		&i.Name,
+		&i.Type,
 		&i.CategoryID,
-		&i.UomID,
+		&i.BaseUomID,
+		&i.RecipeUomID,
 		&i.Track,
-		&i.Description,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const updateIngredientCategory = `-- name: UpdateIngredientCategory :one
-UPDATE ingredient_category
-SET name = $1, default_transaction_type_id = $2, description = $3, archived_at = $4
-WHERE tenant_id = $5 AND id = $6
-RETURNING id, tenant_id, name, default_transaction_type_id, description, archived_at, created_at, updated_at
-`
-
-type UpdateIngredientCategoryParams struct {
-	Name                     string
-	DefaultTransactionTypeID *uuid.UUID
-	Description              *string
-	ArchivedAt               *time.Time
-	TenantID                 uuid.UUID
-	ID                       uuid.UUID
-}
-
-func (q *Queries) UpdateIngredientCategory(ctx context.Context, arg UpdateIngredientCategoryParams) (IngredientCategory, error) {
-	row := q.db.QueryRow(ctx, updateIngredientCategory,
-		arg.Name,
-		arg.DefaultTransactionTypeID,
-		arg.Description,
-		arg.ArchivedAt,
-		arg.TenantID,
-		arg.ID,
-	)
-	var i IngredientCategory
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.Name,
-		&i.DefaultTransactionTypeID,
-		&i.Description,
-		&i.ArchivedAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-	)
-	return i, err
-}
-
-const updateTransactionType = `-- name: UpdateTransactionType :one
-UPDATE transaction_type SET name = $1, category = $2, description = $3, archived_at = $4
-WHERE tenant_id = $5 AND id = $6
-RETURNING id, tenant_id, name, category, description, archived_at, created_at, updated_at
-`
-
-type UpdateTransactionTypeParams struct {
-	Name        string
-	Category    string
-	Description *string
-	ArchivedAt  *time.Time
-	TenantID    uuid.UUID
-	ID          uuid.UUID
-}
-
-func (q *Queries) UpdateTransactionType(ctx context.Context, arg UpdateTransactionTypeParams) (TransactionType, error) {
-	row := q.db.QueryRow(ctx, updateTransactionType,
-		arg.Name,
-		arg.Category,
-		arg.Description,
-		arg.ArchivedAt,
-		arg.TenantID,
-		arg.ID,
-	)
-	var i TransactionType
-	err := row.Scan(
-		&i.ID,
-		&i.TenantID,
-		&i.Name,
-		&i.Category,
+		&i.MinStockScaled,
+		&i.ShelfLifeDays,
 		&i.Description,
 		&i.ArchivedAt,
 		&i.CreatedAt,
@@ -675,12 +901,13 @@ func (q *Queries) UpdateTransactionType(ctx context.Context, arg UpdateTransacti
 }
 
 const updateUom = `-- name: UpdateUom :execrows
-UPDATE uom SET name = $1, ratio_num = $2, ratio_den = $3, rounding_scaled = $4, active = $5
-WHERE tenant_id = $6 AND category_id = $7 AND id = $8
+UPDATE uom SET name = $1, symbol = $2, ratio_num = $3, ratio_den = $4, rounding_scaled = $5, active = $6
+WHERE tenant_id = $7 AND category_id = $8 AND id = $9
 `
 
 type UpdateUomParams struct {
 	Name           string
+	Symbol         string
 	RatioNum       int64
 	RatioDen       int64
 	RoundingScaled int64
@@ -693,6 +920,7 @@ type UpdateUomParams struct {
 func (q *Queries) UpdateUom(ctx context.Context, arg UpdateUomParams) (int64, error) {
 	result, err := q.db.Exec(ctx, updateUom,
 		arg.Name,
+		arg.Symbol,
 		arg.RatioNum,
 		arg.RatioDen,
 		arg.RoundingScaled,
@@ -710,7 +938,7 @@ func (q *Queries) UpdateUom(ctx context.Context, arg UpdateUomParams) (int64, er
 const updateUomCategory = `-- name: UpdateUomCategory :one
 UPDATE uom_category SET name = $1, archived_at = $2
 WHERE tenant_id = $3 AND id = $4
-RETURNING id, tenant_id, name, archived_at, created_at, updated_at
+RETURNING id, tenant_id, name, is_standard, archived_at, created_at, updated_at
 `
 
 type UpdateUomCategoryParams struct {
@@ -732,6 +960,7 @@ func (q *Queries) UpdateUomCategory(ctx context.Context, arg UpdateUomCategoryPa
 		&i.ID,
 		&i.TenantID,
 		&i.Name,
+		&i.IsStandard,
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,

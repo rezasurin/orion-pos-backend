@@ -152,8 +152,8 @@ func TestErrorMapping(t *testing.T) {
 }
 
 var inventoryOps = map[string]bool{
-	"ListTransactionTypes": true, "CreateTransactionType": true, "UpdateTransactionType": true,
-	"ListIngredientCategories": true, "CreateIngredientCategory": true, "UpdateIngredientCategory": true,
+	"ListExpenseTypes": true, "CreateExpenseType": true, "UpdateExpenseType": true,
+	"ListStockCategories": true, "CreateStockCategory": true, "UpdateStockCategory": true,
 	"ListUomCategories": true, "CreateUomCategory": true, "UpdateUomCategory": true,
-	"ListIngredients": true, "CreateIngredient": true, "UpdateIngredient": true,
+	"ListStockItems": true, "CreateStockItem": true, "UpdateStockItem": true,
 }

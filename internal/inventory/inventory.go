@@ -1,9 +1,11 @@
-// Package inventory owns stock: units of measure, ingredients, and (from B3.3) the stock ledger
+// Package inventory owns stock: units of measure, stock items, and (from B3.3) the stock ledger
 // (BACKEND_PLAN.md section 6.6, ADR 0009). Other modules use this package's Service and types,
 // never the generated queries in ./db.
 //
-// Setup data is archived or deactivated, never deleted, because ledger rows and recipes will point
-// at it. None of it reaches tablets, so nothing here writes the change log.
+// The rules come from the back office's docs/BUSINESS_RULES.md; code and tests cite their ids
+// (BR-UOM-06). Setup data is archived or deactivated, never deleted (BR-GEN-06), because ledger
+// rows and recipes will point at it. None of it reaches tablets, so nothing here writes the change
+// log.
 package inventory
 
 import (
@@ -23,20 +25,27 @@ import (
 )
 
 const (
-	maxName        = 60
-	maxIngredient  = 120
-	maxUnitName    = 30
+	minName        = 2
+	maxName        = 100 // the validation reference: any name is 2 to 100 characters
+	maxUnitName    = 60
+	maxSymbol      = 10
 	maxDescription = 500
 	maxUnits       = 50
+	maxPacks       = 20
 	maxRatioPart   = 1_000_000_000
 	maxRounding    = 1_000_000 // thousandths of a unit: 1000 units
+	maxQuantity    = 1_000_000_000_000_000
+	maxShelfLife   = 3650
 )
 
-// Transaction type categories, the back office's three groups.
+// Expense groups (BR-EXP-02). A classification only: whether money was paid, owed or is a debt
+// payment is a field of the payment, not of the expense.
 const (
-	TxMaterials   = "materials"    // raw and supporting materials
-	TxServices    = "services"     // services, maintenance and the like
-	TxDebtPayment = "debt_payment" // paying off purchases made on credit
+	GroupCostOfGoods    = "cost_of_goods" // ingredients and supporting materials
+	GroupOperating      = "operating"     // rent, utilities, salaries, supplies
+	GroupMaintenance    = "maintenance"
+	GroupMarketingEvent = "marketing_event"
+	GroupCapital        = "capital" // equipment
 )
 
 // Service is the inventory module.
@@ -50,314 +59,226 @@ func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{Pool: pool, Clock: kernel.SystemClock{}}
 }
 
-// TransactionType is what a purchase or expense is booked as, such as "Belanja Bahan Pasar".
-type TransactionType struct {
+// SeedStandardUnits gives a new business the standard units (BR-UOM-03): gram and kilogram,
+// millilitre and litre, pieces, lusin and kodi. Call it inside the transaction that creates the
+// business.
+func SeedStandardUnits(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
+	return db.New(tx).SeedStandardUnits(ctx, tenantID)
+}
+
+// ExpenseType is what money spent is booked as, such as "Belanja Bahan Pasar" (BR-EXP-02).
+type ExpenseType struct {
 	ID          uuid.UUID
 	Name        string
-	Category    string
+	Group       string
 	Description *string
 	ArchivedAt  *time.Time
 	CreatedAt   time.Time
 }
 
-// NewTransactionType describes a transaction type to create.
-type NewTransactionType struct {
+// NewExpenseType describes an expense type to create.
+type NewExpenseType struct {
 	Name        string
-	Category    string
+	Group       string
 	Description *string
 }
 
-// UpdateTransactionType changes a transaction type. Nil fields stay as they are; a blank
-// description clears it.
-type UpdateTransactionType struct {
+// UpdateExpenseType changes an expense type. Nil fields stay as they are; a blank description
+// clears it.
+type UpdateExpenseType struct {
 	Name        *string
-	Category    *string
+	Group       *string
 	Description *string
 	Archived    *bool
 }
 
-// CreateTransactionType adds a transaction type.
-func (s *Service) CreateTransactionType(ctx context.Context, tenantID uuid.UUID, in NewTransactionType) (TransactionType, error) {
-	name, desc, err := validNameDesc(in.Name, in.Description, maxName)
+// CreateExpenseType adds an expense type.
+func (s *Service) CreateExpenseType(ctx context.Context, tenantID uuid.UUID, in NewExpenseType) (ExpenseType, error) {
+	name, desc, err := validNameDesc(in.Name, in.Description)
 	if err != nil {
-		return TransactionType{}, err
+		return ExpenseType{}, err
 	}
-	if err := validTxCategory(in.Category); err != nil {
-		return TransactionType{}, err
+	if err := validGroup(in.Group); err != nil {
+		return ExpenseType{}, err
 	}
-	var out TransactionType
+	var out ExpenseType
 	err = kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
-		row, err := db.New(tx).InsertTransactionType(ctx, db.InsertTransactionTypeParams{
-			ID: kernel.NewID(), TenantID: tenantID, Name: name, Category: in.Category, Description: desc,
+		row, err := db.New(tx).InsertExpenseType(ctx, db.InsertExpenseTypeParams{
+			ID: kernel.NewID(), TenantID: tenantID, Name: name, ExpenseGroup: in.Group, Description: desc,
 		})
-		out = toTransactionType(row)
+		out = toExpenseType(row)
 		return mapErr(err)
 	})
 	return out, err
 }
 
-// ListTransactionTypes returns a page of transaction types ordered by id.
-func (s *Service) ListTransactionTypes(ctx context.Context, tenantID uuid.UUID, page kernel.Page, includeArchived bool) (kernel.Paged[TransactionType], error) {
-	var out kernel.Paged[TransactionType]
+// ListExpenseTypes returns a page of expense types ordered by id.
+func (s *Service) ListExpenseTypes(ctx context.Context, tenantID uuid.UUID, page kernel.Page, includeArchived bool) (kernel.Paged[ExpenseType], error) {
+	var out kernel.Paged[ExpenseType]
 	err := kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
-		rows, err := db.New(tx).ListTransactionTypes(ctx, db.ListTransactionTypesParams{
+		rows, err := db.New(tx).ListExpenseTypes(ctx, db.ListExpenseTypesParams{
 			TenantID: tenantID, After: page.After, IncludeArchived: includeArchived, PageSize: page.Fetch(),
 		})
 		if err != nil {
 			return err
 		}
-		out = mapPage(kernel.Trim(page, rows, func(r db.TransactionType) uuid.UUID { return r.ID }), toTransactionType)
+		out = mapPage(kernel.Trim(page, rows, func(r db.ExpenseType) uuid.UUID { return r.ID }), toExpenseType)
 		return nil
 	})
 	return out, err
 }
 
-// UpdateTransactionType applies changes to one transaction type.
-func (s *Service) UpdateTransactionType(ctx context.Context, tenantID, id uuid.UUID, in UpdateTransactionType) (TransactionType, error) {
-	if in.Category != nil {
-		if err := validTxCategory(*in.Category); err != nil {
-			return TransactionType{}, err
+// UpdateExpenseType applies changes to one expense type.
+func (s *Service) UpdateExpenseType(ctx context.Context, tenantID, id uuid.UUID, in UpdateExpenseType) (ExpenseType, error) {
+	if in.Group != nil {
+		if err := validGroup(*in.Group); err != nil {
+			return ExpenseType{}, err
 		}
 	}
-	var out TransactionType
+	var out ExpenseType
 	err := kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		cur, err := q.GetTransactionTypeForUpdate(ctx, db.GetTransactionTypeForUpdateParams{TenantID: tenantID, ID: id})
+		cur, err := q.GetExpenseTypeForUpdate(ctx, db.GetExpenseTypeForUpdateParams{TenantID: tenantID, ID: id})
 		if err != nil {
 			return mapErr(err)
 		}
-		p := db.UpdateTransactionTypeParams{TenantID: tenantID, ID: id, Name: cur.Name, Category: cur.Category, Description: cur.Description, ArchivedAt: s.archiveState(cur.ArchivedAt, in.Archived)}
-		if p.Name, p.Description, err = patchNameDesc(cur.Name, cur.Description, in.Name, in.Description, maxName); err != nil {
+		p := db.UpdateExpenseTypeParams{TenantID: tenantID, ID: id, ExpenseGroup: cur.ExpenseGroup, ArchivedAt: s.archiveState(cur.ArchivedAt, in.Archived)}
+		if p.Name, p.Description, err = patchNameDesc(cur.Name, cur.Description, in.Name, in.Description); err != nil {
 			return err
 		}
-		if in.Category != nil {
-			p.Category = *in.Category
+		if in.Group != nil {
+			p.ExpenseGroup = *in.Group
 		}
-		row, err := q.UpdateTransactionType(ctx, p)
-		out = toTransactionType(row)
+		row, err := q.UpdateExpenseType(ctx, p)
+		out = toExpenseType(row)
 		return mapErr(err)
 	})
 	return out, err
 }
 
-// IngredientCategory groups ingredients, with the transaction type their purchases default to.
-type IngredientCategory struct {
-	ID                       uuid.UUID
-	Name                     string
-	DefaultTransactionTypeID *uuid.UUID
-	Description              *string
-	ArchivedAt               *time.Time
-	CreatedAt                time.Time
+// StockCategory groups stock items for reports and counts (BR-CAT-01), with the expense type a
+// purchase of its items defaults to (BR-CAT-02).
+type StockCategory struct {
+	ID                   uuid.UUID
+	Name                 string
+	DefaultExpenseTypeID *uuid.UUID
+	Description          *string
+	ArchivedAt           *time.Time
+	CreatedAt            time.Time
 }
 
-// NewIngredientCategory describes an ingredient category to create.
-type NewIngredientCategory struct {
-	Name                     string
-	DefaultTransactionTypeID *uuid.UUID
-	Description              *string
+// NewStockCategory describes a stock category to create.
+type NewStockCategory struct {
+	Name                 string
+	DefaultExpenseTypeID *uuid.UUID
+	Description          *string
 }
 
-// UpdateIngredientCategory changes an ingredient category. Nil fields stay as they are; a blank
-// description clears it, and ClearDefaultTransactionType removes the default.
-type UpdateIngredientCategory struct {
-	Name                        *string
-	DefaultTransactionTypeID    *uuid.UUID
-	ClearDefaultTransactionType bool
-	Description                 *string
-	Archived                    *bool
+// UpdateStockCategory changes a stock category. Nil fields stay as they are; a blank description
+// clears it, and ClearDefaultExpenseType removes the default.
+type UpdateStockCategory struct {
+	Name                    *string
+	DefaultExpenseTypeID    *uuid.UUID
+	ClearDefaultExpenseType bool
+	Description             *string
+	Archived                *bool
 }
 
-// CreateIngredientCategory adds an ingredient category.
-func (s *Service) CreateIngredientCategory(ctx context.Context, tenantID uuid.UUID, in NewIngredientCategory) (IngredientCategory, error) {
-	name, desc, err := validNameDesc(in.Name, in.Description, maxName)
+// CreateStockCategory adds a stock category. A default expense type must be live: archived
+// records leave the pickers (BR-GEN-06).
+func (s *Service) CreateStockCategory(ctx context.Context, tenantID uuid.UUID, in NewStockCategory) (StockCategory, error) {
+	name, desc, err := validNameDesc(in.Name, in.Description)
 	if err != nil {
-		return IngredientCategory{}, err
+		return StockCategory{}, err
 	}
-	var out IngredientCategory
+	var out StockCategory
 	err = kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
-		row, err := db.New(tx).InsertIngredientCategory(ctx, db.InsertIngredientCategoryParams{
-			ID: kernel.NewID(), TenantID: tenantID, Name: name, DefaultTransactionTypeID: in.DefaultTransactionTypeID, Description: desc,
+		q := db.New(tx)
+		if err := liveExpenseType(ctx, q, tenantID, in.DefaultExpenseTypeID); err != nil {
+			return err
+		}
+		row, err := q.InsertStockCategory(ctx, db.InsertStockCategoryParams{
+			ID: kernel.NewID(), TenantID: tenantID, Name: name, DefaultExpenseTypeID: in.DefaultExpenseTypeID, Description: desc,
 		})
-		out = toIngredientCategory(row)
+		out = toStockCategory(row)
 		return mapErr(err)
 	})
 	return out, err
 }
 
-// ListIngredientCategories returns a page of ingredient categories ordered by id.
-func (s *Service) ListIngredientCategories(ctx context.Context, tenantID uuid.UUID, page kernel.Page, includeArchived bool) (kernel.Paged[IngredientCategory], error) {
-	var out kernel.Paged[IngredientCategory]
+// ListStockCategories returns a page of stock categories ordered by id.
+func (s *Service) ListStockCategories(ctx context.Context, tenantID uuid.UUID, page kernel.Page, includeArchived bool) (kernel.Paged[StockCategory], error) {
+	var out kernel.Paged[StockCategory]
 	err := kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
-		rows, err := db.New(tx).ListIngredientCategories(ctx, db.ListIngredientCategoriesParams{
+		rows, err := db.New(tx).ListStockCategories(ctx, db.ListStockCategoriesParams{
 			TenantID: tenantID, After: page.After, IncludeArchived: includeArchived, PageSize: page.Fetch(),
 		})
 		if err != nil {
 			return err
 		}
-		out = mapPage(kernel.Trim(page, rows, func(r db.IngredientCategory) uuid.UUID { return r.ID }), toIngredientCategory)
+		out = mapPage(kernel.Trim(page, rows, func(r db.StockCategory) uuid.UUID { return r.ID }), toStockCategory)
 		return nil
 	})
 	return out, err
 }
 
-// UpdateIngredientCategory applies changes to one ingredient category.
-func (s *Service) UpdateIngredientCategory(ctx context.Context, tenantID, id uuid.UUID, in UpdateIngredientCategory) (IngredientCategory, error) {
-	var out IngredientCategory
+// UpdateStockCategory applies changes to one stock category. Archiving one keeps its items in it
+// (BR-CAT-03); new items cannot be put in it.
+func (s *Service) UpdateStockCategory(ctx context.Context, tenantID, id uuid.UUID, in UpdateStockCategory) (StockCategory, error) {
+	var out StockCategory
 	err := kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
 		q := db.New(tx)
-		cur, err := q.GetIngredientCategoryForUpdate(ctx, db.GetIngredientCategoryForUpdateParams{TenantID: tenantID, ID: id})
+		cur, err := q.GetStockCategoryForUpdate(ctx, db.GetStockCategoryForUpdateParams{TenantID: tenantID, ID: id})
 		if err != nil {
 			return mapErr(err)
 		}
-		p := db.UpdateIngredientCategoryParams{TenantID: tenantID, ID: id, DefaultTransactionTypeID: cur.DefaultTransactionTypeID, ArchivedAt: s.archiveState(cur.ArchivedAt, in.Archived)}
-		if p.Name, p.Description, err = patchNameDesc(cur.Name, cur.Description, in.Name, in.Description, maxName); err != nil {
+		p := db.UpdateStockCategoryParams{TenantID: tenantID, ID: id, DefaultExpenseTypeID: cur.DefaultExpenseTypeID, ArchivedAt: s.archiveState(cur.ArchivedAt, in.Archived)}
+		if p.Name, p.Description, err = patchNameDesc(cur.Name, cur.Description, in.Name, in.Description); err != nil {
 			return err
 		}
 		switch {
-		case in.ClearDefaultTransactionType:
-			p.DefaultTransactionTypeID = nil
-		case in.DefaultTransactionTypeID != nil:
-			p.DefaultTransactionTypeID = in.DefaultTransactionTypeID
-		}
-		row, err := q.UpdateIngredientCategory(ctx, p)
-		out = toIngredientCategory(row)
-		return mapErr(err)
-	})
-	return out, err
-}
-
-// Ingredient is something stocked: bought, used by recipes, counted. Its quantities are stored in
-// thousandths of the reference unit of its unit's category (ADR 0009).
-type Ingredient struct {
-	ID          uuid.UUID
-	Name        string
-	CategoryID  *uuid.UUID
-	UomID       uuid.UUID // the unit it is shown and entered in
-	Track       bool
-	Description *string
-	ArchivedAt  *time.Time
-	CreatedAt   time.Time
-}
-
-// NewIngredient describes an ingredient to create.
-type NewIngredient struct {
-	Name        string
-	CategoryID  *uuid.UUID
-	UomID       uuid.UUID
-	Track       bool
-	Description *string
-}
-
-// UpdateIngredient changes an ingredient. Nil fields stay as they are; a blank description clears
-// it, and ClearCategory removes the category.
-type UpdateIngredient struct {
-	Name          *string
-	CategoryID    *uuid.UUID
-	ClearCategory bool
-	UomID         *uuid.UUID
-	Track         *bool
-	Description   *string
-	Archived      *bool
-}
-
-// CreateIngredient adds an ingredient. Its unit must be active and in a category that is not
-// archived.
-func (s *Service) CreateIngredient(ctx context.Context, tenantID uuid.UUID, in NewIngredient) (Ingredient, error) {
-	name, desc, err := validNameDesc(in.Name, in.Description, maxIngredient)
-	if err != nil {
-		return Ingredient{}, err
-	}
-	var out Ingredient
-	err = kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
-		q := db.New(tx)
-		if err := usableUnit(ctx, q, tenantID, in.UomID); err != nil {
-			return err
-		}
-		row, err := q.InsertIngredient(ctx, db.InsertIngredientParams{
-			ID: kernel.NewID(), TenantID: tenantID, Name: name, CategoryID: in.CategoryID, UomID: in.UomID, Track: in.Track, Description: desc,
-		})
-		out = toIngredient(row)
-		return mapErr(err)
-	})
-	return out, err
-}
-
-// ListIngredients returns a page of ingredients ordered by id, optionally only one category's.
-func (s *Service) ListIngredients(ctx context.Context, tenantID uuid.UUID, page kernel.Page, includeArchived bool, categoryID *uuid.UUID) (kernel.Paged[Ingredient], error) {
-	var out kernel.Paged[Ingredient]
-	err := kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
-		rows, err := db.New(tx).ListIngredients(ctx, db.ListIngredientsParams{
-			TenantID: tenantID, After: page.After, IncludeArchived: includeArchived, CategoryID: categoryID, PageSize: page.Fetch(),
-		})
-		if err != nil {
-			return err
-		}
-		out = mapPage(kernel.Trim(page, rows, func(r db.Ingredient) uuid.UUID { return r.ID }), toIngredient)
-		return nil
-	})
-	return out, err
-}
-
-// UpdateIngredient applies changes to one ingredient.
-//
-// ponytail: an ingredient may move to a unit of another category while nothing is stored in its
-// units. B3.3 must refuse that once it has a ledger row or a recipe line (ADR 0009, "fixed once used").
-func (s *Service) UpdateIngredient(ctx context.Context, tenantID, id uuid.UUID, in UpdateIngredient) (Ingredient, error) {
-	var out Ingredient
-	err := kernel.TenantTx(ctx, s.Pool, tenantID, func(tx pgx.Tx) error {
-		q := db.New(tx)
-		cur, err := q.GetIngredientForUpdate(ctx, db.GetIngredientForUpdateParams{TenantID: tenantID, ID: id})
-		if err != nil {
-			return mapErr(err)
-		}
-		p := db.UpdateIngredientParams{TenantID: tenantID, ID: id, CategoryID: cur.CategoryID, UomID: cur.UomID, Track: cur.Track, ArchivedAt: s.archiveState(cur.ArchivedAt, in.Archived)}
-		if p.Name, p.Description, err = patchNameDesc(cur.Name, cur.Description, in.Name, in.Description, maxIngredient); err != nil {
-			return err
-		}
-		switch {
-		case in.ClearCategory:
-			p.CategoryID = nil
-		case in.CategoryID != nil:
-			p.CategoryID = in.CategoryID
-		}
-		if in.UomID != nil && *in.UomID != cur.UomID {
-			if err := usableUnit(ctx, q, tenantID, *in.UomID); err != nil {
+		case in.ClearDefaultExpenseType:
+			p.DefaultExpenseTypeID = nil
+		case in.DefaultExpenseTypeID != nil:
+			if err := liveExpenseType(ctx, q, tenantID, in.DefaultExpenseTypeID); err != nil {
 				return err
 			}
-			p.UomID = *in.UomID
+			p.DefaultExpenseTypeID = in.DefaultExpenseTypeID
 		}
-		if in.Track != nil {
-			p.Track = *in.Track
-		}
-		row, err := q.UpdateIngredient(ctx, p)
-		out = toIngredient(row)
+		row, err := q.UpdateStockCategory(ctx, p)
+		out = toStockCategory(row)
 		return mapErr(err)
 	})
 	return out, err
 }
 
-func usableUnit(ctx context.Context, q *db.Queries, tenantID, id uuid.UUID) error {
-	if _, err := q.GetUomForIngredient(ctx, db.GetUomForIngredientParams{TenantID: tenantID, ID: id}); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("%w: uom_id must be an active unit in a category that is not archived", kernel.ErrValidation)
-		}
+func liveExpenseType(ctx context.Context, q *db.Queries, tenantID uuid.UUID, id *uuid.UUID) error {
+	if id == nil {
+		return nil
+	}
+	ok, err := q.IsLiveExpenseType(ctx, db.IsLiveExpenseTypeParams{TenantID: tenantID, ID: *id})
+	if err != nil {
 		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: default_expense_type_id must be an expense type that is not archived", kernel.ErrValidation)
 	}
 	return nil
 }
 
-func validTxCategory(c string) error {
-	switch c {
-	case TxMaterials, TxServices, TxDebtPayment:
+func validGroup(g string) error {
+	switch g {
+	case GroupCostOfGoods, GroupOperating, GroupMaintenance, GroupMarketingEvent, GroupCapital:
 		return nil
 	}
-	return fmt.Errorf("%w: category must be %s, %s or %s", kernel.ErrValidation, TxMaterials, TxServices, TxDebtPayment)
+	return fmt.Errorf("%w: group must be %s, %s, %s, %s or %s", kernel.ErrValidation, GroupCostOfGoods, GroupOperating, GroupMaintenance, GroupMarketingEvent, GroupCapital)
 }
 
+// validName trims a name and checks its length (BR-GEN-10).
 func validName(field, v string, max int) (string, error) {
 	v = strings.TrimSpace(v)
-	if v == "" || len([]rune(v)) > max {
-		return "", fmt.Errorf("%w: %s is required and at most %d characters", kernel.ErrValidation, field, max)
+	if n := len([]rune(v)); n < minName || n > max {
+		return "", fmt.Errorf("%w: %s is required, %d to %d characters", kernel.ErrValidation, field, minName, max)
 	}
 	return v, nil
 }
@@ -377,8 +298,8 @@ func optDesc(v *string) (*string, error) {
 	return &t, nil
 }
 
-func validNameDesc(name string, desc *string, max int) (string, *string, error) {
-	n, err := validName("name", name, max)
+func validNameDesc(name string, desc *string) (string, *string, error) {
+	n, err := validName("name", name, maxName)
 	if err != nil {
 		return "", nil, err
 	}
@@ -387,11 +308,11 @@ func validNameDesc(name string, desc *string, max int) (string, *string, error) 
 }
 
 // patchNameDesc applies an optional new name and description to the current ones.
-func patchNameDesc(curName string, curDesc, name, desc *string, max int) (string, *string, error) {
+func patchNameDesc(curName string, curDesc, name, desc *string) (string, *string, error) {
 	n, d := curName, curDesc
 	var err error
 	if name != nil {
-		if n, err = validName("name", *name, max); err != nil {
+		if n, err = validName("name", *name, maxName); err != nil {
 			return "", nil, err
 		}
 	}
@@ -424,16 +345,12 @@ func mapPage[R, T any](p kernel.Paged[R], f func(R) T) kernel.Paged[T] {
 	return out
 }
 
-func toTransactionType(r db.TransactionType) TransactionType {
-	return TransactionType{ID: r.ID, Name: r.Name, Category: r.Category, Description: r.Description, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt}
+func toExpenseType(r db.ExpenseType) ExpenseType {
+	return ExpenseType{ID: r.ID, Name: r.Name, Group: r.ExpenseGroup, Description: r.Description, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt}
 }
 
-func toIngredientCategory(r db.IngredientCategory) IngredientCategory {
-	return IngredientCategory{ID: r.ID, Name: r.Name, DefaultTransactionTypeID: r.DefaultTransactionTypeID, Description: r.Description, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt}
-}
-
-func toIngredient(r db.Ingredient) Ingredient {
-	return Ingredient{ID: r.ID, Name: r.Name, CategoryID: r.CategoryID, UomID: r.UomID, Track: r.Track, Description: r.Description, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt}
+func toStockCategory(r db.StockCategory) StockCategory {
+	return StockCategory{ID: r.ID, Name: r.Name, DefaultExpenseTypeID: r.DefaultExpenseTypeID, Description: r.Description, ArchivedAt: r.ArchivedAt, CreatedAt: r.CreatedAt}
 }
 
 // mapErr turns database errors into the kernel errors the HTTP layer understands. A reference to a
@@ -451,7 +368,7 @@ func mapErr(err error) error {
 		case "23505":
 			return fmt.Errorf("%w: %s", kernel.ErrConflict, conflictText[pgErr.ConstraintName])
 		case "23503":
-			return fmt.Errorf("%w: a referenced category, transaction type or unit does not exist", kernel.ErrValidation)
+			return fmt.Errorf("%w: a referenced category, expense type, unit or item does not exist", kernel.ErrValidation)
 		case "23514":
 			return fmt.Errorf("%w: a value is out of range (%s)", kernel.ErrValidation, pgErr.ConstraintName)
 		}
@@ -460,9 +377,11 @@ func mapErr(err error) error {
 }
 
 var conflictText = map[string]string{
-	"transaction_type_name_idx":    "a transaction type with this name already exists",
-	"ingredient_category_name_idx": "an ingredient category with this name already exists",
-	"uom_category_name_idx":        "a unit category with this name already exists",
-	"uom_name_idx":                 "a unit with this name already exists in this category",
-	"ingredient_name_idx":          "an ingredient with this name already exists",
+	"expense_type_name_idx":    "an expense type with this name already exists",
+	"stock_category_name_idx":  "a stock category with this name already exists",
+	"uom_category_name_idx":    "a unit category with this name already exists",
+	"uom_name_idx":             "a unit with this name already exists in this category",
+	"uom_symbol_idx":           "a unit with this symbol already exists",
+	"stock_item_name_idx":      "a stock item with this name already exists",
+	"stock_item_pack_name_idx": "this item already has a pack with this name",
 }

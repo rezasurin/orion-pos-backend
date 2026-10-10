@@ -280,46 +280,74 @@ The runbook `docs/runbooks/pilot.md` tells the operator what to do about each.
 
 ### 3.7 Inventory setup (`inventory.manage`, inventory module)
 
-The Setup pages of the back office. Every call here needs `inventory.manage` **and** the inventory
-module in the plan: without it the answer is `403 module_disabled` (the free plan does not include
-it; check `module.inventory` in `GET /v1/entitlements` and hide the menu). Nothing here reaches the
-POS. Entries are archived, never deleted, like the catalog (`include_archived=true`,
-`"archived": true|false`); a blank `description` clears it.
+The Setup pages of the back office. The rules are the back office's `docs/BUSINESS_RULES.md`; ids
+such as BR-UOM-06 refer to it. Every call here needs `inventory.manage` **and** the inventory module
+in the plan: without it the answer is `403 module_disabled` (the free plan does not include it; check
+`module.inventory` in `GET /v1/entitlements` and hide the menu). Nothing here reaches the POS.
+
+Common to all four: entries are archived, never deleted (`include_archived=true` lists them,
+`"archived": true|false` in a `PATCH`), and an archived entry cannot be picked for something new
+(BR-GEN-06), though what already points at it keeps it. **Names** are trimmed, 2 to 100 characters
+(units and packs 2 to 60), unique per business ignoring case among live entries (`409`), so archiving
+frees a name. A blank `description` clears it.
 
 | Call | Notes |
 |---|---|
-| `GET/POST /v1/transaction-types`, `PATCH .../{transactionTypeId}` | What a purchase or expense is booked as: `{name (max 60), category, description?}`. `category` is `materials` (Bahan Baku dan Pendukung), `services` (Service, Maintenance, dan lainnya) or `debt_payment` (Belanja Hutang Bayar). |
-| `GET/POST /v1/ingredient-categories`, `PATCH .../{ingredientCategoryId}` | `{name, default_transaction_type_id?, description?}`; `clear_default_transaction_type: true` removes the default. |
+| `GET/POST /v1/expense-types`, `PATCH .../{expenseTypeId}` | What money spent is booked as: `{name, group, description?}`. `group` is `cost_of_goods` (ingredients and supporting materials), `operating` (rent, utilities, salaries, supplies), `maintenance`, `marketing_event` or `capital` (BR-EXP-02). It is a classification only: "paid", "on credit" or "debt payment" belong to the payment, not the type. |
+| `GET/POST /v1/stock-categories`, `PATCH .../{stockCategoryId}` | Groups stock items (BR-CAT): `{name, default_expense_type_id?, description?}`. The default pre-fills a purchase line; `clear_default_expense_type: true` removes it. |
 | `GET/POST /v1/uom-categories`, `PATCH .../{uomCategoryId}` | A unit category with all its `units`, the reference first, then from small to large. See below. |
-| `GET/POST /v1/ingredients`, `PATCH .../{ingredientId}` | `{name (max 120), category_id?, uom_id, track (default true), description?}`. `uom_id` is the unit the ingredient is shown and entered in; it must be active and in a category that is not archived. `?category_id=` filters the list; `clear_category: true` removes the category. |
+| `GET/POST /v1/stock-items`, `PATCH .../{stockItemId}` | Anything bought, stored, prepared or used (BR-ITM); menu items stay in the catalog. See below. `?category_id=` and `?type=` filter the list. |
 
-**Quantities and units** (ADR 0009). Read this before building any stock screen:
+**Units** (ADR 0009, BR-UOM):
 
-- A unit category (weight, volume, count) has exactly **one reference unit**. Make it the
-  smallest practical unit (`g`, `ml`, `pcs`): every quantity of an ingredient in that category is
-  stored as an **integer number of thousandths of the reference unit**, so `g` gives 0.001 g
-  precision and `kg` would give only whole grams.
+- A unit category is a dimension: weight, volume or count. Every business starts with the
+  **standard** ones (`is_standard: true`): *Berat* with `g` (reference) and `kg`, *Volume* with `ml`
+  (reference) and `L`, *Jumlah* with `pcs` (reference), `lusin` (12) and `kodi` (20). A standard unit
+  keeps its symbol and ratio and stays active; a standard category is never archived. Both can be
+  renamed, and owners add their own units to them (for example `ons` = `100/1` g).
+- Each unit has a `name` and a `symbol` (1 to 10 characters, **unique in the business** ignoring
+  case, so `kg` is never ambiguous). Exactly one unit per category is the **reference**: every
+  quantity of an item based on it is stored as an **integer number of thousandths of the
+  reference**.
 - Every other unit is a **fraction of the reference**: one unit = `ratio_num / ratio_den` reference
-  units, both whole numbers from 1 to 1,000,000,000. `kg` in a gram category is `1000/1`; a tenth of
-  a gram would be `1/10`. The server reduces the fraction (`2000/2` comes back `1000/1`). Show
-  "bigger" or "smaller than the reference" by comparing `ratio_num` with `ratio_den`; it is not a
-  stored field.
-- **Never go through a float.** When the owner types a ratio such as `236.588`, build the fraction
-  from the text: `236588/1000`. The same goes for quantities later: `2.5` kg is `2500` thousandths
-  of a kg.
-- `rounding_scaled` is the unit's display and entry precision in thousandths of **that** unit
-  (`10` is 0.01, `1000` is whole units). It never changes a stored quantity.
-- There is no conversion between categories. An ingredient bought by the litre and used by the gram
-  needs a unit in its weight category, such as "liter minyak" = `920/1` g, whose ratio the owner sets.
-- **Creating** a category: `{name, units: [{name, is_reference?, ratio_num?, ratio_den?,
-  rounding_scaled?, active?}]}`; exactly one unit has `is_reference: true` and a ratio of 1/1
-  (ratios default to 1/1, `rounding_scaled` to 10, `active` to true).
+  units, whole numbers from 1 to 1,000,000,000, returned reduced (`2000/2` comes back `1000/1`).
+  Show "bigger" or "smaller" by comparing them; it is not a field. **Never go through a float**: when
+  the owner types `236.588`, build `236588/1000` from the text.
+- `rounding_scaled` is the unit's **step** in thousandths of that unit (`10` is 0.01, `1000` whole
+  units). A quantity that is not a multiple of its unit's step is refused, never rounded (BR-UOM-06).
+  The standard steps are 0.01 for `kg` and `L` and whole units for `g`, `ml` and pieces.
+- **Creating** a category: `{name, units: [{name, symbol, is_reference?, ratio_num?, ratio_den?,
+  rounding_scaled?, active?}]}`; exactly one unit has `is_reference: true` and a ratio of 1/1.
+  Defaults: ratio 1/1, `rounding_scaled` 10, `active` true.
 - **Changing** a category: `units` in a `PATCH` lists only what changes. A unit with an `id` is
-  replaced by what you send (send all its fields), a unit without one is added, and units left out
-  stay. Units are deactivated (`active: false`), never deleted. The reference stays the reference,
-  at 1/1 and active; it can be renamed. Unit names are unique within a category (`409`).
-- Changing a unit's ratio affects only quantities entered afterwards; stored quantities are in the
-  reference unit and never move.
+  replaced by what you send (send all its fields), a unit without one is added, units left out stay.
+  Units are deactivated, never deleted. The reference stays the reference, at 1/1 and active.
+- **A unit an item uses keeps its ratio** (BR-UOM-07): changing it answers `409 conflict`. Add a new
+  unit and deactivate the old one. Show the conversion ("1 sdm = 15 g") before saving, since a
+  wrong ratio cannot be fixed in place once used.
+- No conversion between categories: an item bought by the litre and used by the gram gets a pack.
+
+**Stock items** (BR-ITM, BR-UOM-04, 05):
+
+- `{name, type, category_id, base_uom_id, recipe_uom_id?, track?, min_stock_scaled?,
+  shelf_life_days?, description?, packs?}`. `type` is `ingredient` (bahan baku), `supporting` (bahan
+  penolong), `prepared` (setengah jadi), `finished` (barang jadi) or `supply` (perlengkapan).
+  Equipment is not a stock item.
+- `category_id` is required and must not be archived. `base_uom_id` is a **reference unit** (`g`,
+  `ml`, `pcs` or one of your own); quantities of the item are in thousandths of it. `recipe_uom_id`,
+  if set, is an active unit of the same category that recipes are written in (null: the base unit;
+  `clear_recipe_uom: true` goes back to it).
+- `track` (default true): an untracked item has no balance, no opname and no minimum stock.
+  `min_stock_scaled` is the reorder level in thousandths of the base unit, on the base unit's step;
+  `0` clears it, and turning `track` off clears it too. `shelf_life_days` 1 to 3650; `0` clears it.
+- **Packs** are the item's own packaging: "Beras: 1 karung = 25 kg" is `{name: "karung",
+  ratio_num: 25000}` on an item based on `g` (one pack = `ratio_num / ratio_den` base units).
+  `rounding_scaled` is the step in thousandths of a pack (default 1000, whole packs). A pack keeps its
+  ratio forever (BR-UOM-07); in a `PATCH`, a pack with an `id` is replaced by what you send with its
+  ratio unchanged (`400` otherwise), packs without one are added, packs left out stay. Packs come
+  back from small to large.
+- The base unit cannot change while the item has packs, which are measured in it (`409`). From the
+  stock ledger (B3.3) on it will not change once the item has any movement either (BR-ITM-07).
 
 ## 4. The POS: startup, then the sync loop
 
@@ -604,7 +632,7 @@ settings, for checking printer layout and the calculation; it is not a sale.
 | Shift detail | `reports/shifts/{shiftId}` (ids come from the day report's `shifts[]`) |
 | Sales list and search | `sales?…` → `sales/{saleId}` |
 | Catalog manager | `categories`, `kitchen-stations`, `items`, `modifier-groups`, `outlets/{id}/variants` |
-| Inventory setup | `transaction-types`, `ingredient-categories`, `uom-categories`, `ingredients` (only when `module.inventory` is on) |
+| Inventory setup | `expense-types`, `stock-categories`, `uom-categories`, `stock-items` (only when `module.inventory` is on) |
 | Menu import | `catalog/import?dry_run=true` → show counts and row errors → `catalog/import` |
 | Staff manager | `roles`, `staff`, `staff/{id}/pin` |
 | Devices | `devices`, `devices/pair`, `devices/{id}` (revoke) |

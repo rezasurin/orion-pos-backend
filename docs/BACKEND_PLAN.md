@@ -1361,6 +1361,10 @@ fixes the rules above before any inventory table exists. What it changes or adds
 
 #### 6.6.2 Inventory setup as built (B3.2)
 
+Superseded in part by B3.2b (6.6.3): the tables were renamed and reshaped to the business rules.
+What still holds: the module gate, units edited through their category, reduced ratios, one
+reference per category, no change log.
+
 - **`internal/inventory`**, migration 00021: `transaction_type`, `ingredient_category`,
   `uom_category`, `uom` and `ingredient`, under row-level security, archived (or, for units,
   deactivated) and never deleted; the app role has no `DELETE` and may not move a unit to another
@@ -1389,6 +1393,41 @@ fixes the rules above before any inventory table exists. What it changes or adds
   arrives with the first quantity entry (B3.3 or B3.5).
 - Not built: an ingredient `sku`, and the "assigned items" list on the back office's category page
   (it is a filter on `GET /v1/ingredients?category_id=`).
+
+#### 6.6.3 Inventory setup to the business rules (B3.2b)
+
+- **Migration 00022** drops the five B3.2 tables (setup data only, never deployed) and creates
+  `expense_type`, `stock_category`, `uom_category`, `uom`, `stock_item` and `stock_item_pack`. Its Down
+  recreates the 00021 tables, so the migration round trip still passes. Endpoints:
+  `/v1/expense-types`, `/v1/stock-categories`, `/v1/uom-categories`, `/v1/stock-items`
+  (`docs/API_CONTRACT.md` 3.7).
+- **Names follow the rules' vocabulary**: transaction types are expense types with BR-EXP-02's groups
+  (`debt_payment` is gone: it is a payment status); ingredients are stock items with a `type`
+  (BR-ITM-01), since the catalog already owns `item`; ingredient categories are stock categories.
+  Names are 2 to 100 characters everywhere (units and packs 2 to 60), checked in Go and by `CHECK`s.
+- **Standard units** (BR-UOM-03): `seed_standard_units(tenant)` in SQL, called by
+  `tenancy.CreateTenantWith` through `inventory.SeedStandardUnits` (as it seeds roles) and by the
+  migration for every existing business. Steps per BR-UOM-06. They keep symbol and ratio and stay
+  active; their categories are never archived (a `CHECK` covers both flags).
+- **Symbols** are unique per business ignoring case (BR-UOM-02 says "unique too" without a scope;
+  per business keeps `kg` unambiguous on every screen).
+- **Ratio lock** (BR-UOM-07): a unit used as an item's base or recipe unit answers `409` to a ratio
+  change; a pack's ratio has no `UPDATE` grant at all, since a pack is used by its item from the
+  start. Ledger rows (B3.3) will add movements to "used".
+- **Items**: `base_uom_id` must be an active reference unit (so the base unit and the stored scale
+  are one thing); `recipe_uom_id` an active unit of the same category; category required and live;
+  `min_stock_scaled` on the base unit's step (BR-UOM-06) and only when tracked (a `CHECK` too);
+  turning tracking off clears it. The base unit cannot change while the item has packs (`409`). Only
+  changed references are re-checked, so an item keeps a category or unit archived after it was given.
+- **Lists**: items come with their packs, unit categories with their units, two queries each
+  whatever the page size (tested at 1 and 30). `?type=` is checked in the service, since the
+  generated server does not validate query enums.
+- **For B3.3**: refuse a base unit change once the item has movements (BR-ITM-07; `ponytail:` in
+  `UpdateStockItem`), count movements as "used" for BR-UOM-07, refuse archiving an item with stock
+  (BR-ITM-08), and add the conversion function with the first quantity entry.
+- Not built: SKU, barcode, storage place and photo on an item (optional in BR-ITM-02), a default
+  purchase pack per supplier (needs suppliers, B3.5), and the audit trail of BR-GEN-07 for setup
+  changes.
 
 ### 6.7 Restaurant flow (Phase 4)
 
@@ -1534,7 +1573,7 @@ the operator can see them in the console, all without the developer touching the
 |---|---|---|
 | B3.1 | ✅ Write an ADR for the scaled-integer quantity unit (x1000 base unit) and integer UoM ratios (ADR 0009, see 6.6.1) | 0.5d |
 | B3.2 | ✅ UoM categories and units, ingredients and categories, transaction types (port of the existing Setup pages' data; see 6.6.2) | 4d |
-| B3.2b | Bring setup in line with `BUSINESS_RULES.md` (found after B3.2): item `type` (BR-ITM-01), category required and name 2 to 100 characters (BR-ITM-02), minimum stock (BR-ITM-04) and shelf life (BR-ITM-05); packaging per item with a purchase pack and a recipe unit (BR-UOM-04, 05); unit symbols unique (BR-UOM-02) and standard units seeded and undeletable (BR-UOM-03); a unit used by an item keeps its ratio (BR-UOM-07); contract 3.7 updated with them | 3d |
+| B3.2b | ✅ Bring setup in line with `BUSINESS_RULES.md` (found after B3.2): item `type` (BR-ITM-01), category required and name 2 to 100 characters (BR-ITM-02), minimum stock (BR-ITM-04) and shelf life (BR-ITM-05); packaging per item with a purchase pack and a recipe unit (BR-UOM-04, 05); unit symbols unique (BR-UOM-02) and standard units seeded and undeletable (BR-UOM-03); a unit used by an item keeps its ratio (BR-UOM-07); contract 3.7 updated with them (see 6.6.3) | 3d |
 | B3.3 | Ledger + materialized balance + rebuild command and nightly check | 4d |
 | B3.4 | Recipes (versioned) on variants and modifiers; sale consumption and void reversal in the sale projector | 4d |
 | B3.5 | Purchasing / receiving with cost | 3d |

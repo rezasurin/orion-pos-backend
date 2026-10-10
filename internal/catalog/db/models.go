@@ -259,6 +259,17 @@ type EntitlementKey struct {
 	CreatedAt    time.Time
 }
 
+type ExpenseType struct {
+	ID           uuid.UUID
+	TenantID     uuid.UUID
+	Name         string
+	ExpenseGroup string
+	Description  *string
+	ArchivedAt   *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 type Flag struct {
 	ID         uuid.UUID
 	TenantID   uuid.UUID
@@ -270,30 +281,6 @@ type Flag struct {
 	Code       string
 	Detail     []byte
 	CreatedAt  time.Time
-}
-
-type Ingredient struct {
-	ID          uuid.UUID
-	TenantID    uuid.UUID
-	Name        string
-	CategoryID  *uuid.UUID
-	UomID       uuid.UUID
-	Track       bool
-	Description *string
-	ArchivedAt  *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-}
-
-type IngredientCategory struct {
-	ID                       uuid.UUID
-	TenantID                 uuid.UUID
-	Name                     string
-	DefaultTransactionTypeID *uuid.UUID
-	Description              *string
-	ArchivedAt               *time.Time
-	CreatedAt                time.Time
-	UpdatedAt                time.Time
 }
 
 type Item struct {
@@ -642,6 +629,47 @@ type StaffOutletRole struct {
 	CreatedAt time.Time
 }
 
+type StockCategory struct {
+	ID                   uuid.UUID
+	TenantID             uuid.UUID
+	Name                 string
+	DefaultExpenseTypeID *uuid.UUID
+	Description          *string
+	ArchivedAt           *time.Time
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type StockItem struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	Name           string
+	Type           string
+	CategoryID     uuid.UUID
+	BaseUomID      uuid.UUID
+	RecipeUomID    *uuid.UUID
+	Track          bool
+	MinStockScaled *int64
+	ShelfLifeDays  *int32
+	Description    *string
+	ArchivedAt     *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+type StockItemPack struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	StockItemID    uuid.UUID
+	Name           string
+	RatioNum       int64
+	RatioDen       int64
+	RoundingScaled int64
+	Active         bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
 type SyncInbox struct {
 	TenantID       uuid.UUID
 	DeviceID       uuid.UUID
@@ -727,23 +755,14 @@ type TermsAcceptance struct {
 	AcceptedAt time.Time
 }
 
-type TransactionType struct {
-	ID          uuid.UUID
-	TenantID    uuid.UUID
-	Name        string
-	Category    string
-	Description *string
-	ArchivedAt  *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-}
-
 type Uom struct {
 	ID             uuid.UUID
 	TenantID       uuid.UUID
 	CategoryID     uuid.UUID
 	Name           string
+	Symbol         string
 	IsReference    bool
+	IsStandard     bool
 	RatioNum       int64
 	RatioDen       int64
 	RoundingScaled int64
@@ -756,6 +775,7 @@ type UomCategory struct {
 	ID         uuid.UUID
 	TenantID   uuid.UUID
 	Name       string
+	IsStandard bool
 	ArchivedAt *time.Time
 	CreatedAt  time.Time
 	UpdatedAt  time.Time

@@ -37,7 +37,7 @@ type world struct {
 }
 
 // inventoryIDs are tenant A's inventory setup.
-type inventoryIDs struct{ txType, ingCategory, uomCategory, uom, ingredient string }
+type inventoryIDs struct{ expenseType, stockCategory, uomCategory, uom, stockItem string }
 
 // catalogIDs are tenant A's catalog objects.
 type catalogIDs struct{ category, station, item, variant, group, modifier string }
@@ -96,15 +96,16 @@ func newWorld(t *testing.T) *world {
 	}, &it)
 	w.catA = catalogIDs{category: cat.ID, station: station.ID, item: it.ID, variant: it.Variants[0].ID, group: grp.ID, modifier: grp.Modifiers[0].ID}
 
-	var tt, ic, ing categoryBody
+	var et, sc, si categoryBody
 	var uc uomCategoryBody
-	e.create(t, "/v1/transaction-types", w.userA, map[string]any{"name": "Secret purchase", "category": "materials"}, &tt)
-	e.create(t, "/v1/ingredient-categories", w.userA, map[string]any{"name": "Secret ingredients", "default_transaction_type_id": tt.ID}, &ic)
-	e.create(t, "/v1/uom-categories", w.userA, map[string]any{"name": "Secret weights", "units": []map[string]any{{"name": "secretgram", "is_reference": true}}}, &uc)
-	e.create(t, "/v1/ingredients", w.userA, map[string]any{"name": "Secret beans", "category_id": ic.ID, "uom_id": uc.Units[0].ID}, &ing)
-	w.invA = inventoryIDs{txType: tt.ID, ingCategory: ic.ID, uomCategory: uc.ID, uom: uc.Units[0].ID, ingredient: ing.ID}
+	e.create(t, "/v1/expense-types", w.userA, map[string]any{"name": "Secret purchase", "group": "cost_of_goods"}, &et)
+	e.create(t, "/v1/stock-categories", w.userA, map[string]any{"name": "Secret stock", "default_expense_type_id": et.ID}, &sc)
+	e.create(t, "/v1/uom-categories", w.userA, map[string]any{"name": "Secret weights", "units": []map[string]any{{"name": "secretgram", "symbol": "sg", "is_reference": true}}}, &uc)
+	e.create(t, "/v1/stock-items", w.userA, map[string]any{"name": "Secret beans", "type": "ingredient", "category_id": sc.ID, "base_uom_id": uc.Units[0].ID,
+		"packs": []map[string]any{{"name": "secret sack", "ratio_num": 25000}}}, &si)
+	w.invA = inventoryIDs{expenseType: et.ID, stockCategory: sc.ID, uomCategory: uc.ID, uom: uc.Units[0].ID, stockItem: si.ID}
 
-	w.secrets = []string{w.syncA, tt.ID, ic.ID, uc.ID, uc.Units[0].ID, ing.ID, "Secret purchase", "Secret ingredients", "Secret weights", "secretgram", "Secret beans", w.shiftA, "777000", "A's secret sale", w.catA.category, w.catA.station, "Secret station", w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
+	w.secrets = []string{w.syncA, et.ID, sc.ID, uc.ID, uc.Units[0].ID, si.ID, "Secret purchase", "Secret stock", "Secret weights", "secretgram", "Secret beans", "secret sack", w.shiftA, "777000", "A's secret sale", w.catA.category, w.catA.station, "Secret station", w.catA.item, w.catA.variant, w.catA.group, w.catA.modifier,
 		"Secret category", "Secret group", "Secret modifier", "Secret blend", "Secret size", "SECRET-SKU", "SECRET-BARCODE", "77777",
 		w.a.tenant.ID.String(), w.a.outlet.ID.String(), w.a.owner.ID.String(), w.staffA, w.deviceIDA, "owner@kopi.test", "Sari of A", "Kasir A", "JKT1"}
 	for _, r := range roles {
@@ -223,47 +224,50 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 				problem(t, http.StatusBadRequest, "validation_failed")
 		},
 
-		"ListTransactionTypes": func(t *testing.T) {
-			w.noLeak(t, "ListTransactionTypes", e.do(t, "GET", "/v1/transaction-types?include_archived=true&limit=200", ub, nil))
+		"ListExpenseTypes": func(t *testing.T) {
+			w.noLeak(t, "ListExpenseTypes", e.do(t, "GET", "/v1/expense-types?include_archived=true&limit=200", ub, nil))
 		},
-		"CreateTransactionType": func(t *testing.T) {
-			w.noLeak(t, "CreateTransactionType", e.do(t, "POST", "/v1/transaction-types", ub, map[string]any{"name": "Plain purchase", "category": "services"}))
+		"CreateExpenseType": func(t *testing.T) {
+			w.noLeak(t, "CreateExpenseType", e.do(t, "POST", "/v1/expense-types", ub, map[string]any{"name": "Plain purchase", "group": "operating"}))
 		},
-		"UpdateTransactionType": func(t *testing.T) {
-			w.gone(t, "UpdateTransactionType", e.do(t, "PATCH", "/v1/transaction-types/"+w.invA.txType, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
+		"UpdateExpenseType": func(t *testing.T) {
+			w.gone(t, "UpdateExpenseType", e.do(t, "PATCH", "/v1/expense-types/"+w.invA.expenseType, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
 		},
-		"ListIngredientCategories": func(t *testing.T) {
-			w.noLeak(t, "ListIngredientCategories", e.do(t, "GET", "/v1/ingredient-categories?include_archived=true&limit=200", ub, nil))
+		"ListStockCategories": func(t *testing.T) {
+			w.noLeak(t, "ListStockCategories", e.do(t, "GET", "/v1/stock-categories?include_archived=true&limit=200", ub, nil))
 		},
-		"CreateIngredientCategory": func(t *testing.T) {
-			w.noLeak(t, "CreateIngredientCategory", e.do(t, "POST", "/v1/ingredient-categories", ub, map[string]any{"name": "Plain ingredients"}))
-			w.gone(t, "CreateIngredientCategory", e.do(t, "POST", "/v1/ingredient-categories", ub, map[string]any{"name": "X", "default_transaction_type_id": w.invA.txType}), http.StatusBadRequest, "validation_failed")
+		"CreateStockCategory": func(t *testing.T) {
+			w.noLeak(t, "CreateStockCategory", e.do(t, "POST", "/v1/stock-categories", ub, map[string]any{"name": "Plain stock"}))
+			w.gone(t, "CreateStockCategory", e.do(t, "POST", "/v1/stock-categories", ub, map[string]any{"name": "XY", "default_expense_type_id": w.invA.expenseType}), http.StatusBadRequest, "validation_failed")
 		},
-		"UpdateIngredientCategory": func(t *testing.T) {
-			w.gone(t, "UpdateIngredientCategory", e.do(t, "PATCH", "/v1/ingredient-categories/"+w.invA.ingCategory, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
+		"UpdateStockCategory": func(t *testing.T) {
+			w.gone(t, "UpdateStockCategory", e.do(t, "PATCH", "/v1/stock-categories/"+w.invA.stockCategory, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
 		},
 		"ListUomCategories": func(t *testing.T) {
 			w.noLeak(t, "ListUomCategories", e.do(t, "GET", "/v1/uom-categories?include_archived=true&limit=200", ub, nil))
 		},
 		"CreateUomCategory": func(t *testing.T) {
-			w.noLeak(t, "CreateUomCategory", e.do(t, "POST", "/v1/uom-categories", ub, map[string]any{"name": "Plain", "units": []map[string]any{{"name": "g", "is_reference": true}}}))
+			// Symbols are unique per business, so B may use A's.
+			w.noLeak(t, "CreateUomCategory", e.do(t, "POST", "/v1/uom-categories", ub, map[string]any{"name": "Plain", "units": []map[string]any{{"name": "plain", "symbol": "sg", "is_reference": true}}}))
 		},
 		"UpdateUomCategory": func(t *testing.T) {
-			w.gone(t, "UpdateUomCategory", e.do(t, "PATCH", "/v1/uom-categories/"+w.invA.uomCategory, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
+			w.gone(t, "UpdateUomCategory", e.do(t, "PATCH", "/v1/uom-categories/"+w.invA.uomCategory, ub, map[string]any{"name": "Mine now"}), http.StatusNotFound, "not_found")
 		},
-		"ListIngredients": func(t *testing.T) {
-			w.noLeak(t, "ListIngredients", e.do(t, "GET", "/v1/ingredients?include_archived=true&limit=200", ub, nil))
-			w.noLeak(t, "ListIngredients", e.do(t, "GET", "/v1/ingredients?category_id="+w.invA.ingCategory, ub, nil))
+		"ListStockItems": func(t *testing.T) {
+			w.noLeak(t, "ListStockItems", e.do(t, "GET", "/v1/stock-items?include_archived=true&limit=200", ub, nil))
+			w.noLeak(t, "ListStockItems", e.do(t, "GET", "/v1/stock-items?category_id="+w.invA.stockCategory, ub, nil))
 		},
-		"CreateIngredient": func(t *testing.T) {
-			// A's unit and A's ingredient category are refused as if they did not exist.
-			w.gone(t, "CreateIngredient", e.do(t, "POST", "/v1/ingredients", ub, map[string]any{"name": "X", "uom_id": w.invA.uom}), http.StatusBadRequest, "validation_failed")
+		"CreateStockItem": func(t *testing.T) {
+			// A's unit and A's stock category are refused as if they did not exist.
+			var sc categoryBody
+			e.create(t, "/v1/stock-categories", ub, map[string]any{"name": "B stock"}, &sc)
+			w.gone(t, "CreateStockItem", e.do(t, "POST", "/v1/stock-items", ub, map[string]any{"name": "XY", "type": "supply", "category_id": sc.ID, "base_uom_id": w.invA.uom}), http.StatusBadRequest, "validation_failed")
 			var uc uomCategoryBody
-			e.create(t, "/v1/uom-categories", ub, map[string]any{"name": "B weights", "units": []map[string]any{{"name": "g", "is_reference": true}}}, &uc)
-			w.gone(t, "CreateIngredient", e.do(t, "POST", "/v1/ingredients", ub, map[string]any{"name": "X", "uom_id": uc.Units[0].ID, "category_id": w.invA.ingCategory}), http.StatusBadRequest, "validation_failed")
+			e.create(t, "/v1/uom-categories", ub, map[string]any{"name": "B weights", "units": []map[string]any{{"name": "bgram", "symbol": "bg", "is_reference": true}}}, &uc)
+			w.gone(t, "CreateStockItem", e.do(t, "POST", "/v1/stock-items", ub, map[string]any{"name": "XY", "type": "supply", "category_id": w.invA.stockCategory, "base_uom_id": uc.Units[0].ID}), http.StatusBadRequest, "validation_failed")
 		},
-		"UpdateIngredient": func(t *testing.T) {
-			w.gone(t, "UpdateIngredient", e.do(t, "PATCH", "/v1/ingredients/"+w.invA.ingredient, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
+		"UpdateStockItem": func(t *testing.T) {
+			w.gone(t, "UpdateStockItem", e.do(t, "PATCH", "/v1/stock-items/"+w.invA.stockItem, ub, map[string]any{"archived": true}), http.StatusNotFound, "not_found")
 		},
 
 		"ListSales": func(t *testing.T) {
@@ -410,7 +414,7 @@ func TestTenantIsolationAcrossEveryOperation(t *testing.T) {
 		t.Errorf("tenant A's record was voided by tenant B (%v, %v)", voided, err)
 	}
 
-	for _, path := range []string{"/v1/ingredients", "/v1/uom-categories", "/v1/ingredient-categories", "/v1/transaction-types"} {
+	for _, path := range []string{"/v1/stock-items", "/v1/uom-categories", "/v1/stock-categories", "/v1/expense-types"} {
 		if r := e.do(t, "GET", path, w.userA, nil); r.Code != http.StatusOK || !strings.Contains(r.Body.String(), "Secret") {
 			t.Errorf("tenant A lost its %s: %d %s", path, r.Code, r.Body.String())
 		}
@@ -451,8 +455,8 @@ func TestIsolationCoversEveryOperation(t *testing.T) {
 		"ListCategories", "ListKitchenStations", "CreateKitchenStation", "UpdateKitchenStation", "ListItems", "ListModifierGroups", "ListOutletVariants", "GetItem", "UpdateItem", "UpdateCategory",
 		"AddVariant", "UpdateVariant", "UpdateModifierGroup", "AddModifier", "UpdateModifier", "SetOutletVariant",
 		"CreateCategory", "CreateModifierGroup", "CreateItem", "ImportCatalog", "PushEvents", "PullChanges", "UpdateOutletSettings", "GetShiftReport", "GetDayReport", "GetSalesReport", "ListAnnouncements", "ListSales", "GetSale",
-		"ListTransactionTypes", "CreateTransactionType", "UpdateTransactionType", "ListIngredientCategories", "CreateIngredientCategory", "UpdateIngredientCategory",
-		"ListUomCategories", "CreateUomCategory", "UpdateUomCategory", "ListIngredients", "CreateIngredient", "UpdateIngredient",
+		"ListExpenseTypes", "CreateExpenseType", "UpdateExpenseType", "ListStockCategories", "CreateStockCategory", "UpdateStockCategory",
+		"ListUomCategories", "CreateUomCategory", "UpdateUomCategory", "ListStockItems", "CreateStockItem", "UpdateStockItem",
 	} {
 		covered[op] = true
 	}

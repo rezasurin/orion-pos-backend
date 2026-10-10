@@ -46,7 +46,7 @@ tags:
   - name: sync
     description: The device's offline-first sync with the server
   - name: inventory
-    description: Units of measure, ingredients and transaction types (Phase 3). Needs the inventory module.
+    description: Units of measure, stock items, stock categories and expense types (Phase 3). Needs the inventory module.
   - name: entitlements
     description: What the business's plan allows
   - name: admin
@@ -1790,13 +1790,13 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
-  /v1/transaction-types:
+  /v1/expense-types:
     get:
-      operationId: listTransactionTypes
+      operationId: listExpenseTypes
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Transaction types, a page at a time
+      summary: Expense types, a page at a time
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
@@ -1807,71 +1807,71 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TransactionTypePage'
+                $ref: '#/components/schemas/ExpenseTypePage'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
     post:
-      operationId: createTransactionType
+      operationId: createExpenseType
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Add a transaction type
+      summary: Add an expense type
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/NewTransactionType'
+              $ref: '#/components/schemas/NewExpenseType'
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TransactionType'
+                $ref: '#/components/schemas/ExpenseType'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
 
-  /v1/transaction-types/{transactionTypeId}:
+  /v1/expense-types/{expenseTypeId}:
     patch:
-      operationId: updateTransactionType
+      operationId: updateExpenseType
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Change, archive or restore a transaction type
+      summary: Change, archive or restore an expense type
       description: |
         Fields left out stay as they are; a blank `description` clears it. Archived, never deleted.
       parameters:
-        - $ref: '#/components/parameters/TransactionTypeId'
+        - $ref: '#/components/parameters/ExpenseTypeId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/TransactionTypeUpdate'
+              $ref: '#/components/schemas/ExpenseTypeUpdate'
       responses:
         '200':
           description: The updated entry
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TransactionType'
+                $ref: '#/components/schemas/ExpenseType'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
 
-  /v1/ingredient-categories:
+  /v1/stock-categories:
     get:
-      operationId: listIngredientCategories
+      operationId: listStockCategories
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Ingredient categories, a page at a time
+      summary: Stock categories, a page at a time
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
@@ -1882,58 +1882,60 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IngredientCategoryPage'
+                $ref: '#/components/schemas/StockCategoryPage'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
     post:
-      operationId: createIngredientCategory
+      operationId: createStockCategory
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Add an ingredient category
+      summary: Add a stock category
+      description: |
+        A `default_expense_type_id` must be an expense type that is not archived (BR-CAT-02, BR-GEN-06).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/NewIngredientCategory'
+              $ref: '#/components/schemas/NewStockCategory'
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IngredientCategory'
+                $ref: '#/components/schemas/StockCategory'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
 
-  /v1/ingredient-categories/{ingredientCategoryId}:
+  /v1/stock-categories/{stockCategoryId}:
     patch:
-      operationId: updateIngredientCategory
+      operationId: updateStockCategory
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Change, archive or restore an ingredient category
+      summary: Change, archive or restore a stock category
       description: |
-        Fields left out stay as they are; a blank `description` clears it and `clear_default_transaction_type` removes the default. Archived, never deleted.
+        Fields left out stay as they are; a blank `description` clears it and `clear_default_expense_type` removes the default. Archived, never deleted; its items stay in it.
       parameters:
-        - $ref: '#/components/parameters/IngredientCategoryId'
+        - $ref: '#/components/parameters/StockCategoryId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/IngredientCategoryUpdate'
+              $ref: '#/components/schemas/StockCategoryUpdate'
       responses:
         '200':
           description: The updated entry
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IngredientCategory'
+                $ref: '#/components/schemas/StockCategory'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -1968,7 +1970,7 @@ paths:
       x-module: module.inventory
       summary: Add a unit category with its units
       description: |
-        Exactly one unit is the reference (`is_reference`, ratio 1/1); quantities of ingredients in this category are stored in thousandths of it (ADR 0009). Ratios are reduced.
+        Exactly one unit is the reference (`is_reference`, ratio 1/1); quantities of items based on it are stored in thousandths of it (ADR 0009). Ratios are reduced. Every business starts with the standard categories (`is_standard`).
       requestBody:
         required: true
         content:
@@ -1995,7 +1997,7 @@ paths:
       x-module: module.inventory
       summary: Change, archive or restore a unit category with its units
       description: |
-        Fields left out stay as they are. `units` with an `id` are replaced by what is sent, units without one are added, units left out stay; a unit is deactivated, never deleted. The reference unit keeps 1/1 and stays active.
+        Fields left out stay as they are. `units` with an `id` are replaced by what is sent, units without one are added, units left out stay; a unit is deactivated, never deleted. The reference keeps 1/1 and stays active; a standard unit keeps its symbol and ratio and stays active; a unit an item uses keeps its ratio (`409`). A standard category is never archived.
       parameters:
         - $ref: '#/components/parameters/UomCategoryId'
       requestBody:
@@ -2017,81 +2019,85 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
 
-  /v1/ingredients:
+  /v1/stock-items:
     get:
-      operationId: listIngredients
+      operationId: listStockItems
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Ingredients, a page at a time
+      summary: Stock items with their packs, a page at a time
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/IncludeArchived'
         - name: category_id
           in: query
-          description: Only ingredients in this ingredient category.
+          description: Only items in this stock category.
           schema: {type: string, format: uuid}
+        - name: type
+          in: query
+          description: Only items of this type.
+          schema: {$ref: '#/components/schemas/StockItemType'}
       responses:
         '200':
           description: A page ordered by id
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/IngredientPage'
+                $ref: '#/components/schemas/StockItemPage'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
     post:
-      operationId: createIngredient
+      operationId: createStockItem
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Add an ingredient
+      summary: Add a stock item with its packs
       description: |
-        `uom_id` must be an active unit in a unit category that is not archived. The ingredient is stocked in that category's reference unit.
+        `base_uom_id` is an active reference unit; `recipe_uom_id`, if given, an active unit in the same category; the category must not be archived. `min_stock_scaled` needs `track` and must be on the base unit's step.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/NewIngredient'
+              $ref: '#/components/schemas/NewStockItem'
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Ingredient'
+                $ref: '#/components/schemas/StockItem'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '409': {$ref: '#/components/responses/Conflict'}
 
-  /v1/ingredients/{ingredientId}:
+  /v1/stock-items/{stockItemId}:
     patch:
-      operationId: updateIngredient
+      operationId: updateStockItem
       tags: [inventory]
       x-permission: inventory.manage
       x-module: module.inventory
-      summary: Change, archive or restore an ingredient
+      summary: Change, archive or restore a stock item with its packs
       description: |
-        Fields left out stay as they are; a blank `description` clears it and `clear_category` removes the category. Archived, never deleted.
+        Fields left out stay as they are; a blank `description`, `min_stock_scaled: 0` and `shelf_life_days: 0` clear those, `clear_recipe_uom` goes back to the base unit, and turning `track` off clears the minimum stock. `packs` with an `id` are replaced by what is sent (the ratio must stay the same), packs without one are added, packs left out stay. The base unit cannot change while the item has packs (`409`). Archived, never deleted.
       parameters:
-        - $ref: '#/components/parameters/IngredientId'
+        - $ref: '#/components/parameters/StockItemId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/IngredientUpdate'
+              $ref: '#/components/schemas/StockItemUpdate'
       responses:
         '200':
           description: The updated entry
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Ingredient'
+                $ref: '#/components/schemas/StockItem'
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
@@ -2164,13 +2170,13 @@ components:
       in: path
       required: true
       schema: {type: string, format: uuid}
-    TransactionTypeId:
-      name: transactionTypeId
+    ExpenseTypeId:
+      name: expenseTypeId
       in: path
       required: true
       schema: {type: string, format: uuid}
-    IngredientCategoryId:
-      name: ingredientCategoryId
+    StockCategoryId:
+      name: stockCategoryId
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -2179,8 +2185,8 @@ components:
       in: path
       required: true
       schema: {type: string, format: uuid}
-    IngredientId:
-      name: ingredientId
+    StockItemId:
+      name: stockItemId
       in: path
       required: true
       schema: {type: string, format: uuid}
@@ -2772,98 +2778,106 @@ components:
         sort_order: {type: integer}
         archived: {type: boolean, description: true archives, false restores.}
 
-    TransactionType:
+    ExpenseGroup:
+      type: string
+      enum: [cost_of_goods, operating, maintenance, marketing_event, capital]
+      description: BR-EXP-02. A classification only; paid, on credit or debt payment is a field of the payment.
+
+    ExpenseType:
       type: object
-      required: [id, name, category, created_at]
+      required: [id, name, group, created_at]
       properties:
         id: {type: string, format: uuid}
-        name: {type: string, maxLength: 60}
-        category: {type: string, enum: [materials, services, debt_payment], description: 'Raw and supporting materials, services and maintenance, or paying off purchases made on credit.'}
+        name: {type: string, minLength: 2, maxLength: 100}
+        group: {$ref: '#/components/schemas/ExpenseGroup'}
         description: {type: string, nullable: true, maxLength: 500}
         archived_at: {type: string, format: date-time, nullable: true}
         created_at: {type: string, format: date-time}
 
-    TransactionTypePage:
+    ExpenseTypePage:
       type: object
       required: [items]
       properties:
         items:
           type: array
-          items: {$ref: '#/components/schemas/TransactionType'}
+          items: {$ref: '#/components/schemas/ExpenseType'}
         next_cursor: {type: string, format: uuid}
 
-    NewTransactionType:
+    NewExpenseType:
       type: object
-      required: [name, category]
+      required: [name, group]
       properties:
-        name: {type: string, maxLength: 60}
-        category: {type: string, enum: [materials, services, debt_payment], description: 'Raw and supporting materials, services and maintenance, or paying off purchases made on credit.'}
+        name: {type: string, minLength: 2, maxLength: 100}
+        group: {$ref: '#/components/schemas/ExpenseGroup'}
         description: {type: string, maxLength: 500}
 
-    TransactionTypeUpdate:
+    ExpenseTypeUpdate:
       type: object
       properties:
-        name: {type: string, maxLength: 60}
-        category: {type: string, enum: [materials, services, debt_payment], description: 'Raw and supporting materials, services and maintenance, or paying off purchases made on credit.'}
+        name: {type: string, minLength: 2, maxLength: 100}
+        group: {$ref: '#/components/schemas/ExpenseGroup'}
         description: {type: string, maxLength: 500}
         archived: {type: boolean, description: true archives, false restores.}
 
-    IngredientCategory:
+    StockCategory:
       type: object
       required: [id, name, created_at]
       properties:
         id: {type: string, format: uuid}
-        name: {type: string, maxLength: 60}
-        default_transaction_type_id: {type: string, format: uuid, nullable: true}
+        name: {type: string, minLength: 2, maxLength: 100}
+        default_expense_type_id: {type: string, format: uuid, nullable: true}
         description: {type: string, nullable: true, maxLength: 500}
         archived_at: {type: string, format: date-time, nullable: true}
         created_at: {type: string, format: date-time}
 
-    IngredientCategoryPage:
+    StockCategoryPage:
       type: object
       required: [items]
       properties:
         items:
           type: array
-          items: {$ref: '#/components/schemas/IngredientCategory'}
+          items: {$ref: '#/components/schemas/StockCategory'}
         next_cursor: {type: string, format: uuid}
 
-    NewIngredientCategory:
+    NewStockCategory:
       type: object
       required: [name]
       properties:
-        name: {type: string, maxLength: 60}
-        default_transaction_type_id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 100}
+        default_expense_type_id: {type: string, format: uuid}
         description: {type: string, maxLength: 500}
 
-    IngredientCategoryUpdate:
+    StockCategoryUpdate:
       type: object
       properties:
-        name: {type: string, maxLength: 60}
-        default_transaction_type_id: {type: string, format: uuid}
-        clear_default_transaction_type: {type: boolean}
+        name: {type: string, minLength: 2, maxLength: 100}
+        default_expense_type_id: {type: string, format: uuid}
+        clear_default_expense_type: {type: boolean}
         description: {type: string, maxLength: 500}
         archived: {type: boolean, description: true archives, false restores.}
 
     Uom:
       type: object
-      required: [id, name, is_reference, ratio_num, ratio_den, rounding_scaled, active]
+      required: [id, name, symbol, is_reference, is_standard, ratio_num, ratio_den, rounding_scaled, active]
       properties:
         id: {type: string, format: uuid}
-        name: {type: string, maxLength: 30}
+        name: {type: string, minLength: 2, maxLength: 60}
+        symbol: {type: string, minLength: 1, maxLength: 10, description: Unique in the business.}
         is_reference: {type: boolean}
+        is_standard: {type: boolean, description: One of the seeded units; its symbol and ratio are fixed.}
         ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000, description: One of this unit is ratio_num / ratio_den reference units (reduced).}
         ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000}
-        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, description: Display and entry precision in thousandths of this unit (10 is 0.01).}
+        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, description: The step a person may enter, in thousandths of this unit (10 is 0.01).}
         active: {type: boolean}
 
     UnitInput:
       type: object
-      required: [name]
+      required: [name, symbol]
       description: A unit's whole state. Without `id` it is a new unit.
       properties:
         id: {type: string, format: uuid}
-        name: {type: string, maxLength: 30}
+        name: {type: string, minLength: 2, maxLength: 60}
+        symbol: {type: string, minLength: 1, maxLength: 10}
         is_reference: {type: boolean, default: false, description: Only when creating the category.}
         ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 1}
         ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 1}
@@ -2872,10 +2886,11 @@ components:
 
     UomCategory:
       type: object
-      required: [id, name, units, created_at]
+      required: [id, name, is_standard, units, created_at]
       properties:
         id: {type: string, format: uuid}
-        name: {type: string, maxLength: 60}
+        name: {type: string, minLength: 2, maxLength: 100}
+        is_standard: {type: boolean, description: Weight, volume or count as seeded; never archived.}
         units:
           type: array
           description: The reference first, then from small to large.
@@ -2896,7 +2911,7 @@ components:
       type: object
       required: [name, units]
       properties:
-        name: {type: string, maxLength: 60}
+        name: {type: string, minLength: 2, maxLength: 100}
         units:
           type: array
           minItems: 1
@@ -2906,55 +2921,107 @@ components:
     UomCategoryUpdate:
       type: object
       properties:
-        name: {type: string, maxLength: 60}
+        name: {type: string, minLength: 2, maxLength: 100}
         archived: {type: boolean, description: true archives, false restores.}
         units:
           type: array
           maxItems: 50
           items: {$ref: '#/components/schemas/UnitInput'}
 
-    Ingredient:
+    StockItemType:
+      type: string
+      enum: [ingredient, supporting, prepared, finished, supply]
+      description: BR-ITM-01. Bahan baku, bahan penolong, setengah jadi, barang jadi, perlengkapan.
+
+    Pack:
       type: object
-      required: [id, name, uom_id, track, created_at]
+      required: [id, name, ratio_num, ratio_den, rounding_scaled, active]
       properties:
         id: {type: string, format: uuid}
-        name: {type: string, maxLength: 120}
-        category_id: {type: string, format: uuid, nullable: true}
-        uom_id: {type: string, format: uuid, description: The unit it is shown and entered in.}
-        track: {type: boolean, description: Whether stock is tracked for it.}
+        name: {type: string, minLength: 2, maxLength: 60}
+        ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000, description: One pack is ratio_num / ratio_den of the item's base unit (reduced). Never changes.}
+        ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000}
+        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, description: The step, in thousandths of a pack.}
+        active: {type: boolean}
+
+    PackInput:
+      type: object
+      required: [name, ratio_num]
+      description: A pack's whole state. Without `id` it is a new pack; with one, the ratio must be unchanged.
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 60}
+        ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000}
+        ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 1}
+        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, default: 1000}
+        active: {type: boolean, default: true}
+
+    StockItem:
+      type: object
+      required: [id, name, type, category_id, base_uom_id, track, packs, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 100}
+        type: {$ref: '#/components/schemas/StockItemType'}
+        category_id: {type: string, format: uuid}
+        base_uom_id: {type: string, format: uuid, description: A reference unit; quantities are stored in thousandths of it.}
+        recipe_uom_id: {type: string, format: uuid, nullable: true, description: Null means recipes use the base unit.}
+        track: {type: boolean, description: Whether stock is tracked (BR-ITM-03).}
+        min_stock_scaled: {type: integer, format: int64, nullable: true, description: Reorder level in thousandths of the base unit (BR-ITM-04).}
+        shelf_life_days: {type: integer, nullable: true, description: BR-ITM-05.}
         description: {type: string, nullable: true, maxLength: 500}
+        packs:
+          type: array
+          description: From small to large.
+          items: {$ref: '#/components/schemas/Pack'}
         archived_at: {type: string, format: date-time, nullable: true}
         created_at: {type: string, format: date-time}
 
-    IngredientPage:
+    StockItemPage:
       type: object
       required: [items]
       properties:
         items:
           type: array
-          items: {$ref: '#/components/schemas/Ingredient'}
+          items: {$ref: '#/components/schemas/StockItem'}
         next_cursor: {type: string, format: uuid}
 
-    NewIngredient:
+    NewStockItem:
       type: object
-      required: [name, uom_id]
+      required: [name, type, category_id, base_uom_id]
       properties:
-        name: {type: string, maxLength: 120}
+        name: {type: string, minLength: 2, maxLength: 100}
+        type: {$ref: '#/components/schemas/StockItemType'}
         category_id: {type: string, format: uuid}
-        uom_id: {type: string, format: uuid}
+        base_uom_id: {type: string, format: uuid}
+        recipe_uom_id: {type: string, format: uuid}
         track: {type: boolean, default: true}
+        min_stock_scaled: {type: integer, format: int64, minimum: 0, maximum: 1000000000000000}
+        shelf_life_days: {type: integer, minimum: 0, maximum: 3650}
         description: {type: string, maxLength: 500}
+        packs:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/PackInput'}
 
-    IngredientUpdate:
+    StockItemUpdate:
       type: object
       properties:
-        name: {type: string, maxLength: 120}
+        name: {type: string, minLength: 2, maxLength: 100}
+        type: {$ref: '#/components/schemas/StockItemType'}
         category_id: {type: string, format: uuid}
-        clear_category: {type: boolean}
-        uom_id: {type: string, format: uuid}
+        base_uom_id: {type: string, format: uuid}
+        recipe_uom_id: {type: string, format: uuid}
+        clear_recipe_uom: {type: boolean}
         track: {type: boolean}
+        min_stock_scaled: {type: integer, format: int64, minimum: 0, maximum: 1000000000000000, description: 0 clears it.}
+        shelf_life_days: {type: integer, minimum: 0, maximum: 3650, description: 0 clears it.}
         description: {type: string, maxLength: 500}
         archived: {type: boolean, description: true archives, false restores.}
+        packs:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/PackInput'}
 
     Variant:
       type: object
