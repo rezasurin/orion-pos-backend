@@ -131,3 +131,78 @@ WHERE tenant_id = @tenant_id AND stock_item_id = @stock_item_id AND id = @id;
 
 -- name: ListPacksByItems :many
 SELECT * FROM stock_item_pack WHERE tenant_id = @tenant_id AND stock_item_id = ANY(@item_ids::uuid[]) ORDER BY stock_item_id, ratio_num::numeric / ratio_den, id;
+
+-- name: ItemHasMovements :one
+SELECT EXISTS (SELECT 1 FROM stock_balance WHERE tenant_id = @tenant_id AND stock_item_id = @stock_item_id AND seq > 0);
+
+-- name: ItemHasStock :one
+SELECT EXISTS (SELECT 1 FROM stock_balance WHERE tenant_id = @tenant_id AND stock_item_id = @stock_item_id AND quantity_scaled <> 0);
+
+-- The stock ledger
+
+-- name: ItemsForPosting :many
+SELECT id, track, archived_at FROM stock_item WHERE tenant_id = @tenant_id AND id = ANY(@ids::uuid[]);
+
+-- name: MovementsToReverse :many
+SELECT * FROM stock_movement WHERE tenant_id = @tenant_id AND id = ANY(@ids::uuid[]);
+
+-- name: LockBalance :one
+-- Creates the balance on the first movement, and locks it either way: movements of one item at one
+-- outlet are posted one after another.
+INSERT INTO stock_balance (tenant_id, outlet_id, stock_item_id, quantity_scaled, value, seq)
+VALUES (@tenant_id, @outlet_id, @stock_item_id, 0, 0, 0)
+ON CONFLICT (tenant_id, outlet_id, stock_item_id) DO UPDATE SET seq = stock_balance.seq
+RETURNING *;
+
+-- name: InsertMovement :one
+INSERT INTO stock_movement (id, tenant_id, outlet_id, stock_item_id, seq, kind, quantity_scaled, value, reason, note, staff_id,
+                            source_type, source_id, reverses_id, occurred_at, business_date)
+VALUES (@id, @tenant_id, @outlet_id, @stock_item_id, @seq, @kind, @quantity_scaled, @value, sqlc.narg(reason), sqlc.narg(note), @staff_id,
+        sqlc.narg(source_type), sqlc.narg(source_id), sqlc.narg(reverses_id), @occurred_at, @business_date)
+RETURNING *;
+
+-- name: UpdateBalance :exec
+UPDATE stock_balance
+SET quantity_scaled = @quantity_scaled, value = @value, cost_quantity = sqlc.narg(cost_quantity), cost_value = sqlc.narg(cost_value), seq = @seq, updated_at = now()
+WHERE tenant_id = @tenant_id AND outlet_id = @outlet_id AND stock_item_id = @stock_item_id;
+
+-- name: BalanceDrift :many
+-- Balances that differ from the ledger, for one business or (with a null tenant, as the platform
+-- role) all of them. The ledger's totals are its sums in posting order; the last known average is
+-- the running totals at the last movement that left the quantity above 0.
+WITH running AS (
+    SELECT tenant_id, outlet_id, stock_item_id, seq,
+           sum(quantity_scaled) OVER w AS run_quantity, sum(value) OVER w AS run_value
+    FROM stock_movement
+    WHERE sqlc.narg(tenant_id)::uuid IS NULL OR tenant_id = sqlc.narg(tenant_id)
+    WINDOW w AS (PARTITION BY tenant_id, outlet_id, stock_item_id ORDER BY seq)
+), ledger AS (
+    SELECT tenant_id, outlet_id, stock_item_id, count(*)::bigint AS movements, max(seq)::bigint AS seq,
+           (array_agg(run_quantity ORDER BY seq DESC))[1]::bigint AS quantity_scaled,
+           (array_agg(run_value ORDER BY seq DESC))[1]::bigint AS value,
+           ((array_agg(run_quantity ORDER BY seq DESC) FILTER (WHERE run_quantity > 0))[1])::bigint AS cost_quantity,
+           ((array_agg(run_value ORDER BY seq DESC) FILTER (WHERE run_quantity > 0))[1])::bigint AS cost_value
+    FROM running GROUP BY tenant_id, outlet_id, stock_item_id
+), stored AS (
+    SELECT * FROM stock_balance WHERE sqlc.narg(tenant_id)::uuid IS NULL OR tenant_id = sqlc.narg(tenant_id)
+)
+SELECT coalesce(l.tenant_id, b.tenant_id)::uuid AS tenant_id, coalesce(l.outlet_id, b.outlet_id)::uuid AS outlet_id,
+       coalesce(l.stock_item_id, b.stock_item_id)::uuid AS stock_item_id,
+       coalesce(l.movements, 0)::bigint AS movements, coalesce(l.seq, 0)::bigint AS ledger_seq,
+       coalesce(l.quantity_scaled, 0)::bigint AS ledger_quantity, coalesce(l.value, 0)::bigint AS ledger_value,
+       l.cost_quantity AS ledger_cost_quantity, l.cost_value AS ledger_cost_value,
+       b.seq AS stored_seq, b.quantity_scaled AS stored_quantity, b.value AS stored_value
+FROM ledger l FULL JOIN stored b USING (tenant_id, outlet_id, stock_item_id)
+WHERE b.tenant_id IS NULL
+   OR l.movements IS DISTINCT FROM l.seq
+   OR coalesce(l.seq, 0) <> b.seq OR coalesce(l.quantity_scaled, 0) <> b.quantity_scaled OR coalesce(l.value, 0) <> b.value
+   OR l.cost_quantity IS DISTINCT FROM b.cost_quantity OR l.cost_value IS DISTINCT FROM b.cost_value
+ORDER BY 1, 2, 3;
+
+-- name: RepairBalance :exec
+-- Sets a balance to what the ledger says (BR-STK-08). The ledger itself is never changed.
+INSERT INTO stock_balance (tenant_id, outlet_id, stock_item_id, quantity_scaled, value, cost_quantity, cost_value, seq)
+VALUES (@tenant_id, @outlet_id, @stock_item_id, @quantity_scaled, @value, sqlc.narg(cost_quantity), sqlc.narg(cost_value), @seq)
+ON CONFLICT (tenant_id, outlet_id, stock_item_id) DO UPDATE
+SET quantity_scaled = excluded.quantity_scaled, value = excluded.value, cost_quantity = excluded.cost_quantity,
+    cost_value = excluded.cost_value, seq = excluded.seq, updated_at = now();

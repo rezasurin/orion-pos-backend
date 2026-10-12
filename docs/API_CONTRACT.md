@@ -346,8 +346,13 @@ frees a name. A blank `description` clears it.
   ratio forever (BR-UOM-07); in a `PATCH`, a pack with an `id` is replaced by what you send with its
   ratio unchanged (`400` otherwise), packs without one are added, packs left out stay. Packs come
   back from small to large.
-- The base unit cannot change while the item has packs, which are measured in it (`409`). From the
-  stock ledger (B3.3) on it will not change once the item has any movement either (BR-ITM-07).
+- The base unit cannot change while the item has packs, which are measured in it, or once the item
+  has any stock movement (BR-ITM-07): both answer `409 conflict`.
+- An item with stock on hand (above or below 0 at any outlet) cannot be archived (BR-ITM-08):
+  `409 conflict`. Move or write off the stock first.
+- Stock itself (balances, movements, the documents that post them) has no endpoints yet; they come
+  with B3.5 to B3.8. When they do, quantities are in thousandths of the base unit and every value is
+  whole rupiah at **weighted average cost** (BR-CST).
 
 ## 4. The POS: startup, then the sync loop
 

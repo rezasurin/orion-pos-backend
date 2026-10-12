@@ -1422,12 +1422,59 @@ reference per category, no change log.
 - **Lists**: items come with their packs, unit categories with their units, two queries each
   whatever the page size (tested at 1 and 30). `?type=` is checked in the service, since the
   generated server does not validate query enums.
-- **For B3.3**: refuse a base unit change once the item has movements (BR-ITM-07; `ponytail:` in
-  `UpdateStockItem`), count movements as "used" for BR-UOM-07, refuse archiving an item with stock
-  (BR-ITM-08), and add the conversion function with the first quantity entry.
+- **Done in B3.3** (6.6.4): the base unit is fixed once an item has movements (BR-ITM-07) and an item
+  with stock is not archived (BR-ITM-08). Still to come: the conversion function, with the first
+  quantity entry (B3.5).
 - Not built: SKU, barcode, storage place and photo on an item (optional in BR-ITM-02), a default
   purchase pack per supplier (needs suppliers, B3.5), and the audit trail of BR-GEN-07 for setup
   changes.
+
+#### 6.6.4 The stock ledger as built (B3.3)
+
+- **Migration 00023**: `stock_movement` (append-only for every role: the app may only insert, the
+  platform role only read) and `stock_balance`, both under row-level security. A movement carries the
+  item, outlet, signed quantity in base thousandths, `value` in rupiah, kind (BR-STK-02), reason and
+  note, the staff member, the source document, `reverses_id`, the effective time and business date
+  (BR-STK-03). `CHECK`s hold each kind's direction, the value's sign, and that a reversal names its
+  movement; a unique index lets a movement be reversed once.
+- **Posting** is `inventory.Service.Post(ctx, tx, tenant, lines)`, inside the caller's transaction
+  so a document and its movements commit together. No endpoint posts yet: B3.4 to B3.7 add the
+  documents. Per line it locks (or creates) the balance with one upsert, values the line, inserts it
+  with the next `seq`, and updates the balance; lines are locked in item order, and a test runs 40
+  concurrent two-item postings in opposite orders without a deadlock or a lost movement.
+- **Cost** (BR-CST-01 to 04): weighted average per item and outlet. Stock in adds the cost given (or
+  the average when none is given); stock out removes `round(quantity × value ÷ quantity)`, half away
+  from zero, in exact integer arithmetic. The balance keeps `cost_quantity` and `cost_value`, the totals
+  the last time the quantity was above 0, which value consumption while it is not; with no cost ever
+  known, consumption is valued at 0. A reversal mirrors its movement's quantity and value exactly
+  rather than being revalued.
+- **Posting order is stored.** The average depends on order, so each movement takes `seq`, the next
+  number for its item and outlet, while the balance is locked. A rebuild replays that order, not the
+  effective dates: a back-dated movement is valued when it is posted (BR-CST-04's "not revalued").
+- **Refusals**: manual removals that would take a balance below 0 (`inventory.ErrInsufficientStock`;
+  sales and opname adjustments may go below, BR-STK-04); a date more than 5 minutes ahead of the
+  server, except sale consumption, which is dated by the tablet (BR-STK-05); untracked items (BR-ITM-03:
+  callers skip them); archived items, except sale consumption and reversals (BR-GEN-06); a value on
+  stock out; a reversal of a reversal. A refused line refuses the whole posting.
+- **Rebuild and check** (BR-STK-08): one SQL query recomputes every balance from the ledger with
+  running sums in `seq` order, including the last known average, and lists those that differ (a
+  missing row and a gap in `seq` too). `orion worker` runs it daily across businesses as the platform
+  role (`inventory.CheckJobs`), logs each difference at error level and emails
+  `ORION_ALERT_OPERATOR_EMAIL`; it repairs nothing. `orion admin rebuild-stock --tenant --reason
+  [--fix]` (`platform.Service.RebuildStock`) lists them and, with `--fix`, sets them from the ledger,
+  audited as `stock.checked` / `stock.rebuilt`. Runbook: `docs/runbooks/pilot.md` section 4. A property
+  test posts 300 random receipts, sales, opname adjustments and reversals over three items and
+  requires no drift.
+- **Item rules from B3.2b, closed**: the base unit is fixed once an item has a movement (BR-ITM-07),
+  and an item with a non-zero balance is not archived (BR-ITM-08), both `409`. BR-UOM-07 needs
+  nothing more here: movements are in the base unit, a reference unit whose ratio never changes;
+  documents (B3.5 on) that record the unit typed must count as "using" it.
+- **Business date** is computed by the caller and passed in: inventory cannot import tenancy, which
+  imports inventory to seed units. Documents (B3.5 on) get an outlet's business date through a
+  function given to `inventory.Service` at wiring.
+- Not built: closed periods (BR-STK-06) and back-dating permissions (BR-STK-05: any past date is
+  accepted), the "negative stock" list, and endpoints (B3.8). The plan's `opname_adjustment` posting
+  "the balance at the count time" waits for B3.6.
 
 ### 6.7 Restaurant flow (Phase 4)
 
@@ -1491,7 +1538,7 @@ Paths under `/v1` are tenant-side (user or device tokens). Paths under `/admin` 
 | `reconcile_payment_intents` | 2 | every minute for pending intents |
 | `reconcile_gateway_settlement` | 2 | daily |
 | `tenant_daily_metrics` | 2 | nightly at 01:00 WIB and on worker start; recomputes the last 7 days (4.11.2) |
-| `stock_balance_check` | 3 | nightly sample; full rebuild on demand |
+| `stock_balance_check` | 3 | daily, every balance (6.6.4); repair on demand with `orion admin rebuild-stock --fix` |
 | `billing_start_notices` | 5 | notice schedule before the global/tenant billing date |
 | `billing_start_transition` | 5 | on the date: early_access -> trial/paid, applying stored promo redemptions |
 | `trial_reminders`, `issue_invoices`, `dunning`, `grace_to_read_only` | 5 | daily |
@@ -1574,7 +1621,7 @@ the operator can see them in the console, all without the developer touching the
 | B3.1 | ✅ Write an ADR for the scaled-integer quantity unit (x1000 base unit) and integer UoM ratios (ADR 0009, see 6.6.1) | 0.5d |
 | B3.2 | ✅ UoM categories and units, ingredients and categories, transaction types (port of the existing Setup pages' data; see 6.6.2) | 4d |
 | B3.2b | ✅ Bring setup in line with `BUSINESS_RULES.md` (found after B3.2): item `type` (BR-ITM-01), category required and name 2 to 100 characters (BR-ITM-02), minimum stock (BR-ITM-04) and shelf life (BR-ITM-05); packaging per item with a purchase pack and a recipe unit (BR-UOM-04, 05); unit symbols unique (BR-UOM-02) and standard units seeded and undeletable (BR-UOM-03); a unit used by an item keeps its ratio (BR-UOM-07); contract 3.7 updated with them (see 6.6.3) | 3d |
-| B3.3 | Ledger + materialized balance + rebuild command and nightly check | 4d |
+| B3.3 | ✅ Ledger + materialized balance + rebuild command and nightly check (see 6.6.4) | 4d |
 | B3.4 | Recipes (versioned) on variants and modifiers; sale consumption and void reversal in the sale projector | 4d |
 | B3.5 | Purchasing / receiving with cost | 3d |
 | B3.6 | Stock opname: draft, count, post; adjustments | 3d |

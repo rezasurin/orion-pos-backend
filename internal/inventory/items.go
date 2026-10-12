@@ -171,10 +171,11 @@ func (s *Service) ListStockItems(ctx context.Context, tenantID uuid.UUID, page k
 	return out, err
 }
 
-// UpdateStockItem applies changes to one stock item and its packs.
+// UpdateStockItem applies changes to one stock item and its packs. The base unit is fixed once the
+// item has packs or movements (BR-ITM-07), and an item with stock on hand is not archived
+// (BR-ITM-08).
 //
-// ponytail: the base unit may change while the item has no packs, since nothing is stored in it
-// yet. B3.3 must also refuse it once the item has a ledger row or a recipe line (BR-ITM-07).
+// ponytail: recipe lines (B3.4) must fix the base unit too.
 func (s *Service) UpdateStockItem(ctx context.Context, tenantID, id uuid.UUID, in UpdateStockItem) (StockItem, error) {
 	if in.Type != nil {
 		if err := validType(*in.Type); err != nil {
@@ -233,7 +234,23 @@ func (s *Service) UpdateStockItem(ctx context.Context, tenantID, id uuid.UUID, i
 			if len(packs) > 0 {
 				return fmt.Errorf("%w: the base unit cannot change while the item has packs, which are measured in it", kernel.ErrConflict)
 			}
+			moved, err := q.ItemHasMovements(ctx, db.ItemHasMovementsParams{TenantID: tenantID, StockItemID: id})
+			if err != nil {
+				return err
+			}
+			if moved {
+				return fmt.Errorf("%w: the base unit cannot change once the item has stock movements (BR-ITM-07)", kernel.ErrConflict)
+			}
 			p.BaseUomID = *in.BaseUomID
+		}
+		if cur.ArchivedAt == nil && p.ArchivedAt != nil {
+			stocked, err := q.ItemHasStock(ctx, db.ItemHasStockParams{TenantID: tenantID, StockItemID: id})
+			if err != nil {
+				return err
+			}
+			if stocked {
+				return fmt.Errorf("%w: an item with stock on hand is not archived; move or write off the stock first (BR-ITM-08)", kernel.ErrConflict)
+			}
 		}
 		// Only what changed is checked, so an item may keep a category or unit archived after it
 		// was given; the base and recipe units are checked together because they must agree.

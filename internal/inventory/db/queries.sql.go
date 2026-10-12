@@ -10,7 +10,90 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const balanceDrift = `-- name: BalanceDrift :many
+WITH running AS (
+    SELECT tenant_id, outlet_id, stock_item_id, seq,
+           sum(quantity_scaled) OVER w AS run_quantity, sum(value) OVER w AS run_value
+    FROM stock_movement
+    WHERE $1::uuid IS NULL OR tenant_id = $1
+    WINDOW w AS (PARTITION BY tenant_id, outlet_id, stock_item_id ORDER BY seq)
+), ledger AS (
+    SELECT tenant_id, outlet_id, stock_item_id, count(*)::bigint AS movements, max(seq)::bigint AS seq,
+           (array_agg(run_quantity ORDER BY seq DESC))[1]::bigint AS quantity_scaled,
+           (array_agg(run_value ORDER BY seq DESC))[1]::bigint AS value,
+           ((array_agg(run_quantity ORDER BY seq DESC) FILTER (WHERE run_quantity > 0))[1])::bigint AS cost_quantity,
+           ((array_agg(run_value ORDER BY seq DESC) FILTER (WHERE run_quantity > 0))[1])::bigint AS cost_value
+    FROM running GROUP BY tenant_id, outlet_id, stock_item_id
+), stored AS (
+    SELECT tenant_id, outlet_id, stock_item_id, quantity_scaled, value, cost_quantity, cost_value, seq, updated_at FROM stock_balance WHERE $1::uuid IS NULL OR tenant_id = $1
+)
+SELECT coalesce(l.tenant_id, b.tenant_id)::uuid AS tenant_id, coalesce(l.outlet_id, b.outlet_id)::uuid AS outlet_id,
+       coalesce(l.stock_item_id, b.stock_item_id)::uuid AS stock_item_id,
+       coalesce(l.movements, 0)::bigint AS movements, coalesce(l.seq, 0)::bigint AS ledger_seq,
+       coalesce(l.quantity_scaled, 0)::bigint AS ledger_quantity, coalesce(l.value, 0)::bigint AS ledger_value,
+       l.cost_quantity AS ledger_cost_quantity, l.cost_value AS ledger_cost_value,
+       b.seq AS stored_seq, b.quantity_scaled AS stored_quantity, b.value AS stored_value
+FROM ledger l FULL JOIN stored b USING (tenant_id, outlet_id, stock_item_id)
+WHERE b.tenant_id IS NULL
+   OR l.movements IS DISTINCT FROM l.seq
+   OR coalesce(l.seq, 0) <> b.seq OR coalesce(l.quantity_scaled, 0) <> b.quantity_scaled OR coalesce(l.value, 0) <> b.value
+   OR l.cost_quantity IS DISTINCT FROM b.cost_quantity OR l.cost_value IS DISTINCT FROM b.cost_value
+ORDER BY 1, 2, 3
+`
+
+type BalanceDriftRow struct {
+	TenantID           uuid.UUID
+	OutletID           uuid.UUID
+	StockItemID        uuid.UUID
+	Movements          int64
+	LedgerSeq          int64
+	LedgerQuantity     int64
+	LedgerValue        int64
+	LedgerCostQuantity *int64
+	LedgerCostValue    *int64
+	StoredSeq          *int64
+	StoredQuantity     *int64
+	StoredValue        *int64
+}
+
+// Balances that differ from the ledger, for one business or (with a null tenant, as the platform
+// role) all of them. The ledger's totals are its sums in posting order; the last known average is
+// the running totals at the last movement that left the quantity above 0.
+func (q *Queries) BalanceDrift(ctx context.Context, tenantID *uuid.UUID) ([]BalanceDriftRow, error) {
+	rows, err := q.db.Query(ctx, balanceDrift, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []BalanceDriftRow
+	for rows.Next() {
+		var i BalanceDriftRow
+		if err := rows.Scan(
+			&i.TenantID,
+			&i.OutletID,
+			&i.StockItemID,
+			&i.Movements,
+			&i.LedgerSeq,
+			&i.LedgerQuantity,
+			&i.LedgerValue,
+			&i.LedgerCostQuantity,
+			&i.LedgerCostValue,
+			&i.StoredSeq,
+			&i.StoredQuantity,
+			&i.StoredValue,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const getExpenseTypeForUpdate = `-- name: GetExpenseTypeForUpdate :one
 SELECT id, tenant_id, name, expense_group, description, archived_at, created_at, updated_at FROM expense_type WHERE tenant_id = $1 AND id = $2 FOR UPDATE
@@ -184,6 +267,75 @@ func (q *Queries) InsertExpenseType(ctx context.Context, arg InsertExpenseTypePa
 		&i.ArchivedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const insertMovement = `-- name: InsertMovement :one
+INSERT INTO stock_movement (id, tenant_id, outlet_id, stock_item_id, seq, kind, quantity_scaled, value, reason, note, staff_id,
+                            source_type, source_id, reverses_id, occurred_at, business_date)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+        $12, $13, $14, $15, $16)
+RETURNING id, tenant_id, outlet_id, stock_item_id, seq, kind, quantity_scaled, value, reason, note, staff_id, source_type, source_id, reverses_id, occurred_at, business_date, created_at
+`
+
+type InsertMovementParams struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	OutletID       uuid.UUID
+	StockItemID    uuid.UUID
+	Seq            int64
+	Kind           string
+	QuantityScaled int64
+	Value          int64
+	Reason         *string
+	Note           *string
+	StaffID        uuid.UUID
+	SourceType     *string
+	SourceID       *uuid.UUID
+	ReversesID     *uuid.UUID
+	OccurredAt     time.Time
+	BusinessDate   pgtype.Date
+}
+
+func (q *Queries) InsertMovement(ctx context.Context, arg InsertMovementParams) (StockMovement, error) {
+	row := q.db.QueryRow(ctx, insertMovement,
+		arg.ID,
+		arg.TenantID,
+		arg.OutletID,
+		arg.StockItemID,
+		arg.Seq,
+		arg.Kind,
+		arg.QuantityScaled,
+		arg.Value,
+		arg.Reason,
+		arg.Note,
+		arg.StaffID,
+		arg.SourceType,
+		arg.SourceID,
+		arg.ReversesID,
+		arg.OccurredAt,
+		arg.BusinessDate,
+	)
+	var i StockMovement
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.OutletID,
+		&i.StockItemID,
+		&i.Seq,
+		&i.Kind,
+		&i.QuantityScaled,
+		&i.Value,
+		&i.Reason,
+		&i.Note,
+		&i.StaffID,
+		&i.SourceType,
+		&i.SourceID,
+		&i.ReversesID,
+		&i.OccurredAt,
+		&i.BusinessDate,
+		&i.CreatedAt,
 	)
 	return i, err
 }
@@ -405,6 +557,75 @@ func (q *Queries) IsLiveStockCategory(ctx context.Context, arg IsLiveStockCatego
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const itemHasMovements = `-- name: ItemHasMovements :one
+SELECT EXISTS (SELECT 1 FROM stock_balance WHERE tenant_id = $1 AND stock_item_id = $2 AND seq > 0)
+`
+
+type ItemHasMovementsParams struct {
+	TenantID    uuid.UUID
+	StockItemID uuid.UUID
+}
+
+func (q *Queries) ItemHasMovements(ctx context.Context, arg ItemHasMovementsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, itemHasMovements, arg.TenantID, arg.StockItemID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const itemHasStock = `-- name: ItemHasStock :one
+SELECT EXISTS (SELECT 1 FROM stock_balance WHERE tenant_id = $1 AND stock_item_id = $2 AND quantity_scaled <> 0)
+`
+
+type ItemHasStockParams struct {
+	TenantID    uuid.UUID
+	StockItemID uuid.UUID
+}
+
+func (q *Queries) ItemHasStock(ctx context.Context, arg ItemHasStockParams) (bool, error) {
+	row := q.db.QueryRow(ctx, itemHasStock, arg.TenantID, arg.StockItemID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const itemsForPosting = `-- name: ItemsForPosting :many
+
+SELECT id, track, archived_at FROM stock_item WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+`
+
+type ItemsForPostingParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+}
+
+type ItemsForPostingRow struct {
+	ID         uuid.UUID
+	Track      bool
+	ArchivedAt *time.Time
+}
+
+// The stock ledger
+func (q *Queries) ItemsForPosting(ctx context.Context, arg ItemsForPostingParams) ([]ItemsForPostingRow, error) {
+	rows, err := q.db.Query(ctx, itemsForPosting, arg.TenantID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ItemsForPostingRow
+	for rows.Next() {
+		var i ItemsForPostingRow
+		if err := rows.Scan(&i.ID, &i.Track, &i.ArchivedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listExpenseTypes = `-- name: ListExpenseTypes :many
@@ -693,6 +914,119 @@ func (q *Queries) ListUomsByCategories(ctx context.Context, arg ListUomsByCatego
 	return items, nil
 }
 
+const lockBalance = `-- name: LockBalance :one
+INSERT INTO stock_balance (tenant_id, outlet_id, stock_item_id, quantity_scaled, value, seq)
+VALUES ($1, $2, $3, 0, 0, 0)
+ON CONFLICT (tenant_id, outlet_id, stock_item_id) DO UPDATE SET seq = stock_balance.seq
+RETURNING tenant_id, outlet_id, stock_item_id, quantity_scaled, value, cost_quantity, cost_value, seq, updated_at
+`
+
+type LockBalanceParams struct {
+	TenantID    uuid.UUID
+	OutletID    uuid.UUID
+	StockItemID uuid.UUID
+}
+
+// Creates the balance on the first movement, and locks it either way: movements of one item at one
+// outlet are posted one after another.
+func (q *Queries) LockBalance(ctx context.Context, arg LockBalanceParams) (StockBalance, error) {
+	row := q.db.QueryRow(ctx, lockBalance, arg.TenantID, arg.OutletID, arg.StockItemID)
+	var i StockBalance
+	err := row.Scan(
+		&i.TenantID,
+		&i.OutletID,
+		&i.StockItemID,
+		&i.QuantityScaled,
+		&i.Value,
+		&i.CostQuantity,
+		&i.CostValue,
+		&i.Seq,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const movementsToReverse = `-- name: MovementsToReverse :many
+SELECT id, tenant_id, outlet_id, stock_item_id, seq, kind, quantity_scaled, value, reason, note, staff_id, source_type, source_id, reverses_id, occurred_at, business_date, created_at FROM stock_movement WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+`
+
+type MovementsToReverseParams struct {
+	TenantID uuid.UUID
+	Ids      []uuid.UUID
+}
+
+func (q *Queries) MovementsToReverse(ctx context.Context, arg MovementsToReverseParams) ([]StockMovement, error) {
+	rows, err := q.db.Query(ctx, movementsToReverse, arg.TenantID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []StockMovement
+	for rows.Next() {
+		var i StockMovement
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.OutletID,
+			&i.StockItemID,
+			&i.Seq,
+			&i.Kind,
+			&i.QuantityScaled,
+			&i.Value,
+			&i.Reason,
+			&i.Note,
+			&i.StaffID,
+			&i.SourceType,
+			&i.SourceID,
+			&i.ReversesID,
+			&i.OccurredAt,
+			&i.BusinessDate,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const repairBalance = `-- name: RepairBalance :exec
+INSERT INTO stock_balance (tenant_id, outlet_id, stock_item_id, quantity_scaled, value, cost_quantity, cost_value, seq)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (tenant_id, outlet_id, stock_item_id) DO UPDATE
+SET quantity_scaled = excluded.quantity_scaled, value = excluded.value, cost_quantity = excluded.cost_quantity,
+    cost_value = excluded.cost_value, seq = excluded.seq, updated_at = now()
+`
+
+type RepairBalanceParams struct {
+	TenantID       uuid.UUID
+	OutletID       uuid.UUID
+	StockItemID    uuid.UUID
+	QuantityScaled int64
+	Value          int64
+	CostQuantity   *int64
+	CostValue      *int64
+	Seq            int64
+}
+
+// Sets a balance to what the ledger says (BR-STK-08). The ledger itself is never changed.
+func (q *Queries) RepairBalance(ctx context.Context, arg RepairBalanceParams) error {
+	_, err := q.db.Exec(ctx, repairBalance,
+		arg.TenantID,
+		arg.OutletID,
+		arg.StockItemID,
+		arg.QuantityScaled,
+		arg.Value,
+		arg.CostQuantity,
+		arg.CostValue,
+		arg.Seq,
+	)
+	return err
+}
+
 const seedStandardUnits = `-- name: SeedStandardUnits :exec
 
 SELECT seed_standard_units($1::uuid)
@@ -734,6 +1068,37 @@ func (q *Queries) UnitsUsedByItems(ctx context.Context, arg UnitsUsedByItemsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateBalance = `-- name: UpdateBalance :exec
+UPDATE stock_balance
+SET quantity_scaled = $1, value = $2, cost_quantity = $3, cost_value = $4, seq = $5, updated_at = now()
+WHERE tenant_id = $6 AND outlet_id = $7 AND stock_item_id = $8
+`
+
+type UpdateBalanceParams struct {
+	QuantityScaled int64
+	Value          int64
+	CostQuantity   *int64
+	CostValue      *int64
+	Seq            int64
+	TenantID       uuid.UUID
+	OutletID       uuid.UUID
+	StockItemID    uuid.UUID
+}
+
+func (q *Queries) UpdateBalance(ctx context.Context, arg UpdateBalanceParams) error {
+	_, err := q.db.Exec(ctx, updateBalance,
+		arg.QuantityScaled,
+		arg.Value,
+		arg.CostQuantity,
+		arg.CostValue,
+		arg.Seq,
+		arg.TenantID,
+		arg.OutletID,
+		arg.StockItemID,
+	)
+	return err
 }
 
 const updateExpenseType = `-- name: UpdateExpenseType :one

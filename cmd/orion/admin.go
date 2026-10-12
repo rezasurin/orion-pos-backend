@@ -49,6 +49,9 @@ every change is written to the platform audit log with --reason, attributed to -
   metrics           --operator E --tenant SLUG [--days 14]
                     prints a business's daily usage (sales, voids, events, rejected events, tablets
                     that synced, review flags), as computed nightly by orion worker. Counts only.
+  rebuild-stock     --operator E --tenant SLUG --reason R [--fix]
+                    compares every stock balance of a business with its ledger and lists those that
+                    differ; --fix sets them to what the ledger says. The ledger is never changed.
   stopped-syncing   --operator E [--quiet 24h]
                     lists tablets, across businesses that are not suspended, that synced in the last
                     30 days but not in the last --quiet, the longest silent first
@@ -70,7 +73,7 @@ func admin(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 	}
 	switch args[0] {
 	case "create-operator", "set-override", "clear-override", "suspend-tenant", "reinstate-tenant", "support-report", "abandon-event", "metrics", "stopped-syncing",
-		"set-plan", "revoke-device", "set-flag-default":
+		"set-plan", "revoke-device", "set-flag-default", "rebuild-stock":
 		return adminPlatform(ctx, cfg, logger, args)
 	}
 	if cfg.DatabaseURL == "" {
@@ -308,6 +311,7 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 	plan := fs.String("plan", "", "plan code")
 	device := fs.String("device", "", "device id")
 	quiet := fs.Duration("quiet", 24*time.Hour, "how long a tablet has been silent")
+	fix := fs.Bool("fix", false, "repair the balances that differ from the ledger")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -369,6 +373,28 @@ func adminPlatform(ctx context.Context, cfg config.Config, logger *slog.Logger, 
 			return err
 		}
 		fmt.Printf("event %s abandoned\n", id)
+		return nil
+	case "rebuild-stock":
+		drift, err := svc.RebuildStock(ctx, actor, *tenant, *fix, *reason)
+		if err != nil {
+			return err
+		}
+		for _, d := range drift {
+			stored := "missing"
+			if d.StoredQuantity != nil {
+				stored = fmt.Sprintf("%d thousandths, Rp %d", *d.StoredQuantity, *d.StoredValue)
+			}
+			fmt.Printf("outlet %s item %s: ledger %d thousandths, Rp %d (%d movements); stored %s\n",
+				d.OutletID, d.StockItemID, d.LedgerQuantity, d.LedgerValue, d.Movements, stored)
+		}
+		switch {
+		case len(drift) == 0:
+			fmt.Println("every balance matches its ledger")
+		case *fix:
+			fmt.Printf("%d balances repaired\n", len(drift))
+		default:
+			fmt.Printf("%d balances differ; run again with --fix to repair them\n", len(drift))
+		}
 		return nil
 	case "metrics":
 		ms, err := svc.TenantMetrics(ctx, *tenant, *days)

@@ -377,11 +377,12 @@ func mapErr(err error) error {
 }
 
 var conflictText = map[string]string{
-	"expense_type_name_idx":    "an expense type with this name already exists",
-	"stock_category_name_idx":  "a stock category with this name already exists",
-	"uom_category_name_idx":    "a unit category with this name already exists",
-	"uom_name_idx":             "a unit with this name already exists in this category",
-	"uom_symbol_idx":           "a unit with this symbol already exists",
-	"stock_item_name_idx":      "a stock item with this name already exists",
-	"stock_item_pack_name_idx": "this item already has a pack with this name",
+	"expense_type_name_idx":       "an expense type with this name already exists",
+	"stock_category_name_idx":     "a stock category with this name already exists",
+	"uom_category_name_idx":       "a unit category with this name already exists",
+	"uom_name_idx":                "a unit with this name already exists in this category",
+	"uom_symbol_idx":              "a unit with this symbol already exists",
+	"stock_item_name_idx":         "a stock item with this name already exists",
+	"stock_item_pack_name_idx":    "this item already has a pack with this name",
+	"stock_movement_reverses_idx": "this movement is already reversed",
 }

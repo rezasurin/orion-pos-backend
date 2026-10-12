@@ -629,6 +629,18 @@ type StaffOutletRole struct {
 	CreatedAt time.Time
 }
 
+type StockBalance struct {
+	TenantID       uuid.UUID
+	OutletID       uuid.UUID
+	StockItemID    uuid.UUID
+	QuantityScaled int64
+	Value          int64
+	CostQuantity   *int64
+	CostValue      *int64
+	Seq            int64
+	UpdatedAt      time.Time
+}
+
 type StockCategory struct {
 	ID                   uuid.UUID
 	TenantID             uuid.UUID
@@ -668,6 +680,26 @@ type StockItemPack struct {
 	Active         bool
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type StockMovement struct {
+	ID             uuid.UUID
+	TenantID       uuid.UUID
+	OutletID       uuid.UUID
+	StockItemID    uuid.UUID
+	Seq            int64
+	Kind           string
+	QuantityScaled int64
+	Value          int64
+	Reason         *string
+	Note           *string
+	StaffID        uuid.UUID
+	SourceType     *string
+	SourceID       *uuid.UUID
+	ReversesID     *uuid.UUID
+	OccurredAt     time.Time
+	BusinessDate   pgtype.Date
+	CreatedAt      time.Time
 }
 
 type SyncInbox struct {

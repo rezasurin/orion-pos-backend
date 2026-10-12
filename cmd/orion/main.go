@@ -327,12 +327,14 @@ func worker(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	health.AddWorkers(workers)
 	metrics := &platform.MetricsJobs{Platform: pool, Clock: kernel.SystemClock{}, Logger: logger}
 	metrics.AddWorkers(workers)
+	stock := &inventory.CheckJobs{Platform: pool, Sender: sender, OperatorEmail: cfg.AlertOperatorEmail, Logger: logger}
+	stock.AddWorkers(workers)
 
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
 		Logger:       logger,
 		Queues:       map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 10}},
 		Workers:      workers,
-		PeriodicJobs: slices.Concat(idJobs.PeriodicJobs(), health.PeriodicJobs(), metrics.PeriodicJobs()),
+		PeriodicJobs: slices.Concat(idJobs.PeriodicJobs(), health.PeriodicJobs(), metrics.PeriodicJobs(), stock.PeriodicJobs()),
 	})
 	if err != nil {
 		return fmt.Errorf("river: %w", err)

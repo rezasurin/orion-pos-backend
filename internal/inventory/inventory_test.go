@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/google/uuid"
@@ -23,18 +25,19 @@ type fixture struct {
 	d      *testdb.DB
 	svc    *inventory.Service
 	tenant uuid.UUID
+	outlet uuid.UUID
 }
 
 func newFixture(t *testing.T) fixture {
 	t.Helper()
 	d := testdb.New(t)
-	tn, _, err := tenancy.NewService(d.App).CreateTenant(context.Background(), tenancy.NewTenant{
+	tn, o, err := tenancy.NewService(d.App).CreateTenant(context.Background(), tenancy.NewTenant{
 		Name: "Kopi", Slug: "kopi", Outlet: tenancy.NewOutlet{Name: "Pusat", Code: "JKT1"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fixture{d: d, svc: inventory.NewService(d.App), tenant: tn.ID}
+	return fixture{d: d, svc: inventory.NewService(d.App), tenant: tn.ID, outlet: o.ID}
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -460,3 +463,5 @@ func TestListsUseAFixedNumberOfQueries(t *testing.T) {
 		t.Errorf("unit categories: %d then %d queries; stock items: %d then %d", oneU, manyU, oneI, manyI)
 	}
 }
+
+func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

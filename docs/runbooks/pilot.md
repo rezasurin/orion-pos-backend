@@ -125,7 +125,24 @@ If a number is wrong, the cause is a **missing or late event** (the device has n
 receipt counter for the day should equal the number of `sale` rows plus unsent drafts; gaps are
 explained by voids and by events still in the outbox. That comparison is the Phase 1 exit check.
 
-## 4. Running the load check
+## 4. Checking and rebuilding stock
+
+Stock on hand is the sum of the ledger (`stock_movement`); `stock_balance` keeps that sum, and the
+totals the average cost comes from, in the same transaction as each movement. `orion worker`
+compares every balance with its ledger once a day (and when it starts). A difference is a bug: it
+is logged at error level and emailed to `ORION_ALERT_OPERATOR_EMAIL`, and nothing is changed.
+
+```
+orion admin rebuild-stock --operator you@orion --tenant SLUG --reason "nightly check alert"
+orion admin rebuild-stock --operator you@orion --tenant SLUG --reason "repair after the alert" --fix
+```
+
+The first lists the balances that differ (ledger and stored quantity and value); `--fix` sets them to
+what the ledger says. Both are audited. The ledger is never edited: a wrong movement is corrected with
+a reversal, and a ledger with a gap in its posting order is refused for repair (report it as a bug).
+Note what drifted before repairing, since the fix hides the evidence.
+
+## 5. Running the load check
 
 ```
 make load
