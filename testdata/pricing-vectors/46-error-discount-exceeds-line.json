@@ -1,0 +1,27 @@
+{
+  "name": "error-discount-exceeds-line",
+  "note": "A fixed discount larger than its line.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "line": 0,
+      "kind": "amount",
+      "value": 10001
+    }
+  ],
+  "tender": "non_cash",
+  "expected_error": "discount_exceeds_amount"
+}

@@ -1,0 +1,39 @@
+{
+  "name": "inclusive-extraction-rounding",
+  "note": "10001 at 11% inclusive: 10001*1100/11100 = 991.1, rounds to 991.",
+  "settings": {
+    "price_includes_tax": true,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10001,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 10001,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 10001
+      }
+    ],
+    "subtotal": 10001,
+    "discount_total": 0,
+    "net": 10001,
+    "service_charge": 0,
+    "tax": 991,
+    "tax_included": true,
+    "total": 10001,
+    "rounding_amount": 0,
+    "cash_total": 10001
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "tax-rate-zero-with-service",
+  "note": "Only a service charge.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 1000,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 20000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 5000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 20000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 20000
+      },
+      {
+        "gross": 5000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 5000
+      }
+    ],
+    "subtotal": 25000,
+    "discount_total": 0,
+    "net": 25000,
+    "service_charge": 2500,
+    "tax": 0,
+    "tax_included": false,
+    "total": 27500,
+    "rounding_amount": 0,
+    "cash_total": 27500
+  }
+}

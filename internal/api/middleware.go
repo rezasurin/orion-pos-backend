@@ -9,11 +9,13 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
 // authenticate is the strict-server middleware that enforces each operation's policy before its
 // handler runs: a valid token of the right audience, a caller who is still allowed in their
-// tenant, a tenant that is not suspended, and the permission named by x-permission.
+// tenant, a tenant that is not suspended (for a person's write), the permission named by
+// x-permission, and the module named by x-module.
 //
 // It runs inside the generated wrapper, so it knows the operation id. A route missing from the
 // policy table is a programming error and fails closed.
@@ -40,7 +42,7 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 				return nil, err
 			}
 			httpserver.AddLogAttrs(ctx, slog.String("principal_type", "operator"), slog.String("principal_id", op.ID.String()))
-			return next(ctx, w, r, req)
+			return next(context.WithValue(ctx, operatorKey{}, op.ID), w, r, req)
 		}
 		p, err := s.Identity.Authenticate(pol.audience, bearer)
 		if err != nil {
@@ -55,9 +57,16 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 			slog.String("principal_id", p.ID().String()),
 		)
 
-		if err := s.Tenancy.CheckActive(ctx, p.TenantID); err != nil {
+		// A suspended business is read-only for its people. Its tablets keep syncing, so a shift
+		// in progress is never cut off and no sale is lost; the pull tells them to stop after it.
+		suspendedAt, err := s.Tenancy.SuspendedAt(ctx, p.TenantID)
+		if err != nil {
 			return nil, err
 		}
+		if suspendedAt != nil && p.Type == identity.PrincipalUser && r.Method != http.MethodGet {
+			return nil, tenancy.ErrSuspended
+		}
+		ctx = context.WithValue(ctx, suspendedKey{}, suspendedAt != nil)
 		switch p.Type {
 		case identity.PrincipalUser:
 			access, err := s.Identity.LoadAccess(ctx, p)
@@ -76,8 +85,24 @@ func (s *Server) authenticate(next openapi.StrictHandlerFunc, operationID string
 		default:
 			return nil, identity.ErrInvalidToken
 		}
+		if pol.module != "" {
+			if err := s.Entitlements.RequireModule(ctx, p.TenantID, pol.module); err != nil {
+				return nil, err
+			}
+		}
 		return next(ctx, w, r, req)
 	}
+}
+
+type (
+	suspendedKey struct{}
+	operatorKey  struct{}
+)
+
+// suspendedFrom says whether the caller's business is suspended, as authenticate found it.
+func suspendedFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(suspendedKey{}).(bool)
+	return v
 }
 
 func principalFrom(ctx context.Context) identity.Principal {

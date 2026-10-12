@@ -1,0 +1,39 @@
+{
+  "name": "service-half-rupiah-rounds-up",
+  "note": "Service charge 5% of 10010 is 500.5, which rounds half up to 501.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10010,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 10010,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 10010
+      }
+    ],
+    "subtotal": 10010,
+    "discount_total": 0,
+    "net": 10010,
+    "service_charge": 501,
+    "tax": 0,
+    "tax_included": false,
+    "total": 10511,
+    "rounding_amount": 0,
+    "cash_total": 10511
+  }
+}

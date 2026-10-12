@@ -1,0 +1,54 @@
+{
+  "name": "amount-discount-equals-subtotal",
+  "note": "A fixed discount that exactly covers the bill.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 12000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 8000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "amount",
+      "value": 20000
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 12000,
+        "discount": 0,
+        "allocated_bill_discount": 12000,
+        "total": 0
+      },
+      {
+        "gross": 8000,
+        "discount": 0,
+        "allocated_bill_discount": 8000,
+        "total": 0
+      }
+    ],
+    "subtotal": 20000,
+    "discount_total": 20000,
+    "net": 0,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 0,
+    "rounding_amount": 0,
+    "cash_total": 0
+  }
+}

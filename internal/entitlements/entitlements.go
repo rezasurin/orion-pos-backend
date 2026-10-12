@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -158,6 +159,14 @@ func (r *Resolver) Snapshot(ctx context.Context, tenantID uuid.UUID) (Snapshot, 
 	return snap, nil
 }
 
+// InvalidateAll drops every cached snapshot, after a change that reaches every tenant (a flag's
+// default).
+func (r *Resolver) InvalidateAll() {
+	r.mu.Lock()
+	clear(r.cache)
+	r.mu.Unlock()
+}
+
 // Invalidate drops the cached snapshot of a tenant.
 func (r *Resolver) Invalidate(tenantID uuid.UUID) {
 	r.mu.Lock()
@@ -249,7 +258,7 @@ func (a *Admin) SetOverride(ctx context.Context, o Override) error {
 // SetOverrideTx is SetOverride inside the caller's transaction, so operator tooling can write the
 // platform audit entry atomically with the change.
 func (a *Admin) SetOverrideTx(ctx context.Context, tx pgx.Tx, o Override) error {
-	if o.Reason == "" {
+	if strings.TrimSpace(o.Reason) == "" {
 		return fmt.Errorf("%w: a reason is required", kernel.ErrValidation)
 	}
 	q := db.New(tx)
@@ -292,4 +301,97 @@ func (a *Admin) ClearOverride(ctx context.Context, tenantID uuid.UUID, key Key) 
 func (a *Admin) ClearOverrideTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, key Key) (bool, error) {
 	n, err := db.New(tx).DeleteOverride(ctx, db.DeleteOverrideParams{TenantID: tenantID, Key: string(key)})
 	return n > 0, err
+}
+
+// AdminEntitlement is one key for one tenant with everything that decides it, for the operator
+// console: the value in force and where it comes from, and the override even when it has expired.
+type AdminEntitlement struct {
+	Entitlement
+	Default         int64
+	PlanValue       *int64
+	OverrideValue   *int64
+	OverrideReason  *string
+	OverrideExpires *time.Time
+	OverrideInForce bool
+}
+
+// TenantViewTx lists every key for a tenant inside the caller's transaction.
+func (a *Admin) TenantViewTx(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, now time.Time) ([]AdminEntitlement, error) {
+	rows, err := db.New(tx).ListTenantEntitlementsAdmin(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AdminEntitlement, len(rows))
+	for i, r := range rows {
+		inForce := r.OverrideValue != nil && (r.OverrideExpiresAt == nil || r.OverrideExpiresAt.After(now))
+		override := r.OverrideValue
+		if !inForce {
+			override = nil
+		}
+		out[i] = AdminEntitlement{
+			Entitlement: resolve(r.Key, r.Kind, r.Category, r.DefaultValue, r.PlanValue, override),
+			Default:     r.DefaultValue, PlanValue: r.PlanValue, OverrideValue: r.OverrideValue,
+			OverrideReason: r.OverrideReason, OverrideExpires: r.OverrideExpiresAt, OverrideInForce: inForce,
+		}
+	}
+	return out, nil
+}
+
+// KeyInfo describes an entitlement key and what each plan gives.
+type KeyInfo struct {
+	Key, Kind, Category, Description, Owner string
+	Temporary                               bool
+	Default                                 int64
+	Plans                                   map[string]int64 // plan code to value; a plan not listed gets Default
+}
+
+// Keys lists every key with its plan values.
+func (a *Admin) Keys(ctx context.Context) ([]KeyInfo, error) {
+	q := db.New(a.pool)
+	keys, err := q.ListKeys(ctx)
+	if err != nil {
+		return nil, err
+	}
+	values, err := q.ListPlanValues(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byKey := map[string]map[string]int64{}
+	for _, v := range values {
+		if byKey[v.Key] == nil {
+			byKey[v.Key] = map[string]int64{}
+		}
+		byKey[v.Key][v.PlanCode] = v.Value
+	}
+	out := make([]KeyInfo, len(keys))
+	for i, k := range keys {
+		plans := byKey[k.Key]
+		if plans == nil {
+			plans = map[string]int64{}
+		}
+		out[i] = KeyInfo{Key: k.Key, Kind: k.Kind, Category: k.Category, Description: k.Description, Owner: k.Owner,
+			Temporary: k.IsTemporary, Default: k.DefaultValue, Plans: plans}
+	}
+	return out, nil
+}
+
+// SetFlagDefaultTx changes a flag's default, which every tenant without a plan value or an override
+// gets: how a flag is rolled out to everyone. Modules and limits are set per plan instead, so their
+// defaults are not changed here. It returns the previous default.
+func (a *Admin) SetFlagDefaultTx(ctx context.Context, tx pgx.Tx, key Key, value int64) (int64, error) {
+	q := db.New(tx)
+	k, err := q.GetKeyForUpdate(ctx, string(key))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("%w: %s", ErrUnknownKey, key)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if k.Category != "flag" {
+		return 0, fmt.Errorf("%w: only a flag's default can be changed; %s is set per plan", kernel.ErrValidation, key)
+	}
+	if value < 0 || (k.Kind == "bool" && value > 1) {
+		return 0, fmt.Errorf("%w: %s takes %s", kernel.ErrValidation, key, map[string]string{"bool": "0 or 1", "int": "a count"}[k.Kind])
+	}
+	return k.DefaultValue, q.SetKeyDefault(ctx, db.SetKeyDefaultParams{Key: string(key), DefaultValue: value})
 }

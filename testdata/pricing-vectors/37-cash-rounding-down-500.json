@@ -1,0 +1,49 @@
+{
+  "name": "cash-rounding-down-500",
+  "note": "Always down to a multiple of 500: 84915 -> 84500.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 500,
+    "cash_rounding_mode": "down"
+  },
+  "lines": [
+    {
+      "unit_price": 24000,
+      "quantity": 2
+    },
+    {
+      "unit_price": 28500,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 48000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 48000
+      },
+      {
+        "gross": 28500,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 28500
+      }
+    ],
+    "subtotal": 76500,
+    "discount_total": 0,
+    "net": 76500,
+    "service_charge": 0,
+    "tax": 8415,
+    "tax_included": false,
+    "total": 84915,
+    "rounding_amount": -415,
+    "cash_total": 84500
+  }
+}

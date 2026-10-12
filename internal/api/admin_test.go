@@ -80,10 +80,10 @@ func TestOperatorSignInAndAuditLog(t *testing.T) {
 	}
 	e.do(t, "GET", "/admin/audit-log?limit=0", sess.AccessToken, nil).problem(t, http.StatusBadRequest, "validation_failed")
 
-	// The suspension the operator made is real: the tenant's owner is locked out.
+	// The suspension the operator made is real: the tenant's owner can read but not change anything.
 	_ = entitlements.LimitStaff
-	e.do(t, "POST", "/v1/auth/login", "", map[string]string{"email": "owner@kopi.test", "password": password}).
-		problem(t, http.StatusForbidden, "tenant_suspended")
+	owner := e.login(t, "owner@kopi.test").AccessToken
+	e.do(t, "POST", "/v1/categories", owner, map[string]any{"name": "Kopi"}).problem(t, http.StatusForbidden, "tenant_suspended")
 }
 
 func TestOperatorAndTenantTokensStayApart(t *testing.T) {

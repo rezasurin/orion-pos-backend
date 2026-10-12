@@ -214,3 +214,57 @@ SELECT count(*) FROM device WHERE tenant_id = @tenant_id AND revoked_at IS NULL;
 
 -- name: CountActiveStaff :one
 SELECT count(*) FROM staff WHERE tenant_id = @tenant_id AND active;
+
+-- Used while projecting synced events (internal/sync). They run inside the event's transaction.
+
+-- name: GetDeviceForShare :one
+-- Holding a share lock on the device until the event commits makes revocation (an UPDATE) wait for
+-- events in flight, so nothing commits after a revoke has returned.
+SELECT * FROM device WHERE tenant_id = @tenant_id AND id = @id FOR SHARE;
+
+-- name: ListStaffPermissionsAt :many
+-- What one staff member may do at an outlet.
+SELECT rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = @tenant_id AND sor.staff_id = @staff_id AND sor.outlet_id = @outlet_id
+ORDER BY rp.permission;
+
+-- name: RecordDeviceSync :exec
+-- Stamps a push or pull: when the device last synced, its app version, how far its clock is off and,
+-- when it reported its outbox, how much is still waiting there.
+UPDATE device
+SET last_sync_at = @now, last_seen_at = @now,
+    app_version = coalesce(sqlc.narg(app_version), app_version),
+    clock_skew_ms = coalesce(sqlc.narg(clock_skew_ms), clock_skew_ms),
+    unsynced_events = CASE WHEN sqlc.narg(unsynced_events)::integer IS NULL THEN unsynced_events ELSE sqlc.narg(unsynced_events)::integer END,
+    oldest_unsynced_at = CASE WHEN sqlc.narg(unsynced_events)::integer IS NULL THEN oldest_unsynced_at
+                              WHEN sqlc.narg(unsynced_events)::integer = 0 THEN NULL
+                              ELSE sqlc.narg(oldest_unsynced_at)::timestamptz END,
+    health_reported_at = CASE WHEN sqlc.narg(unsynced_events)::integer IS NULL THEN health_reported_at ELSE @now END
+WHERE tenant_id = @tenant_id AND id = @id;
+
+-- The POS pull: roster entries for the staff whose records changed.
+
+-- name: ListRosterCandidates :many
+-- For each staff id: whether the person belongs on this outlet's roster (active, and an owner or
+-- assigned to the outlet). Those who do not are reported as removed.
+SELECT s.id, s.display_name, s.pin_hash, coalesce(m.is_owner, false)::boolean AS is_owner,
+       (s.active AND (coalesce(m.is_owner, false) OR EXISTS (
+            SELECT 1 FROM staff_outlet_role sor
+            WHERE sor.tenant_id = s.tenant_id AND sor.staff_id = s.id AND sor.outlet_id = @outlet_id)))::boolean AS on_roster
+FROM staff s
+LEFT JOIN tenant_member m ON m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+WHERE s.tenant_id = @tenant_id AND s.id = ANY(@staff_ids::uuid[])
+ORDER BY s.display_name, s.id;
+
+-- name: ListPermissionsOfStaffAt :many
+SELECT sor.staff_id, rp.permission
+FROM staff_outlet_role sor
+JOIN role_permission rp ON rp.tenant_id = sor.tenant_id AND rp.role_id = sor.role_id
+WHERE sor.tenant_id = @tenant_id AND sor.outlet_id = @outlet_id AND sor.staff_id = ANY(@staff_ids::uuid[])
+ORDER BY sor.staff_id, rp.permission;
+
+-- name: InsertTermsAcceptance :exec
+INSERT INTO terms_acceptance (tenant_id, user_id, version, accepted_at)
+VALUES (@tenant_id, @user_id, @version, @accepted_at);

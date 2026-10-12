@@ -36,9 +36,17 @@ type Config struct {
 	// locks every operator out; keep it in the secret store, separate from the database backups.
 	SecretsKey string
 
-	// EmailProvider names how email is sent. Only "log" exists so far, which writes messages to
-	// the log and is refused in production.
+	// EmailProvider names how email is sent: "log" writes messages to the log and is refused in
+	// production; "resend" sends through Resend with EmailAPIKey, from EmailFrom.
 	EmailProvider string
+	EmailAPIKey   string
+	EmailFrom     string
+	// AlertUnsyncedAfter is how old the oldest event a device still holds may be before the owner is
+	// emailed; AlertSilentAfter how long a device with an open shift may go unheard. Zero takes the
+	// defaults (30 minutes and 3 hours). AlertOperatorEmail, if set, gets a copy of every alert.
+	AlertUnsyncedAfter time.Duration
+	AlertSilentAfter   time.Duration
+	AlertOperatorEmail string
 	// TrustProxy says a proxy in front of the service appends the caller's address to
 	// X-Forwarded-For. Enable it only behind exactly one such proxy.
 	TrustProxy bool
@@ -66,9 +74,12 @@ func Load() (Config, error) {
 		OperatorJWTKeys:     os.Getenv("ORION_JWT_OPERATOR_KEYS"),
 		SecretsKey:          os.Getenv("ORION_SECRETS_KEY"),
 		EmailProvider:       getenv("ORION_EMAIL_PROVIDER", "log"),
+		EmailAPIKey:         os.Getenv("ORION_EMAIL_API_KEY"),
+		EmailFrom:           os.Getenv("ORION_EMAIL_FROM"),
 		HTTPAddr:            getenv("ORION_HTTP_ADDR", ":8080"),
 		LogFormat:           getenv("ORION_LOG_FORMAT", "json"),
 		SentryDSN:           os.Getenv("ORION_SENTRY_DSN"),
+		AlertOperatorEmail:  os.Getenv("ORION_ALERT_OPERATOR_EMAIL"),
 	}
 
 	var errs []error
@@ -88,6 +99,19 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("ORION_SHUTDOWN_TIMEOUT: %w", err))
 	}
 	c.ShutdownTimeout = d
+	for _, v := range []struct {
+		key string
+		dst *time.Duration
+	}{{"ORION_ALERT_UNSYNCED_AFTER", &c.AlertUnsyncedAfter}, {"ORION_ALERT_SILENT_AFTER", &c.AlertSilentAfter}} {
+		if raw := os.Getenv(v.key); raw != "" {
+			dur, err := time.ParseDuration(raw)
+			if err != nil || dur <= 0 {
+				errs = append(errs, fmt.Errorf("%s: want a positive duration like 30m, got %q", v.key, raw))
+				continue
+			}
+			*v.dst = dur
+		}
+	}
 
 	tp, err := parseBool("ORION_TRUST_PROXY")
 	if err != nil {
@@ -97,8 +121,15 @@ func Load() (Config, error) {
 
 	switch c.EmailProvider {
 	case "log":
+	case "resend":
+		if c.EmailAPIKey == "" {
+			errs = append(errs, errors.New("ORION_EMAIL_API_KEY: required with ORION_EMAIL_PROVIDER=resend"))
+		}
+		if c.EmailFrom == "" {
+			errs = append(errs, errors.New("ORION_EMAIL_FROM: required with ORION_EMAIL_PROVIDER=resend"))
+		}
 	default:
-		errs = append(errs, fmt.Errorf("ORION_EMAIL_PROVIDER: unknown provider %q (want log)", c.EmailProvider))
+		errs = append(errs, fmt.Errorf("ORION_EMAIL_PROVIDER: unknown provider %q (want log or resend)", c.EmailProvider))
 	}
 	return c, errors.Join(errs...)
 }

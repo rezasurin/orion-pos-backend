@@ -1,0 +1,39 @@
+{
+  "name": "cash-rounding-nearest-half-goes-up",
+  "note": "Total 12250 is exactly halfway to 12000 and 12500 at unit 500, and rounds up.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 500,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 12250,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 12250,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 12250
+      }
+    ],
+    "subtotal": 12250,
+    "discount_total": 0,
+    "net": 12250,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 12250,
+    "rounding_amount": 250,
+    "cash_total": 12500
+  }
+}

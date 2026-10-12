@@ -19,6 +19,8 @@ info:
     - `x-permission`: the permission a user needs (any outlet) to call the operation. Checked
       by middleware before the handler runs. Operations that name an outlet check it again
       for that outlet.
+    - `x-module`: the entitlement key of a module the business's plan must include
+      (`403 module_disabled` otherwise; the data stays).
 
     The spec is OpenAPI 3.0.3 rather than 3.1 because the code generator supports it fully.
   license:
@@ -37,6 +39,14 @@ tags:
     description: People who work in the business, their roles and PINs
   - name: devices
     description: Pairing POS tablets and what they download
+  - name: catalog
+    description: What the business sells - categories, items, variants, modifiers and per-outlet prices
+  - name: reports
+    description: End-of-shift and end-of-day reports
+  - name: sync
+    description: The device's offline-first sync with the server
+  - name: inventory
+    description: Units of measure, stock items, stock categories and expense types (Phase 3). Needs the inventory module.
   - name: entitlements
     description: What the business's plan allows
   - name: admin
@@ -72,6 +82,34 @@ paths:
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+
+  /v1/auth/signup:
+    post:
+      operationId: signup
+      tags: [auth]
+      summary: Create a business, its first outlet and its owner
+      description: |
+        Self-serve signup. Creates the business on the current plan, its system roles, its first
+        outlet and the owner's account in one transaction, records the accepted terms version, and
+        emails a verification link. The owner signs in after verifying.
+
+        Always answers 202 for a well-formed request, including when the email already has an
+        account (nothing is created then), so it cannot be used to find out who is registered.
+        `terms_version` must be the current version, otherwise `409 terms_outdated`: reload the
+        terms and ask again. Limited per caller address and per email (`429`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+      responses:
+        '202':
+          description: Accepted; a verification email is on its way
+        '400': {$ref: '#/components/responses/ValidationFailed'}
         '409': {$ref: '#/components/responses/Conflict'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
 
@@ -175,6 +213,25 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /v1/announcements:
+    get:
+      operationId: listAnnouncements
+      tags: [tenancy]
+      summary: What Orion is telling this business now
+      description: |
+        Active announcements to every business and to this one, newest first, at most 20, in the
+        user's locale (Indonesian when there is none). Show a `warning` prominently, an `info`
+        quietly. Readable while the business is suspended.
+      responses:
+        '200':
+          description: The announcements in force
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantAnnouncementList'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /v1/outlets:
     get:
       operationId: listOutlets
@@ -210,6 +267,233 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Outlet'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/outlets/{outletId}/settings:
+    patch:
+      operationId: updateOutletSettings
+      tags: [tenancy]
+      summary: Change an outlet's tax, service charge, rounding, time and receipt settings
+      description: |
+        Fields left out stay as they are. Needs `settings.manage` at that outlet. The change reaches
+        the outlet's devices at their next sync and is written to the audit log with the old and new
+        values. Sales already recorded keep the amounts they were calculated with and their
+        business date.
+      x-permission: settings.manage
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutletSettingsUpdate'
+      responses:
+        '200':
+          description: The outlet with its settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Outlet'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/reports/shifts/{shiftId}:
+    get:
+      operationId: getShiftReport
+      tags: [reports]
+      summary: End-of-shift report
+      description: |
+        What one shift took and how its drawer reconciles. Computed live from the recorded sales, so
+        it is always current; a void made later of one of the shift's sales removes it from the
+        totals.
+
+        **Expected cash** is the opening cash, plus the cash applied to the bills of the shift's
+        sales (net of change, whatever became of the sale later), minus the cash refunded for voids
+        made *in this shift* (of any shift's sales), plus pay ins, minus pay outs. `difference` is
+        `counted - expected`: negative means the drawer is short. Both are absent while the shift is
+        open.
+
+        Needs `report.view` at the shift's outlet.
+      x-permission: report.view
+      parameters:
+        - $ref: '#/components/parameters/ShiftId'
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShiftReport'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/reports/days/{date}:
+    get:
+      operationId: getDayReport
+      tags: [reports]
+      summary: End-of-day report for an outlet
+      description: |
+        The business day `date` (in the outlet's time zone and day cutoff) at one outlet: completed
+        sales by the business date they were rung up on, what each payment method took, voids, manual
+        discounts, cash movements, the shifts opened that day with their cash reconciliation, and the
+        review flags raised by that day's events. The numbers are those on the receipts: a sale is
+        stored as the device charged it. Needs `report.view` at the outlet.
+      x-permission: report.view
+      parameters:
+        - name: date
+          in: path
+          required: true
+          schema: {type: string, format: date}
+        - name: outlet_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DayReport'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/reports/sales:
+    get:
+      operationId: getSalesReport
+      tags: [reports]
+      summary: Sales of an outlet over a range of days, by day, item or payment method
+      description: |
+        Completed sales from `from` to `to` (business dates in the outlet's time zone and day
+        cutoff, inclusive, at most 366 days), grouped by `group_by`:
+
+        - `day`: one row per business date in the range, days without sales included, with the
+          same totals as the end-of-day report.
+        - `item`: one row per variant sold, with the names as they are in the catalog now, the
+          quantity, and the line amounts (gross, discounts including its share of bill discounts,
+          net). The rows' `net` adds up to the range's net sales.
+        - `payment_method`: what each method took.
+
+        `format=csv` returns the same rows as a CSV file (`text/csv`, comma separated, a header
+        row) for a spreadsheet. Needs `report.view` at the outlet.
+      x-permission: report.view
+      parameters:
+        - name: outlet_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+        - name: from
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: group_by
+          in: query
+          required: true
+          schema: {type: string, enum: [day, item, payment_method]}
+        - name: format
+          in: query
+          schema: {type: string, enum: [json, csv], default: json}
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesReport'
+            text/csv:
+              schema: {type: string}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/sales:
+    get:
+      operationId: listSales
+      tags: [reports]
+      summary: Sales, newest first
+      description: |
+        Sales as the devices recorded them, newest business day first and newest sale first within a
+        day, a page at a time. Each carries its payments and the codes of its review flags. Without
+        `outlet_id` the list covers every outlet where the caller has `report.view`. Read-only.
+      x-permission: report.view
+      parameters:
+        - name: outlet_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: from
+          in: query
+          description: First business date, inclusive.
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          description: Last business date, inclusive.
+          schema: {type: string, format: date}
+        - name: status
+          in: query
+          schema: {type: string, enum: [completed, voided]}
+        - name: receipt_number
+          in: query
+          description: Exact receipt number.
+          schema: {type: string, maxLength: 40}
+        - name: staff_id
+          in: query
+          schema: {type: string, format: uuid}
+        - name: flagged
+          in: query
+          description: Only sales with review flags, on the sale or its void.
+          schema: {type: boolean, default: false}
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page. Opaque.
+          schema: {type: string, maxLength: 100}
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of sales
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalePage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/sales/{saleId}:
+    get:
+      operationId: getSale
+      tags: [reports]
+      summary: One sale with everything recorded about it
+      description: |
+        The lines with their modifiers, discounts, payments, the void if there is one, the review flags
+        with their detail, and the calculation settings the device used. Needs `report.view` at the
+        sale's outlet.
+      x-permission: report.view
+      parameters:
+        - name: saleId
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: The sale
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleDetail'
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -455,6 +739,108 @@ paths:
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
 
+  /v1/sync/push:
+    post:
+      operationId: pushEvents
+      tags: [sync]
+      summary: Push the device's events to the server
+      description: |
+        The device sends what happened since its last push, oldest first. Each event is applied in
+        its own transaction, exactly once: pushing the same event again returns `duplicate` and
+        changes nothing, so a lost response is harmless. The same `idempotency_key` with different
+        content is rejected as `idempotency_conflict`.
+
+        One result per event, in order:
+
+        - `accepted`: stored. With `code: pending_dependency` the event is parked until the record
+          it refers to arrives (a void ahead of its sale); the device should treat it as delivered.
+        - `duplicate`: already accepted earlier; nothing was applied again.
+        - `rejected`: malformed; it will never be applied. Keep it for support and do not resend
+          (`unknown_type`, `unsupported_schema_version`, `unknown_staff`, `wrong_outlet`,
+          `malformed`, `unknown_reference`, `invalid_value`, `idempotency_conflict`, `id_conflict`,
+          `device_revoked`, and codes of the event type's own validation).
+        - `retry`: the server failed to process it; nothing was recorded. Send it again later.
+
+        Only malformed events are rejected. A sale with odd totals, or made by someone without the
+        permission, is accepted and flagged for review, because the money has already moved.
+
+        At most 500 events and 1 MB per push; page through the outbox. A revoked device gets
+        `403 device_revoked` and nothing is accepted.
+      security:
+        - deviceAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushRequest'
+      responses:
+        '200':
+          description: One result per event
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PushResponse'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/sync/pull:
+    get:
+      operationId: pullChanges
+      tags: [sync]
+      summary: Pull what changed since the device's cursor
+      description: |
+        Returns the **current state** of every entity that changed since `cursor`, for the device's
+        outlet: catalog entities (items with their variants and modifier group links, categories,
+        modifier groups, this outlet's price overrides and availability; archived ones included and
+        marked), the outlet and its settings, the roster entries with PIN hashes and permissions, and
+        the entitlements snapshot with its `expires_at`.
+
+        Store the returned `cursor` only after applying the response, and send it next time. While
+        `has_more` is true ask again straight away. With no cursor, an unreadable one, or one ahead
+        of the server (a restored database), the response is a **snapshot** (`snapshot: true`): the
+        whole state, which replaces the device's copy instead of merging into it.
+
+        Entitlements ride on every pull. The device applies new ones at its next sync and never in
+        the middle of a shift.
+      security:
+        - deviceAuth: []
+      parameters:
+        - name: cursor
+          in: query
+          description: The `cursor` of the previous response. Opaque. Leave out for a full snapshot.
+          schema: {type: string, maxLength: 200}
+        - name: limit
+          in: query
+          description: At most this many changes are turned into entities per response.
+          schema: {type: integer, minimum: 1, maximum: 1000, default: 500}
+        - name: client_time
+          in: query
+          description: The device's clock now, so the server can record how far off it is.
+          schema: {type: string, format: date-time}
+        - name: app_version
+          in: query
+          schema: {type: string, maxLength: 40}
+        - name: unsynced_events
+          in: query
+          description: How many events are in the device's outbox, as on a push.
+          schema: {type: integer, minimum: 0}
+        - name: oldest_unsynced_at
+          in: query
+          description: Device time of the oldest of them; needed when `unsynced_events` is above 0.
+          schema: {type: string, format: date-time}
+      responses:
+        '200':
+          description: The changes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PullResponse'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
   /v1/entitlements:
     get:
       operationId: getEntitlements
@@ -495,6 +881,522 @@ paths:
                 $ref: '#/components/schemas/ReceiptTest'
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/categories:
+    get:
+      operationId: listCategories
+      tags: [catalog]
+      summary: Categories, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page of categories ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createCategory
+      tags: [catalog]
+      summary: Add a category
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewCategory'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/categories/{categoryId}:
+    patch:
+      operationId: updateCategory
+      tags: [catalog]
+      summary: Rename, reorder, archive or restore a category
+      description: Fields left out stay as they are. A category is archived, never deleted.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CategoryUpdate'
+      responses:
+        '200':
+          description: The updated category
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Category'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/kitchen-stations:
+    get:
+      operationId: listKitchenStations
+      tags: [catalog]
+      summary: Kitchen and bar stations, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page of stations ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KitchenStationPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createKitchenStation
+      tags: [catalog]
+      summary: Add a kitchen or bar station
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewKitchenStation'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KitchenStation'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/kitchen-stations/{stationId}:
+    patch:
+      operationId: updateKitchenStation
+      tags: [catalog]
+      summary: Rename, reorder, archive or restore a station
+      description: Fields left out stay as they are. A station is archived, never deleted; items keep pointing at an archived station, and the POS prints no ticket for it.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/StationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KitchenStationUpdate'
+      responses:
+        '200':
+          description: The updated station
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KitchenStation'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/items:
+    get:
+      operationId: listItems
+      tags: [catalog]
+      summary: Items with their variants, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+        - name: category_id
+          in: query
+          description: Only items in this category.
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: A page of items ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ItemPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createItem
+      tags: [catalog]
+      summary: Add an item with its variants
+      description: |
+        An item is sold through its variants, so at least one is required (a one-size item has one
+        variant with no name). `modifier_group_ids` lists the groups offered with the item, in
+        display order.
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewItem'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/items/{itemId}:
+    get:
+      operationId: getItem
+      tags: [catalog]
+      summary: One item with its variants and modifier groups
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      responses:
+        '200':
+          description: The item, archived or not
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateItem
+      tags: [catalog]
+      summary: Change, archive or restore an item
+      description: |
+        Fields left out stay as they are. A blank `sku`, `barcode` or `image_url` clears it; to
+        remove the category send `clear_category: true`. `modifier_group_ids`, when present,
+        replaces the item's groups. Prices change on variants, not here.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ItemUpdate'
+      responses:
+        '200':
+          description: The updated item
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Item'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/items/{itemId}/variants:
+    post:
+      operationId: addVariant
+      tags: [catalog]
+      summary: Add a variant to an item
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewVariant'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Variant'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/variants/{variantId}:
+    patch:
+      operationId: updateVariant
+      tags: [catalog]
+      summary: Change a variant's name, codes, price or order, or archive it
+      description: |
+        Fields left out stay as they are; a blank `sku` or `barcode` clears it. A changed
+        `base_price` is written to the audit log. Archived variants free their SKU and barcode.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/VariantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VariantUpdate'
+      responses:
+        '200':
+          description: The updated variant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Variant'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/modifier-groups:
+    get:
+      operationId: listModifierGroups
+      tags: [catalog]
+      summary: Modifier groups with their modifiers, a page at a time
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page of groups ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModifierGroupPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createModifierGroup
+      tags: [catalog]
+      summary: Add a modifier group with its first modifiers
+      x-permission: catalog.manage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewModifierGroup'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModifierGroup'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/modifier-groups/{groupId}:
+    patch:
+      operationId: updateModifierGroup
+      tags: [catalog]
+      summary: Change or archive a modifier group
+      description: The selection rules are checked on the result, so changing `required` alone fails when `min_select` is 0.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifierGroupUpdate'
+      responses:
+        '200':
+          description: The updated group
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModifierGroup'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/modifier-groups/{groupId}/modifiers:
+    post:
+      operationId: addModifier
+      tags: [catalog]
+      summary: Add a modifier to a group
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/GroupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewModifier'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Modifier'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/modifiers/{modifierId}:
+    patch:
+      operationId: updateModifier
+      tags: [catalog]
+      summary: Change or archive a modifier
+      description: A changed `price_delta` is written to the audit log.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/ModifierId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifierUpdate'
+      responses:
+        '200':
+          description: The updated modifier
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Modifier'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/catalog/import:
+    post:
+      operationId: importCatalog
+      tags: [catalog]
+      summary: Add categories, items and variants from a CSV file
+      description: |
+        The body is the CSV file itself (`Content-Type: text/csv`), comma or semicolon separated,
+        UTF-8, at most 2000 rows. Columns are found by header name, so Moka's item export works
+        as is; see docs/API_CONTRACT.md for the headers. Rows with the same item name become one
+        item with several variants. The import only adds: an item whose name is already in the
+        catalog is a row error.
+
+        With `dry_run=true` nothing is written. Without it, the file is written in one
+        transaction, all or nothing: if any row has an error nothing is written and `committed`
+        is false. Both return the same counts and row errors, so a client shows the dry run, then
+        sends the same file again to commit.
+      x-permission: catalog.manage
+      parameters:
+        - name: dry_run
+          in: query
+          description: Check the file and report what would be created, without writing.
+          schema: {type: boolean, default: false}
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema: {type: string}
+      responses:
+        '200':
+          description: What was (or would be) created, and the row errors
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CatalogImportResult'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+
+  /v1/outlets/{outletId}/variants:
+    get:
+      operationId: listOutletVariants
+      tags: [catalog]
+      summary: Price overrides and availability at one outlet
+      description: |
+        Lists the variants that have a setting at this outlet. Variants not listed are available
+        at their base price. Needs `catalog.manage` at that outlet.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page ordered by variant id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutletVariantPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /v1/outlets/{outletId}/variants/{variantId}:
+    put:
+      operationId: setOutletVariant
+      tags: [catalog]
+      summary: Set a variant's price and availability at one outlet
+      description: |
+        Replaces the setting: a null or missing `price_override` means the base price. Only that
+        outlet's devices receive the change. A changed price is written to the audit log. Needs
+        `catalog.manage` at that outlet.
+      x-permission: catalog.manage
+      parameters:
+        - $ref: '#/components/parameters/OutletId'
+        - $ref: '#/components/parameters/VariantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OutletVariantSetting'
+      responses:
+        '200':
+          description: The setting now in force
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutletVariant'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
 
   /admin/auth/login:
     post:
@@ -551,6 +1453,318 @@ paths:
         '429': {$ref: '#/components/responses/TooManyRequests'}
         '503': {$ref: '#/components/responses/Unavailable'}
 
+  /admin/tenants:
+    get:
+      operationId: adminListTenants
+      tags: [admin]
+      summary: Businesses, a page at a time, with their plan, state and last week of use
+      description: |
+        Ordered by id. `q` matches the name or slug. `sales_7d` and `events_7d` come from the nightly
+        metrics, so they lag by up to a day.
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - {name: q, in: query, schema: {type: string, maxLength: 100}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTenantPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/tenants/{tenantId}:
+    get:
+      operationId: adminGetTenant
+      tags: [admin]
+      summary: 'One business: entitlements with their sources, devices, the last 30 days of metrics'
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTenantDetail'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/tenants/{tenantId}/suspend:
+    post:
+      operationId: adminSuspendTenant
+      tags: [admin]
+      summary: Suspend a business
+      description: |
+        Its people can still sign in and read; every change they try answers `403 tenant_suspended`.
+        Its tablets keep syncing and are told to close the open shift and open no new one.
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/tenants/{tenantId}/reinstate:
+    post:
+      operationId: adminReinstateTenant
+      tags: [admin]
+      summary: Lift a suspension
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/tenants/{tenantId}/plan:
+    put:
+      operationId: adminSetTenantPlan
+      tags: [admin]
+      summary: Move a business to another plan
+      description: |
+        `early_access` also restores the early-access status; any other plan makes the subscription
+        `active`. Takes effect within 30 seconds (the entitlement cache).
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminPlanChange'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/tenants/{tenantId}/entitlements/{key}:
+    put:
+      operationId: adminSetTenantEntitlement
+      tags: [admin]
+      summary: Override one of a business's entitlements, or clear the override
+      description: |
+        A `value` sets the override (0/1 for modules and flags, a count or -1 for unlimited for
+        limits), until `expires_at` if given. `value: null` clears it, back to the plan. Takes effect
+        within 30 seconds.
+      security:
+        - operatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AdminTenantId'
+        - {name: key, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminEntitlementChange'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/devices/stopped-syncing:
+    get:
+      operationId: adminStoppedSyncing
+      tags: [admin]
+      summary: Tablets in use that have gone quiet, across businesses
+      description: |
+        Not revoked, in businesses that are not suspended, that synced (or were paired) in the last
+        30 days but not within `quiet_minutes`. The longest silent first, at most 500.
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: quiet_minutes, in: query, schema: {type: integer, minimum: 1, maximum: 43200, default: 1440}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuietDeviceList'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/devices/{deviceId}/revoke:
+    post:
+      operationId: adminRevokeDevice
+      tags: [admin]
+      summary: Revoke a business's device
+      description: |
+        For a lost or stolen tablet the owner cannot revoke. Written to the business's own audit log
+        as done by Orion support.
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: deviceId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /admin/entitlement-keys:
+    get:
+      operationId: adminListEntitlementKeys
+      tags: [admin]
+      summary: Every entitlement key with its default and what each plan gives
+      security:
+        - operatorAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntitlementKeyList'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+
+  /admin/entitlement-keys/{key}:
+    patch:
+      operationId: adminSetFlagDefault
+      tags: [admin]
+      summary: Change a flag's default for everyone
+      description: |
+        Rolls a flag out to (or back from) every business without a plan value or an override for it.
+        Only flags: modules and limits are set per plan.
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: key, in: path, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlagDefaultChange'
+      responses:
+        '204': {description: Done}
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/announcements:
+    get:
+      operationId: adminListAnnouncements
+      tags: [admin]
+      summary: The 200 most recent announcements, ended ones included
+      security:
+        - operatorAuth: []
+      responses:
+        '200':
+          description: Newest first by start
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementList'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+    post:
+      operationId: adminCreateAnnouncement
+      tags: [admin]
+      summary: Publish an announcement to every business, or to one
+      description: |
+        Shown in the back office of the business (or of all of them) from `starts_at` (default now)
+        until `ends_at` or until ended. `title` and `body` map a locale (`id`, `en`) to text;
+        Indonesian is required and shown when the reader's locale has none.
+      security:
+        - operatorAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewAnnouncement'
+      responses:
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Announcement'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
+  /admin/announcements/{announcementId}/end:
+    post:
+      operationId: adminEndAnnouncement
+      tags: [admin]
+      summary: Take an announcement down now
+      security:
+        - operatorAuth: []
+      parameters:
+        - {name: announcementId, in: path, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorReason'
+      responses:
+        '200':
+          description: Ended
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Announcement'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '503': {$ref: '#/components/responses/Unavailable'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /admin/audit-log:
     get:
       operationId: adminListAuditLog
@@ -561,6 +1775,10 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Cursor'
         - $ref: '#/components/parameters/Limit'
+        - name: tenant_id
+          in: query
+          description: Only the entries about this business.
+          schema: {type: string, format: uuid}
       responses:
         '200':
           description: A page of entries; `next_cursor` leads to older ones
@@ -571,6 +1789,320 @@ paths:
         '400': {$ref: '#/components/responses/ValidationFailed'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '503': {$ref: '#/components/responses/Unavailable'}
+
+  /v1/expense-types:
+    get:
+      operationId: listExpenseTypes
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Expense types, a page at a time
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseTypePage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createExpenseType
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Add an expense type
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewExpenseType'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseType'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/expense-types/{expenseTypeId}:
+    patch:
+      operationId: updateExpenseType
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Change, archive or restore an expense type
+      description: |
+        Fields left out stay as they are; a blank `description` clears it. Archived, never deleted.
+      parameters:
+        - $ref: '#/components/parameters/ExpenseTypeId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpenseTypeUpdate'
+      responses:
+        '200':
+          description: The updated entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseType'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/stock-categories:
+    get:
+      operationId: listStockCategories
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Stock categories, a page at a time
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockCategoryPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createStockCategory
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Add a stock category
+      description: |
+        A `default_expense_type_id` must be an expense type that is not archived (BR-CAT-02, BR-GEN-06).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewStockCategory'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockCategory'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/stock-categories/{stockCategoryId}:
+    patch:
+      operationId: updateStockCategory
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Change, archive or restore a stock category
+      description: |
+        Fields left out stay as they are; a blank `description` clears it and `clear_default_expense_type` removes the default. Archived, never deleted; its items stay in it.
+      parameters:
+        - $ref: '#/components/parameters/StockCategoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockCategoryUpdate'
+      responses:
+        '200':
+          description: The updated entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockCategory'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/uom-categories:
+    get:
+      operationId: listUomCategories
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Unit categories with their units, a page at a time
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          description: A page ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UomCategoryPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createUomCategory
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Add a unit category with its units
+      description: |
+        Exactly one unit is the reference (`is_reference`, ratio 1/1); quantities of items based on it are stored in thousandths of it (ADR 0009). Ratios are reduced. Every business starts with the standard categories (`is_standard`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewUomCategory'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UomCategory'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/uom-categories/{uomCategoryId}:
+    patch:
+      operationId: updateUomCategory
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Change, archive or restore a unit category with its units
+      description: |
+        Fields left out stay as they are. `units` with an `id` are replaced by what is sent, units without one are added, units left out stay; a unit is deactivated, never deleted. The reference keeps 1/1 and stays active; a standard unit keeps its symbol and ratio and stays active; a unit an item uses keeps its ratio (`409`). A standard category is never archived.
+      parameters:
+        - $ref: '#/components/parameters/UomCategoryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UomCategoryUpdate'
+      responses:
+        '200':
+          description: The updated entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UomCategory'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/stock-items:
+    get:
+      operationId: listStockItems
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Stock items with their packs, a page at a time
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/IncludeArchived'
+        - name: category_id
+          in: query
+          description: Only items in this stock category.
+          schema: {type: string, format: uuid}
+        - name: type
+          in: query
+          description: Only items of this type.
+          schema: {$ref: '#/components/schemas/StockItemType'}
+      responses:
+        '200':
+          description: A page ordered by id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockItemPage'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    post:
+      operationId: createStockItem
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Add a stock item with its packs
+      description: |
+        `base_uom_id` is an active reference unit; `recipe_uom_id`, if given, an active unit in the same category; the category must not be archived. `min_stock_scaled` needs `track` and must be on the base unit's step.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewStockItem'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockItem'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '409': {$ref: '#/components/responses/Conflict'}
+
+  /v1/stock-items/{stockItemId}:
+    patch:
+      operationId: updateStockItem
+      tags: [inventory]
+      x-permission: inventory.manage
+      x-module: module.inventory
+      summary: Change, archive or restore a stock item with its packs
+      description: |
+        Fields left out stay as they are; a blank `description`, `min_stock_scaled: 0` and `shelf_life_days: 0` clear those, `clear_recipe_uom` goes back to the base unit, and turning `track` off clears the minimum stock. `packs` with an `id` are replaced by what is sent (the ratio must stay the same), packs without one are added, packs left out stay. The base unit cannot change while the item has packs (`409`). Archived, never deleted.
+      parameters:
+        - $ref: '#/components/parameters/StockItemId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StockItemUpdate'
+      responses:
+        '200':
+          description: The updated entry
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockItem'
+        '400': {$ref: '#/components/responses/ValidationFailed'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
 components:
   securitySchemes:
@@ -628,6 +2160,72 @@ components:
         maximum: 200
         default: 50
 
+    CategoryId:
+      name: categoryId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    AdminTenantId:
+      name: tenantId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ExpenseTypeId:
+      name: expenseTypeId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    StockCategoryId:
+      name: stockCategoryId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    UomCategoryId:
+      name: uomCategoryId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    StockItemId:
+      name: stockItemId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    StationId:
+      name: stationId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ItemId:
+      name: itemId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    VariantId:
+      name: variantId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    GroupId:
+      name: groupId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ModifierId:
+      name: modifierId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    ShiftId:
+      name: shiftId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IncludeArchived:
+      name: include_archived
+      in: query
+      description: Also list archived entries.
+      schema: {type: boolean, default: false}
+
   responses:
     ValidationFailed:
       description: The request is malformed or breaks a rule (`validation_failed`).
@@ -653,7 +2251,7 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
     Conflict:
-      description: The request conflicts with current state (`conflict`, `tenant_required`).
+      description: The request conflicts with current state (`conflict`, `tenant_required`, `terms_outdated`).
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
@@ -709,6 +2307,34 @@ components:
           format: uuid
           description: Which business to sign in to, for accounts that belong to several.
 
+    SignupRequest:
+      type: object
+      required: [business_name, owner_name, email, password, terms_version]
+      properties:
+        business_name: {type: string, maxLength: 100}
+        outlet_name:
+          type: string
+          maxLength: 100
+          description: The first outlet's name. Defaults to the business name.
+        outlet_code:
+          type: string
+          pattern: '^[A-Z0-9]{2,6}$'
+          description: Short outlet code printed on receipts. Defaults to `OUT1`.
+        owner_name: {type: string, maxLength: 60}
+        email: {type: string, maxLength: 254}
+        password: {type: string, minLength: 10, maxLength: 128}
+        locale:
+          type: string
+          enum: [id-ID, en]
+          description: Language of the owner's emails. Defaults to `id-ID`.
+        terms_version:
+          type: string
+          maxLength: 40
+          description: The version of the terms of service the owner accepted.
+        website:
+          type: string
+          description: Leave empty and hide it from people. Bots fill it in; a request with a value is answered 202 and ignored.
+
     RefreshRequest:
       type: object
       required: [refresh_token]
@@ -758,6 +2384,11 @@ components:
         subscription_status:
           type: string
           enum: [early_access, trialing, active, past_due, grace, read_only, canceled]
+        suspended_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set while an operator has suspended the business. The back office is read-only (every change answers `403 tenant_suspended`).
 
     Me:
       type: object
@@ -850,9 +2481,16 @@ components:
 
     OutletSettings:
       type: object
-      required: [timezone, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer]
+      required: [timezone, business_day_cutoff, price_includes_tax, tax_rate_bp, service_charge_rate_bp, service_charge_taxable, cash_rounding_unit, cash_rounding_mode, receipt_header, receipt_footer]
       properties:
         timezone: {type: string, enum: [Asia/Jakarta, Asia/Makassar, Asia/Jayapura]}
+        business_day_cutoff:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+          example: '04:00'
+          description: |
+            When the business day begins, as a time of day in the outlet's time zone, 00:00 to 11:59.
+            A sale before it counts towards the previous day.
         price_includes_tax: {type: boolean}
         tax_rate_bp: {type: integer, minimum: 0, maximum: 10000, description: Basis points; 1100 is 11%.}
         service_charge_rate_bp: {type: integer, minimum: 0, maximum: 10000}
@@ -861,6 +2499,20 @@ components:
         cash_rounding_mode: {type: string, enum: [nearest, down, up]}
         receipt_header: {type: string}
         receipt_footer: {type: string}
+
+    OutletSettingsUpdate:
+      type: object
+      properties:
+        timezone: {type: string, enum: [Asia/Jakarta, Asia/Makassar, Asia/Jayapura]}
+        business_day_cutoff: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$', example: '04:00'}
+        price_includes_tax: {type: boolean}
+        tax_rate_bp: {type: integer, minimum: 0, maximum: 10000}
+        service_charge_rate_bp: {type: integer, minimum: 0, maximum: 10000}
+        service_charge_taxable: {type: boolean}
+        cash_rounding_unit: {type: integer, minimum: 0, maximum: 10000}
+        cash_rounding_mode: {type: string, enum: [nearest, down, up]}
+        receipt_header: {type: string, maxLength: 500}
+        receipt_footer: {type: string, maxLength: 500}
 
     Outlet:
       type: object
@@ -876,7 +2528,7 @@ components:
 
     Device:
       type: object
-      required: [id, outlet_id, device_code, name, paired_by, paired_at]
+      required: [id, outlet_id, device_code, name, paired_by, paired_at, unsynced_events]
       properties:
         id: {type: string, format: uuid}
         outlet_id: {type: string, format: uuid}
@@ -895,6 +2547,11 @@ components:
           type: integer
           nullable: true
           description: Server time minus device time. Positive means the device clock is behind.
+        unsynced_events:
+          type: integer
+          description: How many events the device said were still in its outbox when it last reported.
+        oldest_unsynced_at: {type: string, format: date-time, nullable: true}
+        health_reported_at: {type: string, format: date-time, nullable: true}
 
     DevicePage:
       type: object
@@ -1034,6 +2691,992 @@ components:
         cash_total: {type: integer, format: int64, description: total plus rounding_amount}
         pricing_version: {type: string, example: sample-0}
 
+    CatalogImportResult:
+      type: object
+      required: [committed, rows, categories, items, variants, errors]
+      properties:
+        committed: {type: boolean, description: True when the rows were written.}
+        rows: {type: integer, description: Data rows read (blank rows are skipped).}
+        categories: {type: integer, description: Categories created; existing ones are reused by name.}
+        items: {type: integer}
+        variants: {type: integer}
+        errors:
+          type: array
+          items: {$ref: '#/components/schemas/CatalogImportError'}
+
+    CatalogImportError:
+      type: object
+      required: [row, message]
+      properties:
+        row: {type: integer, description: Line number in the file; the header is line 1.}
+        column: {type: string, description: 'The field at fault: category, item_name, variant_name, price, sku, barcode or track_stock.'}
+        message: {type: string}
+
+    Category:
+      type: object
+      required: [id, name, sort_order, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    CategoryPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Category'}
+        next_cursor: {type: string, format: uuid}
+
+    NewCategory:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 60}
+        sort_order: {type: integer, default: 0}
+
+    CategoryUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    KitchenStation:
+      type: object
+      required: [id, name, sort_order, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 40}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    KitchenStationPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/KitchenStation'}
+        next_cursor: {type: string, format: uuid}
+
+    NewKitchenStation:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 40}
+        sort_order: {type: integer, default: 0}
+
+    KitchenStationUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 40}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    ExpenseGroup:
+      type: string
+      enum: [cost_of_goods, operating, maintenance, marketing_event, capital]
+      description: BR-EXP-02. A classification only; paid, on credit or debt payment is a field of the payment.
+
+    ExpenseType:
+      type: object
+      required: [id, name, group, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 100}
+        group: {$ref: '#/components/schemas/ExpenseGroup'}
+        description: {type: string, nullable: true, maxLength: 500}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    ExpenseTypePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ExpenseType'}
+        next_cursor: {type: string, format: uuid}
+
+    NewExpenseType:
+      type: object
+      required: [name, group]
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        group: {$ref: '#/components/schemas/ExpenseGroup'}
+        description: {type: string, maxLength: 500}
+
+    ExpenseTypeUpdate:
+      type: object
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        group: {$ref: '#/components/schemas/ExpenseGroup'}
+        description: {type: string, maxLength: 500}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    StockCategory:
+      type: object
+      required: [id, name, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 100}
+        default_expense_type_id: {type: string, format: uuid, nullable: true}
+        description: {type: string, nullable: true, maxLength: 500}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    StockCategoryPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/StockCategory'}
+        next_cursor: {type: string, format: uuid}
+
+    NewStockCategory:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        default_expense_type_id: {type: string, format: uuid}
+        description: {type: string, maxLength: 500}
+
+    StockCategoryUpdate:
+      type: object
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        default_expense_type_id: {type: string, format: uuid}
+        clear_default_expense_type: {type: boolean}
+        description: {type: string, maxLength: 500}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    Uom:
+      type: object
+      required: [id, name, symbol, is_reference, is_standard, ratio_num, ratio_den, rounding_scaled, active]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 60}
+        symbol: {type: string, minLength: 1, maxLength: 10, description: Unique in the business.}
+        is_reference: {type: boolean}
+        is_standard: {type: boolean, description: One of the seeded units; its symbol and ratio are fixed.}
+        ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000, description: One of this unit is ratio_num / ratio_den reference units (reduced).}
+        ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000}
+        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, description: The step a person may enter, in thousandths of this unit (10 is 0.01).}
+        active: {type: boolean}
+
+    UnitInput:
+      type: object
+      required: [name, symbol]
+      description: A unit's whole state. Without `id` it is a new unit.
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 60}
+        symbol: {type: string, minLength: 1, maxLength: 10}
+        is_reference: {type: boolean, default: false, description: Only when creating the category.}
+        ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 1}
+        ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 1}
+        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, default: 10}
+        active: {type: boolean, default: true}
+
+    UomCategory:
+      type: object
+      required: [id, name, is_standard, units, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 100}
+        is_standard: {type: boolean, description: Weight, volume or count as seeded; never archived.}
+        units:
+          type: array
+          description: The reference first, then from small to large.
+          items: {$ref: '#/components/schemas/Uom'}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    UomCategoryPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/UomCategory'}
+        next_cursor: {type: string, format: uuid}
+
+    NewUomCategory:
+      type: object
+      required: [name, units]
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        units:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {$ref: '#/components/schemas/UnitInput'}
+
+    UomCategoryUpdate:
+      type: object
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        archived: {type: boolean, description: true archives, false restores.}
+        units:
+          type: array
+          maxItems: 50
+          items: {$ref: '#/components/schemas/UnitInput'}
+
+    StockItemType:
+      type: string
+      enum: [ingredient, supporting, prepared, finished, supply]
+      description: BR-ITM-01. Bahan baku, bahan penolong, setengah jadi, barang jadi, perlengkapan.
+
+    Pack:
+      type: object
+      required: [id, name, ratio_num, ratio_den, rounding_scaled, active]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 60}
+        ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000, description: One pack is ratio_num / ratio_den of the item's base unit (reduced). Never changes.}
+        ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000}
+        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, description: The step, in thousandths of a pack.}
+        active: {type: boolean}
+
+    PackInput:
+      type: object
+      required: [name, ratio_num]
+      description: A pack's whole state. Without `id` it is a new pack; with one, the ratio must be unchanged.
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 60}
+        ratio_num: {type: integer, format: int64, minimum: 1, maximum: 1000000000}
+        ratio_den: {type: integer, format: int64, minimum: 1, maximum: 1000000000, default: 1}
+        rounding_scaled: {type: integer, format: int64, minimum: 1, maximum: 1000000, default: 1000}
+        active: {type: boolean, default: true}
+
+    StockItem:
+      type: object
+      required: [id, name, type, category_id, base_uom_id, track, packs, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 2, maxLength: 100}
+        type: {$ref: '#/components/schemas/StockItemType'}
+        category_id: {type: string, format: uuid}
+        base_uom_id: {type: string, format: uuid, description: A reference unit; quantities are stored in thousandths of it.}
+        recipe_uom_id: {type: string, format: uuid, nullable: true, description: Null means recipes use the base unit.}
+        track: {type: boolean, description: Whether stock is tracked (BR-ITM-03).}
+        min_stock_scaled: {type: integer, format: int64, nullable: true, description: Reorder level in thousandths of the base unit (BR-ITM-04).}
+        shelf_life_days: {type: integer, nullable: true, description: BR-ITM-05.}
+        description: {type: string, nullable: true, maxLength: 500}
+        packs:
+          type: array
+          description: From small to large.
+          items: {$ref: '#/components/schemas/Pack'}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+
+    StockItemPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/StockItem'}
+        next_cursor: {type: string, format: uuid}
+
+    NewStockItem:
+      type: object
+      required: [name, type, category_id, base_uom_id]
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        type: {$ref: '#/components/schemas/StockItemType'}
+        category_id: {type: string, format: uuid}
+        base_uom_id: {type: string, format: uuid}
+        recipe_uom_id: {type: string, format: uuid}
+        track: {type: boolean, default: true}
+        min_stock_scaled: {type: integer, format: int64, minimum: 0, maximum: 1000000000000000}
+        shelf_life_days: {type: integer, minimum: 0, maximum: 3650}
+        description: {type: string, maxLength: 500}
+        packs:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/PackInput'}
+
+    StockItemUpdate:
+      type: object
+      properties:
+        name: {type: string, minLength: 2, maxLength: 100}
+        type: {$ref: '#/components/schemas/StockItemType'}
+        category_id: {type: string, format: uuid}
+        base_uom_id: {type: string, format: uuid}
+        recipe_uom_id: {type: string, format: uuid}
+        clear_recipe_uom: {type: boolean}
+        track: {type: boolean}
+        min_stock_scaled: {type: integer, format: int64, minimum: 0, maximum: 1000000000000000, description: 0 clears it.}
+        shelf_life_days: {type: integer, minimum: 0, maximum: 3650, description: 0 clears it.}
+        description: {type: string, maxLength: 500}
+        archived: {type: boolean, description: true archives, false restores.}
+        packs:
+          type: array
+          maxItems: 20
+          items: {$ref: '#/components/schemas/PackInput'}
+
+    Variant:
+      type: object
+      required: [id, item_id, name, base_price, sort_order]
+      properties:
+        id: {type: string, format: uuid}
+        item_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60, description: Empty for a one-size item.}
+        sku: {type: string, nullable: true, maxLength: 40}
+        barcode: {type: string, nullable: true, maxLength: 40}
+        base_price: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: Rupiah.}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+
+    NewVariant:
+      type: object
+      required: [base_price]
+      properties:
+        name: {type: string, maxLength: 60, default: ''}
+        sku: {type: string, maxLength: 40}
+        barcode: {type: string, maxLength: 40}
+        base_price: {type: integer, format: int64, minimum: 0, maximum: 1000000000, description: Rupiah.}
+
+    VariantUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        sku: {type: string, maxLength: 40, description: Blank clears it.}
+        barcode: {type: string, maxLength: 40, description: Blank clears it.}
+        base_price: {type: integer, format: int64, minimum: 0, maximum: 1000000000}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    Item:
+      type: object
+      required: [id, name, track_stock, variants, modifier_group_ids, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        category_id: {type: string, format: uuid, nullable: true}
+        station_id: {type: string, format: uuid, nullable: true, description: The kitchen station that makes it; null prints no ticket.}
+        name: {type: string, maxLength: 120}
+        sku: {type: string, nullable: true, maxLength: 40}
+        barcode: {type: string, nullable: true, maxLength: 40}
+        image_url: {type: string, nullable: true, maxLength: 500}
+        track_stock: {type: boolean}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        variants:
+          type: array
+          description: Including archived ones, ordered by `sort_order`.
+          items: {$ref: '#/components/schemas/Variant'}
+        modifier_group_ids:
+          type: array
+          description: In display order.
+          items: {type: string, format: uuid}
+
+    ItemPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Item'}
+        next_cursor: {type: string, format: uuid}
+
+    NewItem:
+      type: object
+      required: [name, variants]
+      properties:
+        name: {type: string, maxLength: 120}
+        category_id: {type: string, format: uuid}
+        station_id: {type: string, format: uuid}
+        sku: {type: string, maxLength: 40}
+        barcode: {type: string, maxLength: 40}
+        image_url: {type: string, maxLength: 500}
+        track_stock: {type: boolean, default: false}
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {$ref: '#/components/schemas/NewVariant'}
+        modifier_group_ids:
+          type: array
+          maxItems: 20
+          items: {type: string, format: uuid}
+
+    ItemUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 120}
+        category_id: {type: string, format: uuid}
+        clear_category: {type: boolean, description: Remove the item from its category. Not combinable with category_id.}
+        station_id: {type: string, format: uuid}
+        clear_station: {type: boolean, description: Stop printing tickets for the item. Not combinable with station_id.}
+        sku: {type: string, maxLength: 40, description: Blank clears it.}
+        barcode: {type: string, maxLength: 40, description: Blank clears it.}
+        image_url: {type: string, maxLength: 500, description: Blank clears it.}
+        track_stock: {type: boolean}
+        archived: {type: boolean, description: true archives, false restores.}
+        modifier_group_ids:
+          type: array
+          maxItems: 20
+          description: Replaces the item's groups, in this order.
+          items: {type: string, format: uuid}
+
+    Modifier:
+      type: object
+      required: [id, group_id, name, price_delta, sort_order]
+      properties:
+        id: {type: string, format: uuid}
+        group_id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60}
+        price_delta: {type: integer, format: int64, minimum: -1000000000, maximum: 1000000000, description: Rupiah added to the line price; may be negative.}
+        sort_order: {type: integer}
+        archived_at: {type: string, format: date-time, nullable: true}
+
+    NewModifier:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 60}
+        price_delta: {type: integer, format: int64, minimum: -1000000000, maximum: 1000000000, default: 0}
+
+    ModifierUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        price_delta: {type: integer, format: int64, minimum: -1000000000, maximum: 1000000000}
+        sort_order: {type: integer}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    ModifierGroup:
+      type: object
+      required: [id, name, min_select, max_select, required, modifiers, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 60}
+        min_select: {type: integer, minimum: 0}
+        max_select: {type: integer, minimum: 1, maximum: 100}
+        required: {type: boolean, description: A required group needs `min_select` of at least 1.}
+        archived_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        modifiers:
+          type: array
+          items: {$ref: '#/components/schemas/Modifier'}
+
+    ModifierGroupPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ModifierGroup'}
+        next_cursor: {type: string, format: uuid}
+
+    NewModifierGroup:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 60}
+        min_select: {type: integer, minimum: 0, default: 0}
+        max_select: {type: integer, minimum: 1, maximum: 100, default: 1}
+        required: {type: boolean, default: false}
+        modifiers:
+          type: array
+          maxItems: 100
+          items: {$ref: '#/components/schemas/NewModifier'}
+
+    ModifierGroupUpdate:
+      type: object
+      properties:
+        name: {type: string, maxLength: 60}
+        min_select: {type: integer, minimum: 0}
+        max_select: {type: integer, minimum: 1, maximum: 100}
+        required: {type: boolean}
+        archived: {type: boolean, description: true archives, false restores.}
+
+    OutletVariant:
+      type: object
+      required: [outlet_id, variant_id, available]
+      properties:
+        outlet_id: {type: string, format: uuid}
+        variant_id: {type: string, format: uuid}
+        price_override: {type: integer, format: int64, nullable: true, minimum: 0, maximum: 1000000000, description: Rupiah; null means the base price.}
+        available: {type: boolean}
+
+    OutletVariantPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/OutletVariant'}
+        next_cursor: {type: string, format: uuid}
+
+    OutletVariantSetting:
+      type: object
+      required: [available]
+      properties:
+        price_override: {type: integer, format: int64, nullable: true, minimum: 0, maximum: 1000000000}
+        available: {type: boolean}
+
+    SyncEvent:
+      type: object
+      required: [id, idempotency_key, type, staff_id, device_time, schema_version, payload]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Client-generated UUIDv7. For a create event it is the id of the record created.
+        idempotency_key:
+          type: string
+          format: uuid
+          description: Equal to `id` for create events.
+        type:
+          type: string
+          example: sale.completed
+          description: One of `shift.opened`, `shift.closed`, `cash.movement`, `sale.completed`, `sale.voided`.
+        staff_id:
+          type: string
+          format: uuid
+          description: Who performed the action on the device.
+        device_time:
+          type: string
+          format: date-time
+          description: When it happened, by the device's clock.
+        schema_version: {type: integer, minimum: 1}
+        payload:
+          type: object
+          additionalProperties: true
+          description: Depends on `type`. Kept exactly as sent.
+          x-go-type: json.RawMessage
+
+    PushRequest:
+      type: object
+      required: [device_id, events]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+          description: Must be the device the token belongs to.
+        client_time:
+          type: string
+          format: date-time
+          description: The device's clock when it sent this, so the server can record how far off it is.
+        app_version: {type: string, maxLength: 40}
+        unsynced_events:
+          type: integer
+          minimum: 0
+          description: How many events are still in the device's outbox after this push. The server alerts the owner when events stay unsynced for too long.
+        oldest_unsynced_at:
+          type: string
+          format: date-time
+          description: Device time of the oldest event still in the outbox; needed when `unsynced_events` is above 0.
+        events:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: {$ref: '#/components/schemas/SyncEvent'}
+
+    SyncResult:
+      type: object
+      required: [id, status]
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [accepted, duplicate, rejected, retry]}
+        code: {type: string, description: Why, for `rejected` and `retry`, or `pending_dependency` for a parked event.}
+        detail: {type: string, description: Human-readable; not stable.}
+
+    PushResponse:
+      type: object
+      required: [results, server_time]
+      properties:
+        results:
+          type: array
+          items: {$ref: '#/components/schemas/SyncResult'}
+        server_time: {type: string, format: date-time}
+
+    PullResponse:
+      type: object
+      required: [cursor, snapshot, has_more, server_time, suspended, categories, kitchen_stations, items, modifier_groups, outlet_variants, staff, removed_staff_ids, deleted, entitlements]
+      properties:
+        cursor: {type: string, description: Send as `cursor` next time, after applying this response.}
+        snapshot: {type: boolean, description: This is the whole state; replace the local copy.}
+        has_more: {type: boolean, description: More changes are waiting; pull again now.}
+        server_time: {type: string, format: date-time}
+        suspended: {type: boolean, description: 'The business is suspended: show a banner, let the open shift close, and do not open a new one. Pushes are still accepted.'}
+        outlet:
+          allOf:
+            - $ref: '#/components/schemas/Outlet'
+          description: Present when the outlet or its settings changed, and in a snapshot.
+        categories:
+          type: array
+          items: {$ref: '#/components/schemas/Category'}
+        kitchen_stations:
+          type: array
+          description: Stations that changed, archived ones included.
+          items: {$ref: '#/components/schemas/KitchenStation'}
+        items:
+          type: array
+          description: Each with its variants and modifier group ids.
+          items: {$ref: '#/components/schemas/Item'}
+        modifier_groups:
+          type: array
+          description: Each with its modifiers.
+          items: {$ref: '#/components/schemas/ModifierGroup'}
+        outlet_variants:
+          type: array
+          description: This outlet's price overrides and availability. A variant not listed (in a snapshot) is at its base price and available.
+          items: {$ref: '#/components/schemas/OutletVariant'}
+        staff:
+          type: array
+          description: Roster entries that changed.
+          items: {$ref: '#/components/schemas/RosterStaff'}
+        removed_staff_ids:
+          type: array
+          description: People who changed and are no longer on this outlet's roster.
+          items: {type: string, format: uuid}
+        deleted:
+          type: array
+          description: Entities removed outright. Empty in Phase 1; the catalog is archived, not deleted.
+          items:
+            type: object
+            required: [type, id]
+            properties:
+              type: {type: string}
+              id: {type: string, format: uuid}
+        entitlements:
+          type: object
+          required: [items, generated_at, expires_at]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Entitlement'}
+            generated_at: {type: string, format: date-time}
+            expires_at:
+              type: string
+              format: date-time
+              description: Keep applying these until then if the server cannot be reached.
+
+    ReportCash:
+      type: object
+      required: [opening_cash, received, refunded, pay_in, pay_out, expected]
+      properties:
+        opening_cash: {type: integer, format: int64}
+        received: {type: integer, format: int64, description: Cash applied to the bills of the shift's sales, net of change.}
+        refunded: {type: integer, format: int64, description: Cash returned in the shift, for voids and for cash refunds.}
+        pay_in: {type: integer, format: int64}
+        pay_out: {type: integer, format: int64}
+        expected: {type: integer, format: int64, description: opening_cash + received - refunded + pay_in - pay_out}
+        counted: {type: integer, format: int64, nullable: true, description: Absent until the shift is closed.}
+        difference: {type: integer, format: int64, nullable: true, description: counted - expected; negative means short.}
+
+    SalesReport:
+      type: object
+      required: [outlet_id, from, to, group_by]
+      description: Only the list named by `group_by` is present.
+      properties:
+        outlet_id: {type: string, format: uuid}
+        from: {type: string, format: date}
+        to: {type: string, format: date}
+        group_by: {type: string, enum: [day, item, payment_method]}
+        days:
+          type: array
+          items: {$ref: '#/components/schemas/SalesReportDay'}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SalesReportItem'}
+        payment_methods:
+          type: array
+          items: {$ref: '#/components/schemas/ReportMethod'}
+
+    SalesReportDay:
+      type: object
+      required: [date, sales, refunds]
+      properties:
+        date: {type: string, format: date}
+        sales: {$ref: '#/components/schemas/ReportTotals'}
+        refunds: {$ref: '#/components/schemas/ReportRefunds', description: Made on this day, of any day's sales.}
+
+    SalesReportItem:
+      type: object
+      required: [item_id, variant_id, item_name, variant_name, quantity, gross, discounts, net, refunded_quantity, refunded]
+      properties:
+        item_id: {type: string, format: uuid}
+        variant_id: {type: string, format: uuid}
+        item_name: {type: string}
+        variant_name: {type: string, description: Empty for a one-size item.}
+        quantity: {type: integer, format: int64}
+        gross: {type: integer, format: int64, description: (unit price + modifiers) x quantity}
+        discounts: {type: integer, format: int64, description: Line discounts and the lines' share of bill discounts.}
+        net: {type: integer, format: int64, description: gross - discounts}
+        refunded_quantity: {type: integer, format: int64, description: Units refunded in the range, whenever they were sold.}
+        refunded: {type: integer, format: int64}
+
+    ReportTotals:
+      type: object
+      required: [count, subtotal, discounts, net, service_charge, tax, total, rounding]
+      properties:
+        count: {type: integer, format: int64, description: Completed sales.}
+        subtotal: {type: integer, format: int64, description: Before discounts.}
+        discounts: {type: integer, format: int64}
+        net: {type: integer, format: int64, description: subtotal - discounts}
+        service_charge: {type: integer, format: int64}
+        tax: {type: integer, format: int64}
+        total: {type: integer, format: int64, description: What the bills came to, before cash rounding.}
+        rounding: {type: integer, format: int64, description: Cash rounding, positive or negative.}
+
+    ReportMethod:
+      type: object
+      required: [method, payments, amount, refunds, refunded]
+      properties:
+        method: {type: string, enum: [cash, qris_manual, qris_dynamic, ewallet, card_manual]}
+        payments: {type: integer, format: int64}
+        amount: {type: integer, format: int64, description: What the method took for completed sales.}
+        refunds: {type: integer, format: int64, description: Refunds made through it in the same shift, day or range.}
+        refunded: {type: integer, format: int64}
+
+    ReportRefunds:
+      type: object
+      required: [count, total]
+      properties:
+        count: {type: integer, format: int64}
+        total: {type: integer, format: int64, description: Rupiah given back.}
+
+    ReportVoided:
+      type: object
+      required: [count, total]
+      properties:
+        count: {type: integer, format: int64}
+        total: {type: integer, format: int64}
+
+    ReportDiscounts:
+      type: object
+      required: [count, amount]
+      properties:
+        count: {type: integer, format: int64}
+        amount: {type: integer, format: int64}
+
+    ReportShiftInfo:
+      type: object
+      required: [id, outlet_id, device_id, opened_by, opened_at, business_date]
+      properties:
+        id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        device_id: {type: string, format: uuid}
+        opened_by: {type: string, format: uuid}
+        opened_at: {type: string, format: date-time}
+        business_date: {type: string, format: date}
+        closed_by: {type: string, format: uuid, nullable: true}
+        closed_at: {type: string, format: date-time, nullable: true}
+
+    ShiftReport:
+      type: object
+      required: [shift, cash, sales, payment_methods, discounts, voided_sales, voids_recorded, refunds_recorded, no_sale_openings, flags]
+      properties:
+        shift: {$ref: '#/components/schemas/ReportShiftInfo'}
+        cash: {$ref: '#/components/schemas/ReportCash'}
+        sales: {$ref: '#/components/schemas/ReportTotals'}
+        payment_methods:
+          type: array
+          items: {$ref: '#/components/schemas/ReportMethod'}
+        discounts: {$ref: '#/components/schemas/ReportDiscounts'}
+        voided_sales: {$ref: '#/components/schemas/ReportVoided', description: This shift's sales that were voided, in this shift or later.}
+        voids_recorded: {$ref: '#/components/schemas/ReportVoided', description: Voids made during this shift, of any shift's sales.}
+        refunds_recorded: {$ref: '#/components/schemas/ReportRefunds', description: Refunds made during this shift, of any shift's sales. Cash ones are in cash.refunded.}
+        no_sale_openings: {type: integer, format: int64}
+        flags: {type: integer, format: int64, description: Review flags raised about the shift and its sales.}
+
+    DayReport:
+      type: object
+      required: [outlet_id, date, sales, payment_methods, discounts, voided_sales, refunds, cash_movements, shifts, open_shifts, cash, flags]
+      properties:
+        outlet_id: {type: string, format: uuid}
+        date: {type: string, format: date}
+        sales: {$ref: '#/components/schemas/ReportTotals'}
+        payment_methods:
+          type: array
+          items: {$ref: '#/components/schemas/ReportMethod'}
+        discounts: {$ref: '#/components/schemas/ReportDiscounts'}
+        voided_sales: {$ref: '#/components/schemas/ReportVoided', description: The day's sales that were voided, whenever the void was made.}
+        refunds: {$ref: '#/components/schemas/ReportRefunds', description: Refunds made on this day, of any day's sales. The day's sales stay as rung up.}
+        cash_movements:
+          type: object
+          required: [pay_in, pay_in_count, pay_out, pay_out_count, no_sale_openings]
+          properties:
+            pay_in: {type: integer, format: int64}
+            pay_in_count: {type: integer, format: int64}
+            pay_out: {type: integer, format: int64}
+            pay_out_count: {type: integer, format: int64}
+            no_sale_openings: {type: integer, format: int64}
+        shifts:
+          type: array
+          description: Shifts opened on this business date, in the order they opened.
+          items:
+            type: object
+            required: [shift, cash]
+            properties:
+              shift: {$ref: '#/components/schemas/ReportShiftInfo'}
+              cash: {$ref: '#/components/schemas/ReportCash'}
+        open_shifts: {type: integer}
+        cash: {$ref: '#/components/schemas/ReportCash', description: The reconciliation added up over the closed shifts.}
+        flags:
+          type: object
+          description: Review flags raised by the day's events, by code.
+          additionalProperties: {type: integer, format: int64}
+
+    SalePayment:
+      type: object
+      required: [method, amount, status]
+      properties:
+        method: {type: string, enum: [cash, qris_manual, qris_dynamic, ewallet, card_manual]}
+        amount: {type: integer, format: int64, description: Applied to the bill, net of change.}
+        tendered: {type: integer, format: int64, nullable: true}
+        change: {type: integer, format: int64, nullable: true}
+        reference: {type: string}
+        status: {type: string, enum: [pending, confirmed, failed]}
+
+    SaleSummary:
+      type: object
+      required: [id, outlet_id, device_id, shift_id, staff_id, receipt_number, device_time, received_at, business_date, status, subtotal, discount_total, service_charge, tax, tax_included, rounding_amount, total, refunded, payments, flag_codes]
+      properties:
+        id: {type: string, format: uuid}
+        outlet_id: {type: string, format: uuid}
+        device_id: {type: string, format: uuid}
+        shift_id: {type: string, format: uuid}
+        staff_id: {type: string, format: uuid}
+        receipt_number: {type: string, example: JKT1-03-000482}
+        device_time: {type: string, format: date-time, description: When it was rung up, by the device's clock.}
+        received_at: {type: string, format: date-time, description: When the server first got it.}
+        business_date: {type: string, format: date}
+        status: {type: string, enum: [completed, voided]}
+        subtotal: {type: integer, format: int64}
+        discount_total: {type: integer, format: int64}
+        service_charge: {type: integer, format: int64}
+        tax: {type: integer, format: int64}
+        tax_included: {type: boolean}
+        rounding_amount: {type: integer, format: int64}
+        total: {type: integer, format: int64, description: Before cash rounding.}
+        refunded: {type: integer, format: int64, description: Given back by refunds so far. The amounts above stay as rung up.}
+        payments:
+          type: array
+          items: {$ref: '#/components/schemas/SalePayment'}
+        flag_codes:
+          type: array
+          items: {type: string}
+
+    SalePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SaleSummary'}
+        next_cursor: {type: string, description: Pass as `cursor` for the next page; absent on the last page.}
+
+    SaleLine:
+      type: object
+      required: [line_no, variant_id, name, unit_price, quantity, modifiers, discount, allocated_bill_discount, total]
+      properties:
+        line_no: {type: integer}
+        variant_id: {type: string, format: uuid}
+        name: {type: string, description: The name as it was on the receipt.}
+        unit_price: {type: integer, format: int64}
+        quantity: {type: integer}
+        modifiers:
+          type: array
+          items:
+            type: object
+            required: [modifier_id, name, price_delta]
+            properties:
+              modifier_id: {type: string, format: uuid}
+              name: {type: string}
+              price_delta: {type: integer, format: int64}
+        discount: {type: integer, format: int64}
+        allocated_bill_discount: {type: integer, format: int64}
+        total: {type: integer, format: int64}
+
+    SaleDetail:
+      allOf:
+        - $ref: '#/components/schemas/SaleSummary'
+        - type: object
+          required: [pricing_version, pricing, catalog_seq, lines, discounts, refunds, flags]
+          properties:
+            pricing_version: {type: integer}
+            pricing:
+              type: object
+              additionalProperties: true
+              description: The calculation settings the device used.
+            catalog_seq: {type: integer, format: int64}
+            lines:
+              type: array
+              items: {$ref: '#/components/schemas/SaleLine'}
+            discounts:
+              type: array
+              items:
+                type: object
+                required: [kind, value, amount, reason]
+                properties:
+                  line_no: {type: integer, nullable: true, description: Null for a discount on the whole bill.}
+                  kind: {type: string, enum: [percent, amount]}
+                  value: {type: integer, format: int64}
+                  amount: {type: integer, format: int64}
+                  reason: {type: string}
+                  approved_by: {type: string, format: uuid, nullable: true}
+            void:
+              type: object
+              nullable: true
+              required: [id, shift_id, staff_id, reason, device_time, received_at, business_date]
+              properties:
+                id: {type: string, format: uuid}
+                shift_id: {type: string, format: uuid}
+                staff_id: {type: string, format: uuid}
+                approved_by: {type: string, format: uuid, nullable: true}
+                reason: {type: string}
+                device_time: {type: string, format: date-time}
+                received_at: {type: string, format: date-time}
+                business_date: {type: string, format: date}
+            refunds:
+              type: array
+              description: Oldest first.
+              items:
+                type: object
+                required: [id, shift_id, staff_id, method, amount, reason, device_time, received_at, business_date, lines]
+                properties:
+                  id: {type: string, format: uuid}
+                  shift_id: {type: string, format: uuid}
+                  staff_id: {type: string, format: uuid}
+                  approved_by: {type: string, format: uuid, nullable: true}
+                  method: {type: string, enum: [cash, qris_manual, qris_dynamic, ewallet, card_manual]}
+                  amount: {type: integer, format: int64}
+                  reason: {type: string}
+                  device_time: {type: string, format: date-time}
+                  received_at: {type: string, format: date-time}
+                  business_date: {type: string, format: date}
+                  lines:
+                    type: array
+                    items:
+                      type: object
+                      required: [line_no, quantity, amount]
+                      properties:
+                        line_no: {type: integer}
+                        quantity: {type: integer}
+                        amount: {type: integer, format: int64}
+            flags:
+              type: array
+              items:
+                type: object
+                required: [code, target_type, detail, created_at]
+                properties:
+                  code: {type: string}
+                  target_type: {type: string, enum: [sale, void, refund]}
+                  detail: {type: object, additionalProperties: true}
+                  created_at: {type: string, format: date-time}
+
     OperatorChallenge:
       type: object
       required: [challenge_token, challenge_expires_at, totp_enrolled]
@@ -1058,6 +3701,237 @@ components:
         access_token: {type: string}
         access_expires_at: {type: string, format: date-time}
         operator_id: {type: string, format: uuid}
+
+    OperatorReason:
+      type: object
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 1, maxLength: 500, description: Why; goes in the platform audit log.}
+
+    AdminTenant:
+      type: object
+      required: [id, slug, name, plan, subscription_status, created_at, outlets, devices, sales_7d, events_7d]
+      properties:
+        id: {type: string, format: uuid}
+        slug: {type: string}
+        name: {type: string}
+        plan: {type: string, description: The plan code, such as free or early_access.}
+        subscription_status: {type: string}
+        suspended_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        outlets: {type: integer}
+        devices: {type: integer, description: Paired and not revoked.}
+        last_sync_at: {type: string, format: date-time, nullable: true, description: The latest sync of any of its devices.}
+        sales_7d: {type: integer, description: Sales of the last 7 business days, voided ones included.}
+        events_7d: {type: integer}
+
+    AdminTenantPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/AdminTenant'}
+        next_cursor: {type: string, format: uuid}
+
+    AdminEntitlement:
+      type: object
+      required: [key, kind, category, value, source, default]
+      properties:
+        key: {type: string}
+        kind: {type: string, enum: [bool, int]}
+        category: {type: string, enum: [module, limit, flag]}
+        value: {type: integer, format: int64, description: In force now.}
+        source: {type: string, enum: [override, plan, default]}
+        default: {type: integer, format: int64}
+        plan_value: {type: integer, format: int64, nullable: true}
+        override:
+          type: object
+          nullable: true
+          required: [value, reason, in_force]
+          properties:
+            value: {type: integer, format: int64}
+            reason: {type: string}
+            expires_at: {type: string, format: date-time, nullable: true}
+            in_force: {type: boolean, description: False once it has expired.}
+
+    AdminDevice:
+      type: object
+      required: [id, name, outlet_code, code, revoked, unsynced_events, open_alerts]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        outlet_code: {type: string}
+        code: {type: integer}
+        revoked: {type: boolean}
+        last_seen_at: {type: string, format: date-time, nullable: true}
+        last_sync_at: {type: string, format: date-time, nullable: true}
+        app_version: {type: string, nullable: true}
+        clock_skew_ms: {type: integer, nullable: true}
+        unsynced_events: {type: integer}
+        oldest_unsynced_at: {type: string, format: date-time, nullable: true}
+        open_alerts:
+          type: array
+          items: {type: string}
+
+    AdminDailyMetrics:
+      type: object
+      required: [day, sales, voided_sales, events, rejected_events, devices_synced, flags]
+      properties:
+        day: {type: string, format: date}
+        sales: {type: integer, description: By business date, voided ones included.}
+        voided_sales: {type: integer}
+        events: {type: integer, description: Received that day (Asia/Jakarta).}
+        rejected_events: {type: integer}
+        devices_synced: {type: integer}
+        flags: {type: integer}
+
+    AdminTenantDetail:
+      type: object
+      required: [tenant, entitlements, devices, metrics]
+      properties:
+        tenant: {$ref: '#/components/schemas/AdminTenant'}
+        entitlements:
+          type: array
+          items: {$ref: '#/components/schemas/AdminEntitlement'}
+        devices:
+          type: array
+          items: {$ref: '#/components/schemas/AdminDevice'}
+        metrics:
+          type: array
+          description: The last 30 days the nightly job has computed, oldest first.
+          items: {$ref: '#/components/schemas/AdminDailyMetrics'}
+
+    AdminPlanChange:
+      type: object
+      required: [plan, reason]
+      properties:
+        plan: {type: string}
+        reason: {type: string, minLength: 1, maxLength: 500}
+
+    AdminEntitlementChange:
+      type: object
+      required: [value, reason]
+      properties:
+        value: {type: integer, format: int64, nullable: true, description: null clears the override.}
+        expires_at: {type: string, format: date-time, nullable: true}
+        reason: {type: string, minLength: 1, maxLength: 500}
+
+    QuietDevice:
+      type: object
+      required: [tenant_slug, tenant_name, outlet_code, device_id, name, code, paired_at, unsynced_events]
+      properties:
+        tenant_slug: {type: string}
+        tenant_name: {type: string}
+        outlet_code: {type: string}
+        device_id: {type: string, format: uuid}
+        name: {type: string}
+        code: {type: integer}
+        paired_at: {type: string, format: date-time}
+        last_sync_at: {type: string, format: date-time, nullable: true, description: Null if it never synced.}
+        last_seen_at: {type: string, format: date-time, nullable: true, description: Later than last_sync_at means the app runs but its sync fails.}
+        app_version: {type: string, nullable: true}
+        unsynced_events: {type: integer}
+
+    QuietDeviceList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/QuietDevice'}
+
+    EntitlementKeyInfo:
+      type: object
+      required: [key, kind, category, description, owner, temporary, default, plans]
+      properties:
+        key: {type: string}
+        kind: {type: string, enum: [bool, int]}
+        category: {type: string, enum: [module, limit, flag]}
+        description: {type: string}
+        owner: {type: string}
+        temporary: {type: boolean, description: A flag meant to be removed once rolled out.}
+        default: {type: integer, format: int64}
+        plans:
+          type: object
+          description: Plan code to value. A plan not listed gets the default.
+          additionalProperties: {type: integer, format: int64}
+
+    EntitlementKeyList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/EntitlementKeyInfo'}
+
+    FlagDefaultChange:
+      type: object
+      required: [default_value, reason]
+      properties:
+        default_value: {type: integer, format: int64, minimum: 0}
+        reason: {type: string, minLength: 1, maxLength: 500}
+
+    LocalizedText:
+      type: object
+      required: [id]
+      description: Text per locale. Indonesian is required.
+      properties:
+        id: {type: string}
+        en: {type: string}
+
+    Announcement:
+      type: object
+      required: [id, severity, title, body, starts_at, created_by, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        tenant_id: {type: string, format: uuid, nullable: true, description: null for every business.}
+        severity: {type: string, enum: [info, warning]}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        body: {$ref: '#/components/schemas/LocalizedText'}
+        starts_at: {type: string, format: date-time}
+        ends_at: {type: string, format: date-time, nullable: true}
+        created_by: {type: string, format: uuid}
+        created_at: {type: string, format: date-time}
+
+    AnnouncementList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Announcement'}
+
+    NewAnnouncement:
+      type: object
+      required: [severity, title, body, reason]
+      properties:
+        tenant_id: {type: string, format: uuid, description: Leave out for every business.}
+        severity: {type: string, enum: [info, warning]}
+        title: {$ref: '#/components/schemas/LocalizedText'}
+        body: {$ref: '#/components/schemas/LocalizedText'}
+        starts_at: {type: string, format: date-time}
+        ends_at: {type: string, format: date-time}
+        reason: {type: string, minLength: 1, maxLength: 500}
+
+    TenantAnnouncement:
+      type: object
+      required: [id, severity, title, body, starts_at]
+      properties:
+        id: {type: string, format: uuid}
+        severity: {type: string, enum: [info, warning]}
+        title: {type: string}
+        body: {type: string}
+        starts_at: {type: string, format: date-time}
+        ends_at: {type: string, format: date-time, nullable: true}
+
+    TenantAnnouncementList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/TenantAnnouncement'}
 
     AuditEntry:
       type: object

@@ -56,9 +56,13 @@ func TestModuleBoundaries(t *testing.T) {
 		}
 		checked++
 		from := moduleOf(p.ImportPath)
-		imports := append(append(append([]string{}, p.Imports...), p.TestImports...), p.XTestImports...)
-		for _, imp := range imports {
-			if msg := violation(p.ImportPath, from, imp); msg != "" {
+		for _, imp := range p.Imports {
+			if msg := violation(p.ImportPath, from, imp, false); msg != "" {
+				t.Error(msg)
+			}
+		}
+		for _, imp := range append(append([]string{}, p.TestImports...), p.XTestImports...) {
+			if msg := violation(p.ImportPath, from, imp, true); msg != "" {
 				t.Error(msg)
 			}
 		}
@@ -68,12 +72,19 @@ func TestModuleBoundaries(t *testing.T) {
 	}
 }
 
-func violation(importer, from, imp string) string {
+// violation says why importer (in module from, or "" for shared packages) may not import imp, or
+// returns "". fromTest is true for imports made by test files.
+func violation(importer, from, imp string, fromTest bool) string {
 	if imp == composition && importer != composition && !strings.HasPrefix(importer, modulePath+"/cmd/") && !strings.HasPrefix(importer, composition+"/") {
 		return importer + " imports " + imp + ": only cmd/ may import the composition package"
 	}
 	to := moduleOf(imp)
 	if to == "" || to == from {
+		return ""
+	}
+	// A module's test support, <module>/<module>stub (for example sync/syncstub, a stand-in
+	// projector), may be used by other packages' tests but never by production code.
+	if fromTest && imp == modulePath+"/internal/"+to+"/"+to+"stub" {
 		return ""
 	}
 	// Another module's root package is its public API.
@@ -105,23 +116,28 @@ func TestViolation(t *testing.T) {
 	tests := []struct {
 		importer, imp string
 		bad           bool
+		fromTest      bool
 	}{
-		{m + "sales", m + "tenancy", false},
-		{m + "sales", m + "tenancy/db", true},
-		{m + "sales/projector", m + "inventory/ledger", true},
-		{m + "tenancy", m + "tenancy/db", false},
-		{m + "tenancy", m + "kernel", false},
-		{m + "httpserver", m + "tenancy", true},
-		{modulePath + "/cmd/orion", m + "tenancy", false},
-		{modulePath + "/cmd/orion", m + "tenancy/db", true},
-		{m + "api", m + "identity", false},
-		{m + "api", m + "identity/db", true},
-		{modulePath + "/cmd/orion", m + "api", false},
-		{m + "identity", m + "api", true},
-		{m + "httpserver", m + "api", true},
+		{m + "api", m + "sync/syncstub", false, true},
+		{m + "api", m + "sync/syncstub", true, false},
+		{m + "api", m + "sync/projector", true, true},
+		{m + "api", m + "tenancy/syncstub", true, true},
+		{m + "sales", m + "tenancy", false, false},
+		{m + "sales", m + "tenancy/db", true, false},
+		{m + "sales/projector", m + "inventory/ledger", true, false},
+		{m + "tenancy", m + "tenancy/db", false, false},
+		{m + "tenancy", m + "kernel", false, false},
+		{m + "httpserver", m + "tenancy", true, false},
+		{modulePath + "/cmd/orion", m + "tenancy", false, false},
+		{modulePath + "/cmd/orion", m + "tenancy/db", true, false},
+		{m + "api", m + "identity", false, false},
+		{m + "api", m + "identity/db", true, false},
+		{modulePath + "/cmd/orion", m + "api", false, false},
+		{m + "identity", m + "api", true, false},
+		{m + "httpserver", m + "api", true, false},
 	}
 	for _, tt := range tests {
-		got := violation(tt.importer, moduleOf(tt.importer), tt.imp) != ""
+		got := violation(tt.importer, moduleOf(tt.importer), tt.imp, tt.fromTest) != ""
 		if got != tt.bad {
 			t.Errorf("violation(%s -> %s) = %v, want %v", tt.importer, tt.imp, got, tt.bad)
 		}

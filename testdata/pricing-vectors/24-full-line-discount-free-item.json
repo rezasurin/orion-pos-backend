@@ -1,0 +1,55 @@
+{
+  "name": "full-line-discount-free-item",
+  "note": "A 100% line discount makes the line free; the other line is unaffected.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 18000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 25000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "line": 0,
+      "kind": "percent",
+      "value": 10000
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 18000,
+        "discount": 18000,
+        "allocated_bill_discount": 0,
+        "total": 0
+      },
+      {
+        "gross": 25000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 25000
+      }
+    ],
+    "subtotal": 43000,
+    "discount_total": 18000,
+    "net": 25000,
+    "service_charge": 0,
+    "tax": 2750,
+    "tax_included": false,
+    "total": 27750,
+    "rounding_amount": 0,
+    "cash_total": 27750
+  }
+}

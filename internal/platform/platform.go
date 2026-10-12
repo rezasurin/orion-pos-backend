@@ -416,13 +416,14 @@ type AuditEntry struct {
 }
 
 // ListAuditLog returns a page of the audit log, newest first. page.After is the id of the last
-// entry of the previous page, so the next page holds older entries.
-func (s *Service) ListAuditLog(ctx context.Context, page kernel.Page) (kernel.Paged[AuditEntry], error) {
+// entry of the previous page, so the next page holds older entries. With tenantID set, only the
+// entries about that business.
+func (s *Service) ListAuditLog(ctx context.Context, page kernel.Page, tenantID *uuid.UUID) (kernel.Paged[AuditEntry], error) {
 	before := page.After
 	if before == uuid.Nil {
 		before = uuid.MustParse("ffffffff-ffff-ffff-ffff-ffffffffffff")
 	}
-	rows, err := db.New(s.Pool).ListAudit(ctx, db.ListAuditParams{Before: before, PageSize: page.Fetch()})
+	rows, err := db.New(s.Pool).ListAudit(ctx, db.ListAuditParams{Before: before, TenantID: tenantID, PageSize: page.Fetch()})
 	if err != nil {
 		return kernel.Paged[AuditEntry]{}, err
 	}
@@ -441,7 +442,7 @@ func (s *Service) ListAuditLog(ctx context.Context, page kernel.Page) (kernel.Pa
 // transaction.
 func (s *Service) SetOverride(ctx context.Context, a Actor, tenantSlug string, key entitlements.Key, value int64, expires *time.Time, reason string) error {
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		t, err := s.Tenants.FindBySlug(ctx, tx, tenantSlug)
+		t, err := s.Tenants.Find(ctx, tx, tenantSlug)
 		if err != nil {
 			return err
 		}
@@ -464,7 +465,7 @@ func (s *Service) SetOverride(ctx context.Context, a Actor, tenantSlug string, k
 // ClearOverride removes an override and audits it.
 func (s *Service) ClearOverride(ctx context.Context, a Actor, tenantSlug string, key entitlements.Key, reason string) error {
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		t, err := s.Tenants.FindBySlug(ctx, tx, tenantSlug)
+		t, err := s.Tenants.Find(ctx, tx, tenantSlug)
 		if err != nil {
 			return err
 		}
@@ -499,7 +500,7 @@ func (s *Service) SetTenantSuspended(ctx context.Context, a Actor, tenantSlug st
 		action = "tenant.suspended"
 	}
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		t, err := s.Tenants.FindBySlug(ctx, tx, tenantSlug)
+		t, err := s.Tenants.Find(ctx, tx, tenantSlug)
 		if err != nil {
 			return err
 		}

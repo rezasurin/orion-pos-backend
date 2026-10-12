@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/pricing"
 )
 
 // SampleLine is one line of the sample sale.
@@ -17,7 +18,7 @@ type SampleLine struct {
 // SampleReceipt is a made-up sale priced with an outlet's real settings, so the POS hardware spike
 // can print something that looks like a real receipt: the outlet's header and footer, its tax and
 // service charge, and its cash rounding. It is a preview of BACKEND_PLAN.md section 4.8 without
-// discounts or modifiers; the real bill calculation arrives with sales in Phase 1.
+// discounts or modifiers.
 type SampleReceipt struct {
 	Lines         []SampleLine
 	Subtotal      kernel.Rupiah
@@ -37,39 +38,35 @@ var sampleLines = []SampleLine{
 	{Name: "Air Mineral", Quantity: 3, UnitPrice: 6_000},
 }
 
-// NewSampleReceipt prices the sample sale under the given settings.
+// NewSampleReceipt prices the sample sale under the given settings, with the same calculation that
+// prices every real sale (internal/pricing), paid in cash so the rounding shows.
 func NewSampleReceipt(s OutletSettings) (SampleReceipt, error) {
-	r := SampleReceipt{TaxIncluded: s.PriceIncludesTax}
+	bill := pricing.Bill{
+		Settings: pricing.Settings{
+			PriceIncludesTax:     s.PriceIncludesTax,
+			TaxRate:              s.TaxRate,
+			ServiceChargeRate:    s.ServiceChargeRate,
+			ServiceChargeTaxable: s.ServiceChargeTaxable,
+			CashRoundingUnit:     s.CashRoundingUnit,
+			CashRoundingMode:     pricing.RoundMode(s.CashRoundingMode),
+		},
+		Tender: pricing.TenderCash,
+	}
 	for _, l := range sampleLines {
-		l.Amount = l.UnitPrice * kernel.Rupiah(l.Quantity)
+		bill.Lines = append(bill.Lines, pricing.Line{UnitPrice: l.UnitPrice, Quantity: l.Quantity})
+	}
+	res, err := pricing.Calculate(bill)
+	if err != nil {
+		return SampleReceipt{}, fmt.Errorf("pricing the sample sale: %w", err)
+	}
+
+	r := SampleReceipt{
+		Subtotal: res.Subtotal, ServiceCharge: res.ServiceCharge, Tax: res.Tax, TaxIncluded: res.TaxIncluded,
+		Total: res.Total, RoundingAmount: res.RoundingAmount, CashTotal: res.CashTotal,
+	}
+	for i, l := range sampleLines {
+		l.Amount = res.Lines[i].Gross
 		r.Lines = append(r.Lines, l)
-		r.Subtotal += l.Amount
 	}
-
-	var err error
-	if r.ServiceCharge, err = kernel.ApplyRate(r.Subtotal, s.ServiceChargeRate, kernel.RoundHalfUp); err != nil {
-		return SampleReceipt{}, err
-	}
-	taxBase := r.Subtotal
-	if s.ServiceChargeTaxable {
-		taxBase += r.ServiceCharge
-	}
-	if s.PriceIncludesTax {
-		r.Tax, err = kernel.ExtractRate(taxBase, s.TaxRate, kernel.RoundHalfUp)
-		r.Total = r.Subtotal + r.ServiceCharge
-	} else {
-		r.Tax, err = kernel.ApplyRate(taxBase, s.TaxRate, kernel.RoundHalfUp)
-		r.Total = r.Subtotal + r.ServiceCharge + r.Tax
-	}
-	if err != nil {
-		return SampleReceipt{}, err
-	}
-
-	mode := map[string]kernel.RoundingMode{"nearest": kernel.RoundHalfUp, "down": kernel.RoundFloor, "up": kernel.RoundCeil}[s.CashRoundingMode]
-	rounded, err := kernel.RoundToUnit(r.Total, s.CashRoundingUnit, mode)
-	if err != nil {
-		return SampleReceipt{}, fmt.Errorf("cash rounding: %w", err)
-	}
-	r.CashTotal, r.RoundingAmount = rounded, rounded-r.Total
 	return r, nil
 }

@@ -1,0 +1,24 @@
+{
+  "name": "error-modifiers-below-zero",
+  "note": "Modifiers that take the unit price below zero.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 1000,
+      "quantity": 1,
+      "modifiers": [
+        -1500
+      ]
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected_error": "negative_price"
+}

@@ -1,0 +1,64 @@
+{
+  "name": "bill-discount-largest-remainder",
+  "note": "100 over 3333, 3333 and 3334: remainders decide who gets the extra rupiah.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 3333,
+      "quantity": 1
+    },
+    {
+      "unit_price": 3333,
+      "quantity": 1
+    },
+    {
+      "unit_price": 3334,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "amount",
+      "value": 100
+    }
+  ],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 3333,
+        "discount": 0,
+        "allocated_bill_discount": 33,
+        "total": 3300
+      },
+      {
+        "gross": 3333,
+        "discount": 0,
+        "allocated_bill_discount": 33,
+        "total": 3300
+      },
+      {
+        "gross": 3334,
+        "discount": 0,
+        "allocated_bill_discount": 34,
+        "total": 3300
+      }
+    ],
+    "subtotal": 10000,
+    "discount_total": 100,
+    "net": 9900,
+    "service_charge": 0,
+    "tax": 0,
+    "tax_included": false,
+    "total": 9900,
+    "rounding_amount": 0,
+    "cash_total": 9900
+  }
+}

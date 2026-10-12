@@ -1,0 +1,54 @@
+{
+  "name": "inclusive-tax-discount-and-rounding",
+  "note": "Inclusive prices, a bill discount and cash rounding together.",
+  "settings": {
+    "price_includes_tax": true,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 100,
+    "cash_rounding_mode": "down"
+  },
+  "lines": [
+    {
+      "unit_price": 33300,
+      "quantity": 1
+    },
+    {
+      "unit_price": 22200,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "kind": "percent",
+      "value": 500
+    }
+  ],
+  "tender": "cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 33300,
+        "discount": 0,
+        "allocated_bill_discount": 1665,
+        "total": 31635
+      },
+      {
+        "gross": 22200,
+        "discount": 0,
+        "allocated_bill_discount": 1110,
+        "total": 21090
+      }
+    ],
+    "subtotal": 55500,
+    "discount_total": 2775,
+    "net": 52725,
+    "service_charge": 2636,
+    "tax": 5486,
+    "tax_included": true,
+    "total": 55361,
+    "rounding_amount": -61,
+    "cash_total": 55300
+  }
+}

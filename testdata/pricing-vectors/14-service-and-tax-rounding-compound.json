@@ -1,0 +1,39 @@
+{
+  "name": "service-and-tax-rounding-compound",
+  "note": "Both round: sc 7% of 15555 = 1088.85 -> 1089; tax 11% of 16644 = 1830.84 -> 1831.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 700,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 15555,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 15555,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 15555
+      }
+    ],
+    "subtotal": 15555,
+    "discount_total": 0,
+    "net": 15555,
+    "service_charge": 1089,
+    "tax": 1831,
+    "tax_included": false,
+    "total": 18475,
+    "rounding_amount": 0,
+    "cash_total": 18475
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "tax-inclusive-11",
+  "note": "Prices include 11% tax. 111000 contains 11000 of tax; total stays 111000.",
+  "settings": {
+    "price_includes_tax": true,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 111000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 111000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 111000
+      }
+    ],
+    "subtotal": 111000,
+    "discount_total": 0,
+    "net": 111000,
+    "service_charge": 0,
+    "tax": 11000,
+    "tax_included": true,
+    "total": 111000,
+    "rounding_amount": 0,
+    "cash_total": 111000
+  }
+}

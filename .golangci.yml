@@ -11,6 +11,10 @@ linters:
     - sqlclosecheck
     - unconvert
   settings:
+    misspell:
+      # "teh" is Indonesian for tea (the demo menu and test business names), not a typo for "the".
+      ignore-rules:
+        - teh
     gosec:
       excludes:
         - G104 # unchecked errors are errcheck's job

@@ -1,0 +1,39 @@
+{
+  "name": "tax-inclusive-service-not-taxable",
+  "note": "Inclusive prices; service charge outside the tax base.",
+  "settings": {
+    "price_includes_tax": true,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 500,
+    "service_charge_taxable": false,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 100000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 100000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 100000
+      }
+    ],
+    "subtotal": 100000,
+    "discount_total": 0,
+    "net": 100000,
+    "service_charge": 5000,
+    "tax": 9910,
+    "tax_included": true,
+    "total": 105000,
+    "rounding_amount": 0,
+    "cash_total": 105000
+  }
+}

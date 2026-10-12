@@ -1,0 +1,35 @@
+{
+  "name": "error-bill-discount-exceeds-subtotal",
+  "note": "A fixed bill discount larger than what is left after line discounts.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 0,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 10000,
+      "quantity": 1
+    },
+    {
+      "unit_price": 5000,
+      "quantity": 1
+    }
+  ],
+  "discounts": [
+    {
+      "line": 0,
+      "kind": "amount",
+      "value": 10000
+    },
+    {
+      "kind": "amount",
+      "value": 5001
+    }
+  ],
+  "tender": "non_cash",
+  "expected_error": "discount_exceeds_amount"
+}

@@ -111,5 +111,6 @@ func toDevice(d identity.Device) openapi.Device {
 	return openapi.Device{
 		Id: d.ID, OutletId: d.OutletID, DeviceCode: d.Code, Name: d.Name, PairedBy: d.PairedBy, PairedAt: d.PairedAt,
 		RevokedAt: d.RevokedAt, LastSeenAt: d.LastSeenAt, LastSyncAt: d.LastSyncAt, AppVersion: d.AppVersion, ClockSkewMs: d.ClockSkewMs,
+		UnsyncedEvents: d.UnsyncedEvents, OldestUnsyncedAt: d.OldestUnsyncedAt, HealthReportedAt: d.HealthReportedAt,
 	}
 }

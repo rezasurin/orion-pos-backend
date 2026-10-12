@@ -1,0 +1,42 @@
+{
+  "name": "zero-price-item-with-paid-modifier",
+  "note": "A free item whose modifier costs money.",
+  "settings": {
+    "price_includes_tax": false,
+    "tax_rate_bp": 1100,
+    "service_charge_rate_bp": 0,
+    "service_charge_taxable": true,
+    "cash_rounding_unit": 0,
+    "cash_rounding_mode": "nearest"
+  },
+  "lines": [
+    {
+      "unit_price": 0,
+      "quantity": 1,
+      "modifiers": [
+        4000
+      ]
+    }
+  ],
+  "discounts": [],
+  "tender": "non_cash",
+  "expected": {
+    "lines": [
+      {
+        "gross": 4000,
+        "discount": 0,
+        "allocated_bill_discount": 0,
+        "total": 4000
+      }
+    ],
+    "subtotal": 4000,
+    "discount_total": 0,
+    "net": 4000,
+    "service_charge": 0,
+    "tax": 440,
+    "tax_included": false,
+    "total": 4440,
+    "rounding_amount": 0,
+    "cash_total": 4440
+  }
+}

@@ -421,6 +421,11 @@ func (s *Service) GetMe(ctx context.Context, p Principal) (Me, error) {
 	return me, err
 }
 
+// TermsVersion is the version of the terms of service a new owner accepts at signup. The text is
+// published by the front end; change both together. A signup naming another version is refused
+// with ErrTermsOutdated, so a stale page cannot record consent to terms the user never saw.
+const TermsVersion = "2026-10-06"
+
 // NewMember describes a person to add to a tenant with an email login.
 type NewMember struct {
 	TenantID    uuid.UUID
@@ -434,25 +439,68 @@ type NewMember struct {
 	// OutletRoles are the roles a non-owner member holds. Owners need none: they may do anything.
 	// The caller is trusted here (a command or signup); API handlers use CreateStaff's checks.
 	OutletRoles []OutletRole
+	// AcceptedTerms is the terms version the person accepted, recorded with the account. Empty
+	// records nothing; anything else must be TermsVersion.
+	AcceptedTerms string
+}
+
+// PreparedMember is a NewMember that passed validation, with its password hashed. Hashing is slow
+// and needs no database, so it happens before any transaction opens.
+type PreparedMember struct {
+	s    *Service
+	in   NewMember
+	hash string
+}
+
+// Insert adds the member to tenantID inside the caller's transaction, which must be that tenant's
+// (kernel.TenantTx). Signup passes it to tenancy.CreateTenantWith, so the business and its owner
+// are created together.
+func (p PreparedMember) Insert(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID) error {
+	_, err := p.s.insertMember(ctx, tx, tenantID, p)
+	return err
+}
+
+// PrepareMember validates a new member and hashes the password. The tenant is not needed yet:
+// signup prepares the owner before the tenant exists.
+func (s *Service) PrepareMember(ctx context.Context, in NewMember) (PreparedMember, error) {
+	in.Email = normalizeEmail(in.Email)
+	if in.Locale == "" {
+		in.Locale = Locales[0]
+	}
+	if err := validateNewMember(in); err != nil {
+		return PreparedMember{}, err
+	}
+	if in.AcceptedTerms != "" && in.AcceptedTerms != TermsVersion {
+		return PreparedMember{}, ErrTermsOutdated
+	}
+	hash, err := s.Hasher.Hash(ctx, in.Password, s.PasswordCost)
+	if err != nil {
+		return PreparedMember{}, err
+	}
+	return PreparedMember{s: s, in: in, hash: hash}, nil
 }
 
 // CreateMember creates a user, adds them to a tenant and gives them a staff record (so they appear
 // in the roster once they have a PIN). Unless the email is marked verified, a verification email
 // is queued in the same transaction.
 func (s *Service) CreateMember(ctx context.Context, in NewMember) (User, error) {
-	in.Email = normalizeEmail(in.Email)
-	if in.Locale == "" {
-		in.Locale = Locales[0]
+	if in.TenantID == uuid.Nil {
+		return User{}, fmt.Errorf("%w: tenant is required", kernel.ErrValidation)
 	}
-	if err := validateNewMember(in); err != nil {
-		return User{}, err
-	}
-	// Hash before the transaction: it is slow and needs no database.
-	hash, err := s.Hasher.Hash(ctx, in.Password, s.PasswordCost)
+	p, err := s.PrepareMember(ctx, in)
 	if err != nil {
 		return User{}, err
 	}
+	var u User
+	err = kernel.TenantTx(ctx, s.Pool, in.TenantID, func(tx pgx.Tx) error {
+		u, err = s.insertMember(ctx, tx, in.TenantID, p)
+		return err
+	})
+	return u, err
+}
 
+func (s *Service) insertMember(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, p PreparedMember) (User, error) {
+	in := p.in
 	userID := kernel.NewID()
 	now := s.Clock.Now()
 	var verifiedAt *time.Time
@@ -460,46 +508,49 @@ func (s *Service) CreateMember(ctx context.Context, in NewMember) (User, error) 
 		verifiedAt = &now
 	}
 	staffID := kernel.NewID()
-	err = kernel.TenantTx(ctx, s.Pool, in.TenantID, func(tx pgx.Tx) error {
-		q := db.New(tx)
-		if err := kernel.LockTenant(ctx, tx); err != nil {
-			return err
-		}
-		if err := s.checkStaffLimit(ctx, tx, q, in.TenantID); err != nil {
-			return err
-		}
-		if err := q.InsertUser(ctx, db.InsertUserParams{
-			ID: userID, Email: in.Email, PasswordHash: hash, EmailVerifiedAt: verifiedAt, Locale: in.Locale,
-		}); err != nil {
-			return mapErr(err)
-		}
-		if err := q.InsertMember(ctx, db.InsertMemberParams{TenantID: in.TenantID, UserID: userID, IsOwner: in.IsOwner}); err != nil {
-			return mapErr(err)
-		}
-		if err := q.InsertStaff(ctx, db.InsertStaffParams{
-			ID: staffID, TenantID: in.TenantID, UserID: &userID, DisplayName: strings.TrimSpace(in.DisplayName),
-		}); err != nil {
-			return mapErr(err)
-		}
-		if err := insertAssignments(ctx, q, in.TenantID, staffID, in.OutletRoles); err != nil {
-			return err
-		}
-		if _, err := kernel.RecordChange(ctx, tx, "staff", staffID, "upsert", nil); err != nil {
-			return err
-		}
-		if err := kernel.RecordAudit(ctx, tx, kernel.AuditEntry{
-			Action: "member.created", TargetType: "user", TargetID: userID,
-			Detail: map[string]any{"is_owner": in.IsOwner, "staff_id": staffID},
-		}); err != nil {
-			return err
-		}
-		if in.EmailVerified {
-			return nil
-		}
-		return s.enqueueVerification(ctx, tx, in.TenantID, userID)
-	})
-	if err != nil {
+	q := db.New(tx)
+	if err := kernel.LockTenant(ctx, tx); err != nil {
 		return User{}, err
+	}
+	if err := s.checkStaffLimit(ctx, tx, q, tenantID); err != nil {
+		return User{}, err
+	}
+	if err := q.InsertUser(ctx, db.InsertUserParams{
+		ID: userID, Email: in.Email, PasswordHash: p.hash, EmailVerifiedAt: verifiedAt, Locale: in.Locale,
+	}); err != nil {
+		return User{}, mapErr(err)
+	}
+	if err := q.InsertMember(ctx, db.InsertMemberParams{TenantID: tenantID, UserID: userID, IsOwner: in.IsOwner}); err != nil {
+		return User{}, mapErr(err)
+	}
+	if in.AcceptedTerms != "" {
+		if err := q.InsertTermsAcceptance(ctx, db.InsertTermsAcceptanceParams{
+			TenantID: tenantID, UserID: userID, Version: in.AcceptedTerms, AcceptedAt: now,
+		}); err != nil {
+			return User{}, err
+		}
+	}
+	if err := q.InsertStaff(ctx, db.InsertStaffParams{
+		ID: staffID, TenantID: tenantID, UserID: &userID, DisplayName: strings.TrimSpace(in.DisplayName),
+	}); err != nil {
+		return User{}, mapErr(err)
+	}
+	if err := insertAssignments(ctx, q, tenantID, staffID, in.OutletRoles); err != nil {
+		return User{}, err
+	}
+	if _, err := kernel.RecordChange(ctx, tx, "staff", staffID, "upsert", nil); err != nil {
+		return User{}, err
+	}
+	if err := kernel.RecordAudit(ctx, tx, kernel.AuditEntry{
+		Action: "member.created", TargetType: "user", TargetID: userID,
+		Detail: map[string]any{"is_owner": in.IsOwner, "staff_id": staffID},
+	}); err != nil {
+		return User{}, err
+	}
+	if !in.EmailVerified {
+		if err := s.enqueueVerification(ctx, tx, tenantID, userID); err != nil {
+			return User{}, err
+		}
 	}
 	return User{ID: userID, Email: in.Email, EmailVerified: in.EmailVerified, Locale: in.Locale, CreatedAt: now}, nil
 }
@@ -558,9 +609,6 @@ func normalizeEmail(email string) string { return strings.ToLower(strings.TrimSp
 
 func validateNewMember(in NewMember) error {
 	var problems []string
-	if in.TenantID == uuid.Nil {
-		problems = append(problems, "tenant is required")
-	}
 	if a, err := mail.ParseAddress(in.Email); err != nil || a.Address != in.Email || len(in.Email) > 254 {
 		problems = append(problems, "email is not valid")
 	}
@@ -608,7 +656,7 @@ func mapErr(err error) error {
 		switch pgErr.Code {
 		case "23505":
 			if pgErr.ConstraintName == "user_account_email_key" {
-				return fmt.Errorf("%w: email is already registered", kernel.ErrConflict)
+				return ErrEmailTaken
 			}
 			return fmt.Errorf("%w: %s", kernel.ErrConflict, pgErr.ConstraintName)
 		case "23503":

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/rezasurin/orion-pos-backend/internal/httpserver"
 	"github.com/rezasurin/orion-pos-backend/internal/identity"
 	"github.com/rezasurin/orion-pos-backend/internal/kernel"
+	"github.com/rezasurin/orion-pos-backend/internal/tenancy"
 )
 
 func (s *Server) Login(ctx context.Context, req openapi.LoginRequestObject) (openapi.LoginResponseObject, error) {
@@ -32,6 +34,47 @@ func (s *Server) Login(ctx context.Context, req openapi.LoginRequestObject) (ope
 		return nil, err
 	}
 	return openapi.Login200JSONResponse(toSession(sess)), nil
+}
+
+// Signup creates a business with its first outlet and owner (B2.1). Bots that fill the honeypot
+// and emails that already have an account get the same 202 as a real signup and create nothing.
+func (s *Server) Signup(ctx context.Context, req openapi.SignupRequestObject) (openapi.SignupResponseObject, error) {
+	b := req.Body
+	if b == nil || b.Email == "" || b.Password == "" || b.TermsVersion == "" {
+		return nil, fmt.Errorf("%w: email, password and terms_version are required", kernel.ErrValidation)
+	}
+	if err := allow(s.signupByIP, httpserver.ClientIP(ctx)); err != nil {
+		return nil, err
+	}
+	if err := allow(s.emailByAccount, strings.ToLower(strings.TrimSpace(b.Email))); err != nil {
+		return nil, err
+	}
+	if b.Website != nil && *b.Website != "" {
+		return openapi.Signup202Response{}, nil
+	}
+
+	owner := identity.NewMember{
+		Email: b.Email, Password: b.Password, DisplayName: b.OwnerName, IsOwner: true, AcceptedTerms: b.TermsVersion,
+	}
+	if b.Locale != nil {
+		owner.Locale = string(*b.Locale)
+	}
+	prepared, err := s.Identity.PrepareMember(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+	outlet := tenancy.NewOutlet{Name: b.BusinessName, Code: "OUT1"}
+	if b.OutletName != nil && *b.OutletName != "" {
+		outlet.Name = *b.OutletName
+	}
+	if b.OutletCode != nil {
+		outlet.Code = *b.OutletCode
+	}
+	_, _, err = s.Tenancy.CreateTenantWith(ctx, tenancy.NewTenant{Name: b.BusinessName, Plan: tenancy.PlanFree, Outlet: outlet}, prepared.Insert)
+	if err != nil && !errors.Is(err, identity.ErrEmailTaken) {
+		return nil, err
+	}
+	return openapi.Signup202Response{}, nil
 }
 
 func (s *Server) RefreshSession(ctx context.Context, req openapi.RefreshSessionRequestObject) (openapi.RefreshSessionResponseObject, error) {
